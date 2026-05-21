@@ -640,11 +640,16 @@ final class TelegramHookInstaller {
                 return;
             }
             int filteredCount = 0;
+            int latestMessageId = 0;
             Object anyMessageObject = null;
             for (Object msg : msgList) {
                 if (msg == null) continue;
                 if (anyMessageObject == null) {
                     anyMessageObject = msg;
+                }
+                int id = resolveMessageId(msg);
+                if (id > latestMessageId) {
+                    latestMessageId = id;
                 }
                 MessageSnapshot snapshot = TelegramMessageNormalizer.normalize(null, msg);
                 if (snapshot == null) continue;
@@ -653,10 +658,13 @@ final class TelegramHookInstaller {
                     filteredCount++;
                 }
             }
-            if (filteredCount > 0 && anyMessageObject != null) {
+            if (filteredCount > 0 && anyMessageObject != null && latestMessageId > 0) {
                 Object controller = resolveMessagesController(anyMessageObject);
                 if (controller != null) {
-                    zeroDialogUnreadIfFiltered(controller, dialogId);
+                    long topicId = 0;
+                    invokeMarkDialogAsRead(controller, dialogId, latestMessageId, topicId);
+                    decrementDialogUnreadByFilteredCount(controller, dialogId, filteredCount);
+                    info("Pause: markDialogAsRead dialog=" + dialogId + " maxId=" + latestMessageId + " filtered=" + filteredCount);
                 }
             }
         } catch (Throwable throwable) {
@@ -664,7 +672,7 @@ final class TelegramHookInstaller {
         }
     }
 
-    private void zeroDialogUnreadIfFiltered(Object controller, long dialogId) {
+    private void decrementDialogUnreadByFilteredCount(Object controller, long dialogId, int filteredCount) {
         try {
             Object dialog = resolveDialog(controller, dialogId);
             if (dialog == null) {
@@ -674,25 +682,27 @@ final class TelegramHookInstaller {
             if (currentUnread <= 0) {
                 return;
             }
+            int decrement = Math.min(currentUnread, filteredCount);
+            int newCount = currentUnread - decrement;
             java.lang.reflect.Field unreadField = findDialogUnreadCountField(dialog.getClass());
             if (unreadField == null) {
-                info("ReadMark-zero: field not found class=" + dialog.getClass().getName());
                 return;
             }
             unreadField.setAccessible(true);
             Class<?> type = unreadField.getType();
             if (type == int.class) {
-                unreadField.setInt(dialog, 0);
+                unreadField.setInt(dialog, newCount);
             } else if (type == Integer.class) {
-                unreadField.set(dialog, 0);
+                unreadField.set(dialog, newCount);
             } else if (type == long.class) {
-                unreadField.setLong(dialog, 0L);
+                unreadField.setLong(dialog, newCount);
             } else if (type == Long.class) {
-                unreadField.set(dialog, 0L);
+                unreadField.set(dialog, (long) newCount);
             }
-            info("ReadMark-zero: cleared unread_count from " + currentUnread + " dialog=" + dialogId);
-        } catch (Throwable throwable) {
-            info("ReadMark-zero: exception " + throwable.getMessage());
+            if (decrement > 0) {
+                info("ReadMark-decr: unread_count " + currentUnread + " -> " + newCount + " (filtered=" + filteredCount + ") dialog=" + dialogId);
+            }
+        } catch (Throwable ignored) {
         }
     }
 
