@@ -29,9 +29,22 @@
             </intent-filter>
         </activity>
 
+        <activity
+            android:name=".config.ConfigPersistActivity"
+            android:excludeFromRecents="true"
+            android:exported="true"
+            android:finishOnTaskLaunch="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.GramSieve.Transparent" />
+
         <provider
             android:name=".config.ConfigContentProvider"
             android:authorities="com.tianqianguai.gramsieve.config"
+            android:exported="true" />
+
+        <receiver
+            android:name=".config.ConfigUpdateReceiver"
             android:exported="true" />
     </application>
 

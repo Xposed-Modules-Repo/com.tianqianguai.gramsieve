@@ -46,39 +46,184 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             FilterConfig.RuleTarget.SENDER,
             FilterConfig.RuleTarget.CHAT
     };
+    private static final FilterConfig.RuleTarget[] CHAT_MODE_EDITOR_TARGETS = new FilterConfig.RuleTarget[]{
+            FilterConfig.RuleTarget.ANY,
+            FilterConfig.RuleTarget.TEXT,
+            FilterConfig.RuleTarget.CAPTION,
+            FilterConfig.RuleTarget.BUTTONS,
+            FilterConfig.RuleTarget.SENDER
+    };
 
     private AlertDialog dialog;
     private boolean relaunchAfterDismiss;
 
-    private static final class TargetFieldGroup {
-        final TextInputEditText keywordInput;
-        final TextInputEditText regexInput;
+    private static final class RuleInputBox {
+        final TextInputLayout layout;
+        final TextInputEditText editText;
 
-        TargetFieldGroup(TextInputEditText keywordInput, TextInputEditText regexInput) {
-            this.keywordInput = keywordInput;
-            this.regexInput = regexInput;
+        RuleInputBox(TextInputLayout layout, TextInputEditText editText) {
+            this.layout = layout;
+            this.editText = editText;
         }
     }
 
-    private static final class RuleMatrixInputs {
-        final Map<FilterConfig.RuleTarget, TargetFieldGroup> fields =
+    private final class RuleMatrixEditor {
+        private final boolean chatMode;
+        private final RuleDraftMatrix matchMatrix;
+        private final RuleDraftMatrix exclusionMatrix;
+        private final RadioGroup kindGroup;
+        private final RadioGroup targetGroup;
+        private final TextView targetInfo;
+        private final RuleInputBox keywordInput;
+        private final RuleInputBox regexInput;
+        private final Map<FilterConfig.RuleTarget, Integer> targetIds =
                 new EnumMap<>(FilterConfig.RuleTarget.class);
+        private final int matchKindId = View.generateViewId();
+        private final int exclusionKindId = View.generateViewId();
 
-        void put(FilterConfig.RuleTarget target, TargetFieldGroup group) {
-            fields.put(target, group);
+        private boolean editingExclusions;
+        private boolean binding;
+        private FilterConfig.RuleTarget selectedTarget;
+
+        RuleMatrixEditor(
+                LinearLayout container,
+                RuleDraftMatrix matchMatrix,
+                RuleDraftMatrix exclusionMatrix,
+                boolean chatMode
+        ) {
+            this.chatMode = chatMode;
+            this.matchMatrix = matchMatrix;
+            this.exclusionMatrix = exclusionMatrix;
+
+            addSectionLabel(container, getString(R.string.dialog_rule_editor_title));
+            addInfo(container, getString(chatMode
+                    ? R.string.dialog_rule_editor_hint_chat
+                    : R.string.dialog_rule_editor_hint_global));
+
+            kindGroup = new RadioGroup(ConfigDialogActivity.this);
+            kindGroup.setOrientation(LinearLayout.HORIZONTAL);
+            kindGroup.addView(createRadioButton(matchKindId, getString(R.string.dialog_rule_kind_filter)));
+            kindGroup.addView(createRadioButton(exclusionKindId, getString(R.string.dialog_rule_kind_keep)));
+            addGroup(container, kindGroup);
+
+            addSectionLabel(container, getString(R.string.dialog_target_group_title));
+            targetGroup = new RadioGroup(ConfigDialogActivity.this);
+            targetGroup.setOrientation(LinearLayout.VERTICAL);
+            for (FilterConfig.RuleTarget target : editorTargets(chatMode)) {
+                int targetId = View.generateViewId();
+                targetIds.put(target, targetId);
+                targetGroup.addView(createRadioButton(targetId, targetOptionLabel(target)));
+            }
+            addGroup(container, targetGroup);
+
+            targetInfo = addInfo(container, "");
+            keywordInput = addMultilineInputBox(
+                    container,
+                    getString(R.string.dialog_input_label_keywords_compact),
+                    "",
+                    "",
+                    1,
+                    5
+            );
+            regexInput = addMultilineInputBox(
+                    container,
+                    getString(R.string.dialog_input_label_regex_compact),
+                    "",
+                    "",
+                    1,
+                    5
+            );
+
+            selectedTarget = editorTargets(chatMode)[0];
+            editingExclusions = false;
+            kindGroup.check(matchKindId);
+            targetGroup.check(targetIds.get(selectedTarget));
+            bindVisibleFields();
+
+            kindGroup.setOnCheckedChangeListener((group, checkedId) -> {
+                if (binding) {
+                    return;
+                }
+                saveVisibleFields();
+                editingExclusions = checkedId == exclusionKindId;
+                updateTargetLabels();
+                bindVisibleFields();
+            });
+            targetGroup.setOnCheckedChangeListener((group, checkedId) -> {
+                if (binding) {
+                    return;
+                }
+                saveVisibleFields();
+                selectedTarget = targetForId(checkedId);
+                bindVisibleFields();
+            });
         }
 
-        List<FilterConfig.RuleSpec> toRules() {
-            RuleDraftMatrix matrix = new RuleDraftMatrix();
-            for (FilterConfig.RuleTarget target : EDITOR_TARGETS) {
-                TargetFieldGroup group = fields.get(target);
-                if (group == null) {
+        List<FilterConfig.RuleSpec> toMatchRules() {
+            saveVisibleFields();
+            return exportRules(matchMatrix, chatMode);
+        }
+
+        List<FilterConfig.RuleSpec> toExclusionRules() {
+            saveVisibleFields();
+            return exportRules(exclusionMatrix, chatMode);
+        }
+
+        private void saveVisibleFields() {
+            if (selectedTarget == null) {
+                return;
+            }
+            RuleDraftMatrix currentMatrix = currentMatrix();
+            currentMatrix.set(selectedTarget, FilterConfig.RuleMode.KEYWORD, valueOf(keywordInput.editText));
+            currentMatrix.set(selectedTarget, FilterConfig.RuleMode.REGEX, valueOf(regexInput.editText));
+            updateTargetLabels();
+        }
+
+        private void bindVisibleFields() {
+            FilterConfig.RuleTarget target = selectedTarget == null ? editorTargets(chatMode)[0] : selectedTarget;
+            RuleDraftMatrix currentMatrix = currentMatrix();
+            binding = true;
+            keywordInput.editText.setText(currentMatrix.get(target, FilterConfig.RuleMode.KEYWORD));
+            regexInput.editText.setText(currentMatrix.get(target, FilterConfig.RuleMode.REGEX));
+            keywordInput.layout.setHelperText(keywordHint(target, chatMode));
+            regexInput.layout.setHelperText(regexHint(target, chatMode));
+            targetInfo.setText(targetHint(target, chatMode));
+            binding = false;
+        }
+
+        private RuleDraftMatrix currentMatrix() {
+            return editingExclusions ? exclusionMatrix : matchMatrix;
+        }
+
+        private FilterConfig.RuleTarget targetForId(int checkedId) {
+            for (Map.Entry<FilterConfig.RuleTarget, Integer> entry : targetIds.entrySet()) {
+                if (entry.getValue() == checkedId) {
+                    return entry.getKey();
+                }
+            }
+            return editorTargets(chatMode)[0];
+        }
+
+        private void updateTargetLabels() {
+            for (FilterConfig.RuleTarget target : editorTargets(chatMode)) {
+                Integer targetId = targetIds.get(target);
+                if (targetId == null) {
                     continue;
                 }
-                matrix.set(target, FilterConfig.RuleMode.KEYWORD, valueOf(group.keywordInput));
-                matrix.set(target, FilterConfig.RuleMode.REGEX, valueOf(group.regexInput));
+                RadioButton button = targetGroup.findViewById(targetId);
+                if (button != null) {
+                    button.setText(targetOptionLabel(target));
+                }
             }
-            return matrix.toRules();
+        }
+
+        private String targetOptionLabel(FilterConfig.RuleTarget target) {
+            int count = countRuleLines(currentMatrix().get(target, FilterConfig.RuleMode.KEYWORD))
+                    + countRuleLines(currentMatrix().get(target, FilterConfig.RuleMode.REGEX));
+            if (count <= 0) {
+                return targetLabel(target);
+            }
+            return getString(R.string.dialog_target_label_with_count, targetLabel(target), count);
         }
     }
 
@@ -203,16 +348,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             addInfo(container, scopeText);
         }
 
-        addSectionLabel(container, getString(R.string.dialog_rule_guide_title));
-        addInfo(container, getString(chatMode ? R.string.dialog_rule_guide_chat : R.string.dialog_rule_guide_global));
-
-        addSectionLabel(container, getString(R.string.dialog_match_section_title));
-        addInfo(container, getString(R.string.dialog_match_section_hint));
-        RuleMatrixInputs matchInputs = addRuleMatrixSection(container, matchMatrix, chatMode);
-
-        addSectionLabel(container, getString(R.string.dialog_keep_section_title));
-        addInfo(container, getString(R.string.dialog_keep_section_hint));
-        RuleMatrixInputs exclusionInputs = addRuleMatrixSection(container, exclusionMatrix, chatMode);
+        RuleMatrixEditor ruleEditor = new RuleMatrixEditor(container, matchMatrix, exclusionMatrix, chatMode);
 
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
                 .setTitle(chatMode ? R.string.dialog_title_chat : R.string.dialog_title_global)
@@ -242,8 +378,8 @@ public final class ConfigDialogActivity extends AppCompatActivity {
                 FilterConfig.ChatRuleSet updatedChat = latest.getOrCreateChatRuleSet(dialogId);
                 updatedChat.enabled = enabledSwitch.isChecked();
                 updatedChat.excludeFromGlobal = excludeChatSwitchFinal != null && excludeChatSwitchFinal.isChecked();
-                updatedChat.rules = matchInputs.toRules();
-                updatedChat.exclusions = exclusionInputs.toRules();
+                updatedChat.rules = ruleEditor.toMatchRules();
+                updatedChat.exclusions = ruleEditor.toExclusionRules();
                 updatedChat.sanitize();
                 if (updatedChat.isSemanticallyEmpty()) {
                     latest.chatRules.remove(FilterConfig.chatKey(dialogId));
@@ -265,8 +401,8 @@ public final class ConfigDialogActivity extends AppCompatActivity {
                 } else {
                     latest.action = FilterConfig.Action.HIDE;
                 }
-                latest.globalRules = matchInputs.toRules();
-                latest.globalExclusions = exclusionInputs.toRules();
+                latest.globalRules = ruleEditor.toMatchRules();
+                latest.globalExclusions = ruleEditor.toExclusionRules();
             }
             latest.sanitize();
             ModuleConfigStore.save(this, latest);
@@ -280,41 +416,8 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         dialog.show();
     }
 
-    private RuleMatrixInputs addRuleMatrixSection(LinearLayout container, RuleDraftMatrix matrix, boolean chatMode) {
-        RuleMatrixInputs inputs = new RuleMatrixInputs();
-        for (FilterConfig.RuleTarget target : EDITOR_TARGETS) {
-            addTargetRuleGroup(container, inputs, matrix, target, chatMode);
-        }
-        return inputs;
-    }
-
-    private void addTargetRuleGroup(
-            LinearLayout container,
-            RuleMatrixInputs inputs,
-            RuleDraftMatrix matrix,
-            FilterConfig.RuleTarget target,
-            boolean chatMode
-    ) {
-        addTargetLabel(container, targetLabel(target));
-        addInfo(container, targetHint(target, chatMode));
-
-        TextInputEditText keywordInput = addMultilineInput(
-                container,
-                getString(R.string.dialog_input_label_keywords, targetLabel(target)),
-                keywordHint(target, chatMode),
-                matrix.get(target, FilterConfig.RuleMode.KEYWORD),
-                1,
-                4
-        );
-        TextInputEditText regexInput = addMultilineInput(
-                container,
-                getString(R.string.dialog_input_label_regex, targetLabel(target)),
-                regexHint(target, chatMode),
-                matrix.get(target, FilterConfig.RuleMode.REGEX),
-                1,
-                4
-        );
-        inputs.put(target, new TargetFieldGroup(keywordInput, regexInput));
+    private static FilterConfig.RuleTarget[] editorTargets(boolean chatMode) {
+        return chatMode ? CHAT_MODE_EDITOR_TARGETS : EDITOR_TARGETS;
     }
 
     private MaterialSwitch addSwitch(LinearLayout container, String text) {
@@ -339,6 +442,13 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         container.addView(group, params);
     }
 
+    private RadioButton createRadioButton(int id, String text) {
+        RadioButton button = new RadioButton(this);
+        button.setId(id);
+        button.setText(text);
+        return button;
+    }
+
     private TextView addSectionLabel(LinearLayout container, String text) {
         TextView label = new TextView(this);
         label.setText(text);
@@ -353,21 +463,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         return label;
     }
 
-    private TextView addTargetLabel(LinearLayout container, String text) {
-        TextView label = new TextView(this);
-        label.setText(text);
-        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        );
-        params.topMargin = dp(12);
-        params.bottomMargin = dp(2);
-        container.addView(label, params);
-        return label;
-    }
-
-    private void addInfo(LinearLayout container, String text) {
+    private TextView addInfo(LinearLayout container, String text) {
         TextView info = new TextView(this);
         info.setText(text);
         info.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
@@ -377,9 +473,10 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         );
         params.bottomMargin = dp(6);
         container.addView(info, params);
+        return info;
     }
 
-    private TextInputEditText addMultilineInput(
+    private RuleInputBox addMultilineInputBox(
             LinearLayout container,
             String title,
             String hint,
@@ -406,7 +503,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         params.topMargin = dp(4);
         params.bottomMargin = dp(2);
         container.addView(layout, params);
-        return editText;
+        return new RuleInputBox(layout, editText);
     }
 
     private String targetLabel(FilterConfig.RuleTarget target) {
@@ -469,6 +566,29 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             return hint + " " + getString(R.string.dialog_rule_chat_scope_warning);
         }
         return hint;
+    }
+
+    private static List<FilterConfig.RuleSpec> exportRules(RuleDraftMatrix source, boolean chatMode) {
+        RuleDraftMatrix exported = new RuleDraftMatrix();
+        for (FilterConfig.RuleTarget target : editorTargets(chatMode)) {
+            exported.set(target, FilterConfig.RuleMode.KEYWORD, source.get(target, FilterConfig.RuleMode.KEYWORD));
+            exported.set(target, FilterConfig.RuleMode.REGEX, source.get(target, FilterConfig.RuleMode.REGEX));
+        }
+        return exported.toRules();
+    }
+
+    private static int countRuleLines(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        int count = 0;
+        String[] lines = raw.split("\\R");
+        for (String line : lines) {
+            if (!line.trim().isEmpty()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     private static String selectedLanguageTag(int checkedId, int englishOptionId, int chineseOptionId) {

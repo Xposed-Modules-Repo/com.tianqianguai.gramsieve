@@ -37,15 +37,24 @@
     <string name="dialog_match_section_hint">命中这些规则后，会执行上面选择的隐藏、折叠或调试标记动作。</string>
     <string name="dialog_keep_section_title">这些规则会强制保留</string>
     <string name="dialog_keep_section_hint">排除规则优先于过滤规则，适合给管理员、公告或固定群名做白名单。</string>
+    <string name="dialog_rule_editor_title">规则内容</string>
+    <string name="dialog_rule_editor_hint_global">先选正在编辑“过滤”还是“保留”，再选检查目标。切换选项不会清空已输入内容。</string>
+    <string name="dialog_rule_editor_hint_chat">这里只影响当前聊天。先选“过滤”或“保留”，再选检查目标。切换选项不会清空已输入内容。</string>
+    <string name="dialog_rule_kind_filter">过滤</string>
+    <string name="dialog_rule_kind_keep">保留</string>
+    <string name="dialog_target_group_title">检查目标</string>
     <string name="dialog_target_label_any">全字段</string>
     <string name="dialog_target_label_text">消息文字</string>
     <string name="dialog_target_label_caption">媒体说明</string>
     <string name="dialog_target_label_button">按钮</string>
     <string name="dialog_target_label_sender">发送者</string>
     <string name="dialog_target_label_chat">聊天</string>
+    <string name="dialog_target_label_with_count">%1$s（%2$d）</string>
     <string name="dialog_target_hint">当前这组输入框只检查：%1$s</string>
     <string name="dialog_input_label_keywords">%1$s关键词</string>
     <string name="dialog_input_label_regex">%1$s正则</string>
+    <string name="dialog_input_label_keywords_compact">关键词</string>
+    <string name="dialog_input_label_regex_compact">正则</string>
     <string name="dialog_input_hint_keywords">每行一条，只检查%1$s。这里不用再写前缀。</string>
     <string name="dialog_input_hint_regex">每行一条 Java 正则，只检查%1$s。这里不用再写前缀。</string>
     <string name="dialog_preview_title">人话解释：</string>
@@ -70,5 +79,8 @@
     <string name="dialog_rule_chat_scope_warning">当前窗口已经限定在单个聊天内；如果聊天名也命中，这里几乎等于整个聊天都会命中。</string>
     <string name="hook_menu_label_global">GramSieve 过滤规则</string>
     <string name="hook_menu_label_chat">GramSieve 聊天过滤规则</string>
+    <string name="hook_menu_label_block_message">屏蔽此消息</string>
+    <string name="hook_block_saved_toast">已把这条消息加入屏蔽规则</string>
+    <string name="hook_block_no_text_toast">这条消息没有可提取的文字</string>
     <string name="dialog_saved_toast">GramSieve 规则已保存</string>
 </resources>

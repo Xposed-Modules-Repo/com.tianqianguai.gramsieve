@@ -15,4 +15,12 @@
         <item name="android:windowMinWidthMajor">88%</item>
         <item name="android:windowMinWidthMinor">96%</item>
     </style>
+
+    <style name="Theme.GramSieve.Transparent" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:colorBackgroundCacheHint">@null</item>
+    </style>
 </resources>

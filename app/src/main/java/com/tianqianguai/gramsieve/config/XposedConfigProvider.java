@@ -19,7 +19,7 @@ public final class XposedConfigProvider {
 
     private final String modulePackageName;
     private final RemotePreferencesProvider remotePreferencesProvider;
-    private volatile FilterConfig cachedConfig = FilterConfig.createDefault();
+    private volatile FilterConfig cachedConfig;
     private volatile long lastCheckedAt;
     private volatile long lastLoadedUpdatedAt;
     private Object xSharedPreferences;
@@ -43,12 +43,20 @@ public final class XposedConfigProvider {
         lastCheckedAt = now;
         FilterConfig remotePrefsConfig = loadFromRemotePreferences();
         if (remotePrefsConfig != null) {
+            if (hasNewerAuthoritativeCache(remotePrefsConfig)) {
+                return cachedConfig;
+            }
             cachedConfig = remotePrefsConfig;
+            lastLoadedUpdatedAt = remotePrefsConfig.updatedAtEpochMs;
             return cachedConfig;
         }
         FilterConfig remoteConfig = loadFromContentProvider(context);
         if (remoteConfig != null) {
+            if (hasNewerAuthoritativeCache(remoteConfig)) {
+                return cachedConfig;
+            }
             cachedConfig = remoteConfig;
+            lastLoadedUpdatedAt = remoteConfig.updatedAtEpochMs;
             return cachedConfig;
         }
         if (!ensureLegacyPrefs()) {
@@ -70,6 +78,23 @@ public final class XposedConfigProvider {
             }
         }
         return cachedConfig;
+    }
+
+    private boolean hasNewerAuthoritativeCache(FilterConfig loadedConfig) {
+        return cachedConfig != null
+                && lastLoadedUpdatedAt > 0L
+                && loadedConfig != null
+                && cachedConfig.updatedAtEpochMs > loadedConfig.updatedAtEpochMs;
+    }
+
+    public synchronized void replaceCachedConfig(FilterConfig config) {
+        cachedConfig = (config == null ? FilterConfig.createDefault() : config).sanitize();
+        lastLoadedUpdatedAt = cachedConfig.updatedAtEpochMs;
+        lastCheckedAt = SystemClock.elapsedRealtime();
+    }
+
+    public synchronized void invalidate() {
+        lastCheckedAt = 0L;
     }
 
     private FilterConfig loadFromRemotePreferences() {

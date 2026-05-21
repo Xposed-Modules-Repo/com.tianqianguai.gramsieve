@@ -35,4 +35,9 @@ final class DecisionCache {
         cache.put(key, computed);
         return computed;
     }
+
+    synchronized void clear() {
+        cache.clear();
+        currentToken = Long.MIN_VALUE;
+    }
 }

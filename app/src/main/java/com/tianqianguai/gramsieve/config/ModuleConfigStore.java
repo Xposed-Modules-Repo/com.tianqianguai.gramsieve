@@ -24,8 +24,7 @@ public final class ModuleConfigStore {
     public static FilterConfig load(Context context) {
         SharedPreferences preferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
         FilterConfig config = load(preferences);
-        syncToRemote(context, GramSieveApplication.getXposedService(), config);
-        return config;
+        return syncToRemote(context, GramSieveApplication.getXposedService(), config);
     }
 
     public static FilterConfig load(SharedPreferences preferences) {
@@ -71,22 +70,36 @@ public final class ModuleConfigStore {
         syncToRemote(context, service, config);
     }
 
-    private static void syncToRemote(Context context, XposedService service, FilterConfig config) {
+    private static FilterConfig syncToRemote(Context context, XposedService service, FilterConfig config) {
+        FilterConfig localConfig = (config == null ? FilterConfig.createDefault() : config).sanitize();
         if (context == null) {
-            return;
+            return localConfig;
         }
         if (service == null || (service.getFrameworkProperties() & XposedService.PROP_CAP_REMOTE) == 0L) {
             Log.i(TAG, "ModuleConfigStore: remote service unavailable");
-            return;
+            return localConfig;
         }
         try {
-            service.getRemotePreferences(PREFS_NAME)
+            SharedPreferences remotePreferences = service.getRemotePreferences(PREFS_NAME);
+            FilterConfig remoteConfig = remotePreferences.contains(KEY_CONFIG_JSON)
+                    ? load(remotePreferences)
+                    : null;
+            if (remoteConfig != null && remoteConfig.updatedAtEpochMs > localConfig.updatedAtEpochMs) {
+                context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                        .edit()
+                        .putString(KEY_CONFIG_JSON, toJson(remoteConfig))
+                        .commit();
+                Log.i(TAG, "ModuleConfigStore: pulled newer remote preferences into local config");
+                return remoteConfig;
+            }
+            remotePreferences
                     .edit()
-                    .putString(KEY_CONFIG_JSON, toJson(config))
-                    .apply();
+                    .putString(KEY_CONFIG_JSON, toJson(localConfig))
+                    .commit();
             Log.i(TAG, "ModuleConfigStore: synced config to remote preferences");
         } catch (RuntimeException exception) {
             Log.e(TAG, "ModuleConfigStore: failed to sync remote preferences", exception);
         }
+        return localConfig;
     }
 }

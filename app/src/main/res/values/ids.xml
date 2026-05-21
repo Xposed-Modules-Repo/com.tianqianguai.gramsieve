@@ -1,5 +1,6 @@
 <resources>
     <item name="gramsieve_view_state" type="id" />
     <item name="gramsieve_last_message_key" type="id" />
+    <item name="gramsieve_last_decision_action" type="id" />
     <item name="gramsieve_menu_item_id" type="id" />
 </resources>

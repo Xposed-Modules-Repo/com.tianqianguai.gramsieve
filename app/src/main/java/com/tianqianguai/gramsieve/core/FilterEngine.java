@@ -7,6 +7,43 @@ import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 
 public final class FilterEngine {
+    private static final String[] GAMBLING_KEYWORDS = new String[]{
+            "娱乐城",
+            "赌场",
+            "博彩",
+            "网投",
+            "棋牌",
+            "真人荷官",
+            "体育博彩",
+            "电竞投注",
+            "验资",
+            "上分",
+            "下分",
+            "包杀",
+            "包赔",
+            "赔率"
+    };
+    private static final String[] GAMBLING_PROMO_CUES = new String[]{
+            "http://",
+            "https://",
+            ".com",
+            ".ag",
+            ".bet",
+            ".vip",
+            ".cc",
+            ".top",
+            "网址",
+            "官方",
+            "注册",
+            "开户",
+            "下载",
+            "代理",
+            "放心赢",
+            "立即加入",
+            "联系客服",
+            "usdt"
+    };
+
     private long compiledToken = Long.MIN_VALUE;
     private List<CompiledRule> globalRules = List.of();
     private List<CompiledRule> globalExclusions = List.of();
@@ -31,8 +68,8 @@ public final class FilterEngine {
             activeExclusions.addAll(globalExclusions);
         }
         if (chatRuleSet != null) {
-            activeRules.addAll(compile(chatRuleSet.rules));
-            activeExclusions.addAll(compile(chatRuleSet.exclusions));
+            activeRules.addAll(compile(filterChatScopedRules(chatRuleSet.rules)));
+            activeExclusions.addAll(compile(filterChatScopedRules(chatRuleSet.exclusions)));
         }
 
         CompiledRule exclusion = firstMatch(activeExclusions, snapshot);
@@ -104,6 +141,20 @@ public final class FilterEngine {
         return compiled;
     }
 
+    private static List<FilterConfig.RuleSpec> filterChatScopedRules(List<FilterConfig.RuleSpec> rules) {
+        List<FilterConfig.RuleSpec> filtered = new ArrayList<>();
+        for (FilterConfig.RuleSpec rule : rules) {
+            if (rule == null) {
+                continue;
+            }
+            if (rule.target == FilterConfig.RuleTarget.CHAT) {
+                continue;
+            }
+            filtered.add(rule);
+        }
+        return filtered;
+    }
+
     private static CompiledRule firstMatch(List<CompiledRule> rules, MessageSnapshot snapshot) {
         for (CompiledRule rule : rules) {
             if (rule.matches(snapshot)) {
@@ -111,6 +162,39 @@ public final class FilterEngine {
             }
         }
         return null;
+    }
+
+    public static boolean isLikelyGamblingPromotion(MessageSnapshot snapshot) {
+        if (snapshot == null) {
+            return false;
+        }
+        String content = snapshot.combinedVisibleContent();
+        if (content.isBlank()) {
+            return false;
+        }
+        String normalized = content.toLowerCase(Locale.ROOT);
+        int gamblingHits = keywordHits(normalized, GAMBLING_KEYWORDS);
+        if (gamblingHits == 0) {
+            return false;
+        }
+        int promoHits = keywordHits(normalized, GAMBLING_PROMO_CUES);
+        if (snapshot.hasInlineButtons) {
+            promoHits++;
+        }
+        if (normalized.contains("://")) {
+            promoHits++;
+        }
+        return gamblingHits >= 2 || (gamblingHits >= 1 && promoHits >= 2);
+    }
+
+    private static int keywordHits(String value, String[] keywords) {
+        int hits = 0;
+        for (String keyword : keywords) {
+            if (value.contains(keyword.toLowerCase(Locale.ROOT))) {
+                hits++;
+            }
+        }
+        return hits;
     }
 
     private static final class CompiledRule {

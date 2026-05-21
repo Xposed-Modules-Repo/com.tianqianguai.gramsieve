@@ -40,7 +40,7 @@ public final class MessageSnapshot {
         List<String> values = new ArrayList<>();
         switch (target) {
             case TEXT:
-                maybeAdd(values, text);
+                addTextTargetValues(values);
                 break;
             case CAPTION:
                 maybeAdd(values, caption);
@@ -70,14 +70,34 @@ public final class MessageSnapshot {
         return values;
     }
 
+    public String combinedVisibleContent() {
+        List<String> values = new ArrayList<>();
+        addTextTargetValues(values);
+        return String.join(" ", values).trim();
+    }
+
     public String stableKey() {
-        return dialogId + ":" + senderId + ":" + messageId + ":" + text.hashCode() + ":" + caption.hashCode() + ":" + buttonText.hashCode();
+        return dialogId
+                + ":" + senderId
+                + ":" + messageId
+                + ":" + text.hashCode()
+                + ":" + caption.hashCode()
+                + ":" + buttonText.hashCode()
+                + ":" + senderName.hashCode()
+                + ":" + chatName.hashCode()
+                + ":" + hasInlineButtons;
     }
 
     private static void maybeAdd(List<String> values, String value) {
         if (value != null && !value.isBlank()) {
             values.add(value);
         }
+    }
+
+    private void addTextTargetValues(List<String> values) {
+        maybeAdd(values, text);
+        maybeAdd(values, caption);
+        maybeAdd(values, buttonText);
     }
 
     private static String normalized(String value) {

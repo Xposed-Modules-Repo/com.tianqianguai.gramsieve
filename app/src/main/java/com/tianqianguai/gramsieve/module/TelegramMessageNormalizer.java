@@ -27,6 +27,11 @@ final class TelegramMessageNormalizer {
         long senderId = resolveSenderId(messageObject, messageOwner);
         String senderName = resolveSenderName(cell, messageObject, currentAccount, senderId);
         String chatName = resolveChatName(cell, messageObject, currentAccount, dialogId);
+        PinnedMessageContext pinnedContext = resolvePinnedMessageContext(cell, messageObject, currentAccount);
+        text = mergeNormalized(text, pinnedContext.text);
+        caption = mergeNormalized(caption, pinnedContext.caption);
+        buttonText = mergeNormalized(buttonText, pinnedContext.buttonText);
+        senderName = mergeNormalized(senderName, pinnedContext.senderName);
 
         return new MessageSnapshot(
                 dialogId,
@@ -39,6 +44,42 @@ final class TelegramMessageNormalizer {
                 chatName,
                 !buttonText.isBlank()
         );
+    }
+
+    private static PinnedMessageContext resolvePinnedMessageContext(Object cell, Object messageObject, int account) {
+        Object pinnedMessageObject = resolvePinnedMessageObject(messageObject);
+        if (pinnedMessageObject == null || pinnedMessageObject == messageObject) {
+            return PinnedMessageContext.EMPTY;
+        }
+        Object pinnedOwner = Reflect.field(pinnedMessageObject, "messageOwner");
+        long pinnedSenderId = resolveSenderId(pinnedMessageObject, pinnedOwner);
+        return new PinnedMessageContext(
+                normalizeText(Reflect.field(pinnedMessageObject, "messageText")),
+                normalizeText(Reflect.field(pinnedMessageObject, "caption")),
+                collectInlineButtons(pinnedOwner),
+                resolveSenderName(cell, pinnedMessageObject, account, pinnedSenderId)
+        );
+    }
+
+    private static Object resolvePinnedMessageObject(Object messageObject) {
+        Object messageOwner = Reflect.field(messageObject, "messageOwner");
+        Object action = Reflect.field(messageOwner, "action");
+        if (!isPinnedMessageAction(action)) {
+            return null;
+        }
+        Object replyMessageObject = Reflect.field(messageObject, "replyMessageObject");
+        if (replyMessageObject != null) {
+            return replyMessageObject;
+        }
+        return Reflect.invokeIfExists(messageObject, "getReplyMessageObject", new Class<?>[0]);
+    }
+
+    private static boolean isPinnedMessageAction(Object action) {
+        if (action == null) {
+            return false;
+        }
+        String className = action.getClass().getName();
+        return className.contains("PinMessage");
     }
 
     private static long resolveSenderId(Object messageObject, Object messageOwner) {
@@ -171,10 +212,42 @@ final class TelegramMessageNormalizer {
         builder.append(text);
     }
 
+    private static String mergeNormalized(String primary, String secondary) {
+        if (secondary == null || secondary.isBlank()) {
+            return primary == null ? "" : primary;
+        }
+        if (primary == null || primary.isBlank()) {
+            return secondary;
+        }
+        if (primary.equals(secondary) || primary.contains(secondary)) {
+            return primary;
+        }
+        if (secondary.contains(primary)) {
+            return secondary;
+        }
+        return primary + " " + secondary;
+    }
+
     private static String normalizeText(Object raw) {
         String value = raw == null ? "" : String.valueOf(raw);
         value = ZERO_WIDTH.matcher(value).replaceAll("");
         value = WHITESPACE.matcher(value).replaceAll(" ").trim();
         return value;
+    }
+
+    private static final class PinnedMessageContext {
+        static final PinnedMessageContext EMPTY = new PinnedMessageContext("", "", "", "");
+
+        final String text;
+        final String caption;
+        final String buttonText;
+        final String senderName;
+
+        PinnedMessageContext(String text, String caption, String buttonText, String senderName) {
+            this.text = text;
+            this.caption = caption;
+            this.buttonText = buttonText;
+            this.senderName = senderName;
+        }
     }
 }

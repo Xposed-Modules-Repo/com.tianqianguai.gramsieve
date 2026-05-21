@@ -168,4 +168,154 @@ public class FilterEngineTest {
         assertTrue(decision.matched);
         assertTrue(decision.reason.startsWith("hard match"));
     }
+
+    @Test
+    public void chatScopedChatTargetRuleDoesNotHideEntireChat() {
+        FilterConfig config = FilterConfig.createDefault();
+        FilterConfig.ChatRuleSet chatRuleSet = config.getOrCreateChatRuleSet(-5005L);
+        chatRuleSet.rules = RuleTextCodec.parse("chat:吃瓜联盟", FilterConfig.RuleMode.KEYWORD);
+        config.updatedAtEpochMs = 7L;
+
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -5005L,
+                204L,
+                14L,
+                "普通聊天内容",
+                "",
+                "",
+                "normal_sender",
+                "TG吃瓜联盟总群",
+                false
+        );
+
+        FilterDecision decision = new FilterEngine().evaluate(config, snapshot);
+        assertFalse(decision.matched);
+    }
+
+    @Test
+    public void chatScopedTextRuleStillFiltersMatchingMessage() {
+        FilterConfig config = FilterConfig.createDefault();
+        FilterConfig.ChatRuleSet chatRuleSet = config.getOrCreateChatRuleSet(-5006L);
+        chatRuleSet.rules = RuleTextCodec.parse("text:只屏蔽这句", FilterConfig.RuleMode.KEYWORD);
+        config.updatedAtEpochMs = 8L;
+
+        MessageSnapshot matchingSnapshot = new MessageSnapshot(
+                -5006L,
+                205L,
+                15L,
+                "普通聊天，但是只屏蔽这句",
+                "",
+                "",
+                "normal_sender",
+                "TG吃瓜联盟总群",
+                false
+        );
+        MessageSnapshot unrelatedSnapshot = new MessageSnapshot(
+                -5006L,
+                206L,
+                16L,
+                "普通聊天内容",
+                "",
+                "",
+                "normal_sender",
+                "TG吃瓜联盟总群",
+                false
+        );
+
+        FilterDecision matchingDecision = new FilterEngine().evaluate(config, matchingSnapshot);
+        FilterDecision unrelatedDecision = new FilterEngine().evaluate(config, unrelatedSnapshot);
+
+        assertTrue(matchingDecision.matched);
+        assertFalse(unrelatedDecision.matched);
+    }
+
+    @Test
+    public void chatScopedChatTargetExclusionDoesNotKeepEntireChat() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.globalRules = RuleTextCodec.parse("text:全局屏蔽词", FilterConfig.RuleMode.KEYWORD);
+        FilterConfig.ChatRuleSet chatRuleSet = config.getOrCreateChatRuleSet(-5007L);
+        chatRuleSet.exclusions = RuleTextCodec.parse("chat:吃瓜联盟", FilterConfig.RuleMode.KEYWORD);
+        config.updatedAtEpochMs = 9L;
+
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -5007L,
+                207L,
+                17L,
+                "这条包含全局屏蔽词",
+                "",
+                "",
+                "normal_sender",
+                "TG吃瓜联盟总群",
+                false
+        );
+
+        FilterDecision decision = new FilterEngine().evaluate(config, snapshot);
+        assertTrue(decision.matched);
+        assertFalse(decision.excluded);
+    }
+
+    @Test
+    public void textTargetAlsoMatchesCaptionAndButtons() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.globalRules = RuleTextCodec.parse("text:放心赢", FilterConfig.RuleMode.KEYWORD);
+        config.updatedAtEpochMs = 10L;
+
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -6006L,
+                208L,
+                18L,
+                "图片",
+                "普通图片说明",
+                "8T.COM放心赢 https://usdt03.ag/?cid=505817",
+                "sender",
+                "spam room",
+                true
+        );
+
+        FilterDecision decision = new FilterEngine().evaluate(config, snapshot);
+        assertTrue(decision.matched);
+        assertTrue(decision.reason.startsWith("keyword match"));
+    }
+
+    @Test
+    public void obviousGamblingPromotionDoesNotMatchWithoutExplicitRule() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.updatedAtEpochMs = 11L;
+
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -7007L,
+                209L,
+                19L,
+                "图片",
+                "8T娱乐城 全球数字网投领导者",
+                "立即加入 https://usdt03.ag/?cid=505817",
+                "promo_bot",
+                "spam room",
+                true
+        );
+
+        FilterDecision decision = new FilterEngine().evaluate(config, snapshot);
+        assertFalse(decision.matched);
+    }
+
+    @Test
+    public void gamblingDiscussionWithoutPromoCueDoesNotTriggerBuiltinHeuristic() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.updatedAtEpochMs = 12L;
+
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -8008L,
+                210L,
+                20L,
+                "今天在讨论博彩行业监管变化",
+                "",
+                "",
+                "news_sender",
+                "news room",
+                false
+        );
+
+        FilterDecision decision = new FilterEngine().evaluate(config, snapshot);
+        assertFalse(decision.matched);
+    }
 }

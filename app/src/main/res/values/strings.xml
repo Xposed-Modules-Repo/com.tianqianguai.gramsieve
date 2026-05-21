@@ -37,15 +37,24 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="dialog_match_section_hint">When these rules match, the hide, collapse, or debug-mark action above will run.</string>
     <string name="dialog_keep_section_title">These rules always keep messages visible</string>
     <string name="dialog_keep_section_hint">Exclusions win before filter rules. Use them as a whitelist for admins, notices, or specific chat names.</string>
+    <string name="dialog_rule_editor_title">Rules</string>
+    <string name="dialog_rule_editor_hint_global">Choose whether you are editing filter rules or always-keep rules, then choose the field to check. Switching choices keeps what you typed.</string>
+    <string name="dialog_rule_editor_hint_chat">This editor only affects the current chat. Choose filter or always-keep, then choose the field to check. Switching choices keeps what you typed.</string>
+    <string name="dialog_rule_kind_filter">Filter</string>
+    <string name="dialog_rule_kind_keep">Always keep</string>
+    <string name="dialog_target_group_title">Check target</string>
     <string name="dialog_target_label_any">Any field</string>
     <string name="dialog_target_label_text">Message text</string>
     <string name="dialog_target_label_caption">Caption</string>
     <string name="dialog_target_label_button">Buttons</string>
     <string name="dialog_target_label_sender">Sender</string>
     <string name="dialog_target_label_chat">Chat</string>
+    <string name="dialog_target_label_with_count">%1$s (%2$d)</string>
     <string name="dialog_target_hint">This group only checks: %1$s</string>
     <string name="dialog_input_label_keywords">%1$s keywords</string>
     <string name="dialog_input_label_regex">%1$s regex</string>
+    <string name="dialog_input_label_keywords_compact">Keywords</string>
+    <string name="dialog_input_label_regex_compact">Regex</string>
     <string name="dialog_input_hint_keywords">One rule per line. This box only checks %1$s. No prefix is needed here.</string>
     <string name="dialog_input_hint_regex">One Java regex per line. This box only checks %1$s. No prefix is needed here.</string>
     <string name="dialog_preview_title">Plain-language explanation:</string>
@@ -70,5 +79,8 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="dialog_rule_chat_scope_warning">This window is already scoped to a single chat, so if the chat name matches, this is close to matching the entire chat.</string>
     <string name="hook_menu_label_global">GramSieve filters</string>
     <string name="hook_menu_label_chat">GramSieve chat filters</string>
+    <string name="hook_menu_label_block_message">Block this message</string>
+    <string name="hook_block_saved_toast">Added a rule for this message</string>
+    <string name="hook_block_no_text_toast">This message has no text to extract</string>
     <string name="dialog_saved_toast">GramSieve rules saved</string>
 </resources>
