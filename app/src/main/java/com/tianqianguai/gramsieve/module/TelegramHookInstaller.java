@@ -49,6 +49,7 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_GLOBAL = 0x47530012;
     private static final int MENU_ID_BLOCK_MESSAGE = 0x47530013;
     private static final int MENU_ID_SCROLL_TOP = 0x47530014;
+    private static final int SCROLL_JUMP_THRESHOLD = 50;
 
     private final XposedModule module;
     private XposedConfigProvider configProvider;
@@ -76,6 +77,7 @@ final class TelegramHookInstaller {
     private volatile long trackedDialogId;
     private volatile int lastTopmostMessageId;
     private volatile boolean readPositionDirty;
+    private volatile boolean jumpDetected;
 
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
@@ -100,6 +102,7 @@ final class TelegramHookInstaller {
         hookChatActivityMenu(classLoader);
         hookChatActivityResume(classLoader);
         hookChatActivityPause(classLoader);
+        hookScrollToLastMessage(classLoader);
         hookMessageContextMenu(classLoader);
         hookSettingsActivityMenu(classLoader);
         hookProfileSettingsMenu(classLoader);
@@ -311,6 +314,49 @@ final class TelegramHookInstaller {
         } catch (Throwable throwable) {
             error("Failed to hook ChatActivity.onPause", throwable);
         }
+    }
+
+    private void hookScrollToLastMessage(ClassLoader classLoader) {
+        try {
+            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Method scrollToLast = Reflect.method(
+                    chatActivityClass,
+                    "scrollToLastMessage",
+                    boolean.class,
+                    boolean.class,
+                    Runnable.class
+            );
+            hook(scrollToLast, chain -> {
+                try {
+                    Object chatActivity = chain.getThisObject();
+                    saveReadPositionBeforeJump(chatActivity);
+                } catch (Throwable throwable) {
+                    error("scrollToLastMessage pre-save failed", throwable);
+                }
+                return chain.proceed();
+            });
+            info("Hooked ChatActivity.scrollToLastMessage");
+        } catch (Throwable throwable) {
+            error("Failed to hook ChatActivity.scrollToLastMessage", throwable);
+        }
+    }
+
+    private void saveReadPositionBeforeJump(Object chatActivity) {
+        if (suppressNextSaveBeforeJump) {
+            return;
+        }
+        long dialogId = trackedDialogId;
+        int currentPos = lastTopmostMessageId;
+        if (dialogId == 0L || currentPos <= 0) {
+            return;
+        }
+        Context context = resolveContextFromActivity(chatActivity);
+        if (context == null) {
+            return;
+        }
+        ChatReadPositionStore.save(context.getApplicationContext(), dialogId, currentPos);
+        jumpDetected = true;
+        info("SaveBeforeJump: saved position " + currentPos + " for dialog " + dialogId);
     }
 
     private void hookMessageContextMenu(ClassLoader classLoader) {
@@ -1684,26 +1730,29 @@ final class TelegramHookInstaller {
         trackedDialogId = dialogId;
         lastTopmostMessageId = 0;
         readPositionDirty = false;
+        jumpDetected = false;
     }
 
     private void flushReadPosition(Object chatActivity) {
         long dialogId = trackedDialogId;
         int messageId = lastTopmostMessageId;
+        boolean dirty = readPositionDirty;
+        boolean jumped = jumpDetected;
+        trackedDialogId = 0L;
+        lastTopmostMessageId = 0;
+        readPositionDirty = false;
+        jumpDetected = false;
+        info("FlushReadPos: dialogId=" + dialogId + " msgId=" + messageId + " dirty=" + dirty + " jumped=" + jumped);
         if (dialogId == 0L || messageId <= 0) {
-            trackedDialogId = 0L;
-            lastTopmostMessageId = 0;
-            readPositionDirty = false;
             return;
         }
-        if (readPositionDirty) {
+        if (dirty && !jumped) {
             Context context = resolveContextFromActivity(chatActivity);
             if (context != null) {
                 ChatReadPositionStore.save(context.getApplicationContext(), dialogId, messageId);
+                info("FlushReadPos: saved " + messageId + " for dialog " + dialogId);
             }
-            readPositionDirty = false;
         }
-        trackedDialogId = 0L;
-        lastTopmostMessageId = 0;
     }
 
     private void trackTopmostMessage(View cell) {
@@ -1727,6 +1776,12 @@ final class TelegramHookInstaller {
             return;
         }
         if (messageId != lastTopmostMessageId) {
+            int oldId = lastTopmostMessageId;
+            if (oldId > 0 && messageId > oldId && (messageId - oldId) >= SCROLL_JUMP_THRESHOLD) {
+                ChatReadPositionStore.save(cell.getContext(), dialogId, oldId);
+                jumpDetected = true;
+                info("JumpDetected: saved old position " + oldId + " before jump to " + messageId + " (delta=" + (messageId - oldId) + ") dialog=" + dialogId);
+            }
             lastTopmostMessageId = messageId;
             readPositionDirty = true;
         }
@@ -1774,6 +1829,7 @@ final class TelegramHookInstaller {
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_SCROLL_TOP);
         subItemView.setOnClickListener(v -> {
             try {
+                info("ScrollToTop menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
                 scrollChatToTop(chatActivity, v.getContext());
             } catch (Throwable throwable) {
@@ -1782,172 +1838,61 @@ final class TelegramHookInstaller {
         });
     }
 
+    private volatile boolean suppressNextSaveBeforeJump;
+
     private void scrollChatToTop(Object chatActivity, Context context) {
-        Object chatListView = Reflect.field(chatActivity, "chatListView");
-        if (!(chatListView instanceof View)) {
-            info("chatListView not found; cannot scroll");
-            Toast.makeText(context, localizedScrollUnavailable(context), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        View listView = (View) chatListView;
         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
         ChatReadPositionStore.ReadPosition saved = dialogId != 0L
                 ? ChatReadPositionStore.load(context.getApplicationContext(), dialogId)
                 : null;
         int targetMessageId = saved != null ? saved.messageId : 0;
+        info("ScrollToTop: dialogId=" + dialogId + " targetMsgId=" + targetMessageId + " saved=" + (saved != null));
         if (targetMessageId > 0) {
             Toast.makeText(context, localizedScrollToLastStarted(context), Toast.LENGTH_SHORT).show();
+            boolean invoked = invokeScrollToMessageId(chatActivity, targetMessageId);
+            if (invoked) {
+                info("Called scrollToMessageId(" + targetMessageId + ")");
+            } else {
+                info("scrollToMessageId failed, falling back to scrollToLastMessage");
+                suppressNextSaveBeforeJump = true;
+                try {
+                    Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
+                            new Class<?>[]{boolean.class, boolean.class}, false, false);
+                } finally {
+                    suppressNextSaveBeforeJump = false;
+                }
+            }
+            Toast.makeText(context, localizedScrollToLastDone(context), Toast.LENGTH_SHORT).show();
         } else {
             Toast.makeText(context, localizedScrollToTopStarted(context), Toast.LENGTH_SHORT).show();
-        }
-        scrollStepByStep(chatActivity, listView, targetMessageId, 0, context);
-    }
-
-    private void scrollStepByStep(Object chatActivity, View listView, int targetMessageId, int attempt, Context context) {
-        if (!(listView instanceof android.widget.ListView) && !isRecyclerView(listView)) {
-            info("Unsupported list view type: " + listView.getClass().getName());
-            return;
-        }
-        int maxAttempts = 2000;
-        if (attempt >= maxAttempts) {
-            info("Scroll gave up after " + maxAttempts + " attempts");
-            Toast.makeText(context, localizedScrollGaveUp(context), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (targetMessageId > 0 && isMessageLoaded(chatActivity, targetMessageId)) {
-            scrollToMessage(chatActivity, listView, targetMessageId);
-            info("Found target message " + targetMessageId + " after " + attempt + " scrolls");
-            Toast.makeText(context, localizedScrollToLastDone(context), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        Object adapter = Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0]);
-        int prevCount = adapter != null ? Reflect.asInt(Reflect.invokeIfExists(adapter, "getItemCount", new Class<?>[0]),
-                Reflect.asInt(Reflect.invokeIfExists(adapter, "getCount", new Class<?>[0]), -1)) : -1;
-        boolean reachedTop = scrollToFirstLoadedMessage(listView);
-        if (targetMessageId <= 0 && reachedTop && isOldestMessageIdOne(chatActivity)) {
-            info("Reached channel top after " + attempt + " scrolls");
+            suppressNextSaveBeforeJump = true;
+            try {
+                Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
+                        new Class<?>[]{boolean.class, boolean.class}, false, false);
+            } finally {
+                suppressNextSaveBeforeJump = false;
+            }
             Toast.makeText(context, localizedScrollToTopDone(context), Toast.LENGTH_SHORT).show();
-            return;
         }
-        final int nextAttempt = attempt + 1;
-        listView.postDelayed(() -> {
-            Object currentAdapter = Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0]);
-            int currentCount = currentAdapter != null ? Reflect.asInt(
-                    Reflect.invokeIfExists(currentAdapter, "getItemCount", new Class<?>[0]),
-                    Reflect.asInt(Reflect.invokeIfExists(currentAdapter, "getCount", new Class<?>[0]), -1)) : -1;
-            if (currentCount < 0) {
-                info("Adapter unavailable during scroll step " + nextAttempt);
-                return;
-            }
-            if (reachedTop && currentCount == prevCount) {
-                info("No new messages loaded at step " + nextAttempt);
-                if (targetMessageId > 0) {
-                    if (isMessageLoaded(chatActivity, targetMessageId)) {
-                        scrollToMessage(chatActivity, listView, targetMessageId);
-                        Toast.makeText(context, localizedScrollToLastDone(context), Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    info("Target message " + targetMessageId + " not found and no more history");
-                    Toast.makeText(context, localizedScrollToLastNotFound(context), Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                if (isOldestMessageIdOne(chatActivity)) {
-                    info("Reached channel top (no more history)");
-                    Toast.makeText(context, localizedScrollToTopDone(context), Toast.LENGTH_SHORT).show();
-                    return;
-                }
-            }
-            scrollStepByStep(chatActivity, listView, targetMessageId, nextAttempt, context);
-        }, 400);
     }
 
-    private boolean scrollToFirstLoadedMessage(View listView) {
-        String className = listView.getClass().getName();
-        if (className.contains("RecyclerView")) {
-            Reflect.invokeIfExists(listView, "scrollToPosition", new Class<?>[]{int.class}, 0);
-            Reflect.invokeIfExists(listView, "smoothScrollToPosition", new Class<?>[]{int.class}, 0);
-            return true;
-        }
-        if (listView instanceof android.widget.ListView) {
-            ((android.widget.ListView) listView).setSelection(0);
-            return true;
-        }
-        return false;
-    }
-
-    private boolean isMessageLoaded(Object chatActivity, int targetMessageId) {
+    private boolean invokeScrollToMessageId(Object chatActivity, int messageId) {
         try {
-            Object messages = Reflect.field(chatActivity, "messages");
-            if (messages instanceof java.util.List) {
-                java.util.List<?> msgList = (java.util.List<?>) messages;
-                for (Object msg : msgList) {
-                    if (msg == null) continue;
-                    int id = resolveMessageId(msg);
-                    if (id == targetMessageId) {
-                        return true;
-                    }
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
-    }
-
-    private void scrollToMessage(Object chatActivity, View listView, int targetMessageId) {
-        try {
-            Object messages = Reflect.field(chatActivity, "messages");
-            if (messages instanceof java.util.List) {
-                java.util.List<?> msgList = (java.util.List<?>) messages;
-                int index = -1;
-                for (int i = 0; i < msgList.size(); i++) {
-                    Object msg = msgList.get(i);
-                    if (msg == null) continue;
-                    if (resolveMessageId(msg) == targetMessageId) {
-                        index = i;
-                        break;
-                    }
-                }
-                if (index >= 0) {
-                    int adapterPosition = msgList.size() - 1 - index;
-                    Reflect.invokeIfExists(listView, "scrollToPosition", new Class<?>[]{int.class}, adapterPosition);
-                    Reflect.invokeIfExists(listView, "smoothScrollToPosition", new Class<?>[]{int.class}, adapterPosition);
-                    info("Scrolled to message " + targetMessageId + " at adapter position " + adapterPosition);
-                }
-            }
+            Class<?> clazz = chatActivity.getClass();
+            Method method = Reflect.method(
+                    clazz,
+                    "scrollToMessageId",
+                    int.class, int.class, boolean.class, int.class, boolean.class, int.class
+            );
+            Reflect.invoke(method, chatActivity, messageId, 0, true, 0, true, 0);
+            return true;
+        } catch (NoSuchMethodException ignored) {
+            info("scrollToMessageId(IIZIZI) not found");
+            return false;
         } catch (Throwable throwable) {
-            error("Failed to scroll to message " + targetMessageId, throwable);
+            error("scrollToMessageId invoke failed", throwable);
+            return false;
         }
-    }
-
-    private boolean isOldestMessageIdOne(Object chatActivity) {
-        try {
-            Object messages = Reflect.field(chatActivity, "messages");
-            if (messages instanceof java.util.List) {
-                java.util.List<?> msgList = (java.util.List<?>) messages;
-                if (msgList.isEmpty()) {
-                    return false;
-                }
-                Object oldest = msgList.get(msgList.size() - 1);
-                if (oldest == null) {
-                    return false;
-                }
-                int id = resolveMessageId(oldest);
-                return id == 1;
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
-    }
-
-    private boolean isRecyclerView(View view) {
-        Class<?> current = view.getClass();
-        while (current != null) {
-            if ("androidx.recyclerview.widget.RecyclerView".equals(current.getName())) {
-                return true;
-            }
-            current = current.getSuperclass();
-        }
-        return view.getClass().getName().contains("RecyclerView");
     }
 
     private int resolveScrollTopIcon(Context context) {
