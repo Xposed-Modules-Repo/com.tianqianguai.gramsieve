@@ -2,7 +2,6 @@ package com.tianqianguai.gramsieve.config;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.util.Log;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -76,7 +75,7 @@ public final class ModuleConfigStore {
             return localConfig;
         }
         if (service == null || (service.getFrameworkProperties() & XposedService.PROP_CAP_REMOTE) == 0L) {
-            Log.i(TAG, "ModuleConfigStore: remote service unavailable");
+            ModuleLogger.config(TAG, "ModuleConfigStore: remote service unavailable");
             return localConfig;
         }
         try {
@@ -89,16 +88,16 @@ public final class ModuleConfigStore {
                         .edit()
                         .putString(KEY_CONFIG_JSON, toJson(remoteConfig))
                         .commit();
-                Log.i(TAG, "ModuleConfigStore: pulled newer remote preferences into local config");
+                ModuleLogger.config(TAG, "ModuleConfigStore: pulled newer remote preferences into local config");
                 return remoteConfig;
             }
             remotePreferences
                     .edit()
                     .putString(KEY_CONFIG_JSON, toJson(localConfig))
                     .commit();
-            Log.i(TAG, "ModuleConfigStore: synced config to remote preferences");
+            ModuleLogger.config(TAG, "ModuleConfigStore: synced config to remote preferences");
         } catch (RuntimeException exception) {
-            Log.e(TAG, "ModuleConfigStore: failed to sync remote preferences", exception);
+            ModuleLogger.configError(TAG, "ModuleConfigStore: failed to sync remote preferences", exception);
         }
         return localConfig;
     }

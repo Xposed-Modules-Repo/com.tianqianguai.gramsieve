@@ -1,6 +1,6 @@
 package com.tianqianguai.gramsieve.module;
 
-import android.util.Log;
+import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
@@ -13,7 +13,8 @@ public final class GramSieveModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(XposedModuleInterface.ModuleLoadedParam param) {
-        log(Log.INFO, TAG, "Module loaded by " + getFrameworkName() + " " + getFrameworkVersion());
+        ModuleLogger.setHookProcessMode(this);
+        ModuleLogger.lifecycle(TAG, "Module loaded by " + getFrameworkName() + " " + getFrameworkVersion());
     }
 
     @Override
@@ -21,7 +22,7 @@ public final class GramSieveModule extends XposedModule {
         if (!TELEGRAM_PACKAGE.equals(param.getPackageName()) || !param.isFirstPackage()) {
             return;
         }
-        log(Log.INFO, TAG, "Telegram package loaded; waiting for app class loader");
+        ModuleLogger.lifecycle(TAG, "Telegram package loaded; waiting for app class loader");
     }
 
     @Override
@@ -32,7 +33,7 @@ public final class GramSieveModule extends XposedModule {
         try {
             hookInstaller.install(param.getClassLoader(), param.getApplicationInfo());
         } catch (Throwable throwable) {
-            log(Log.ERROR, TAG, "Failed to install Telegram hooks", throwable);
+            ModuleLogger.error(ModuleLogger.CAT_LIFECYCLE, TAG, "Failed to install Telegram hooks", throwable);
         }
     }
 }

@@ -3,8 +3,7 @@ package com.tianqianguai.gramsieve.config;
 import android.app.Activity;
 import android.content.Context;
 import android.os.Bundle;
-import android.util.Log;
-
+import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 
 public final class ConfigPersistActivity extends Activity {
@@ -26,13 +25,12 @@ public final class ConfigPersistActivity extends Activity {
             ));
             FilterConfig merged = ConfigUpdateReceiver.mergeForPersistence(local, incoming);
             ModuleConfigStore.save(this, merged);
-            Log.i(
-                    TAG,
+            ModuleLogger.config(TAG,
                     "ConfigPersistActivity: saved config updatedAt=" + merged.updatedAtEpochMs
                             + " chatRules=" + merged.chatRules.size()
             );
         } catch (RuntimeException exception) {
-            Log.e(TAG, "ConfigPersistActivity: failed to save config", exception);
+            ModuleLogger.configError(TAG, "ConfigPersistActivity: failed to save config", exception);
         } finally {
             finish();
             overridePendingTransition(0, 0);

@@ -83,4 +83,11 @@
     <string name="hook_block_saved_toast">已把这条消息加入屏蔽规则</string>
     <string name="hook_block_no_text_toast">这条消息没有可提取的文字</string>
     <string name="dialog_saved_toast">GramSieve 规则已保存</string>
+    <string name="dialog_view_logs">查看日志</string>
+    <string name="log_viewer_title">GramSieve 日志</string>
+    <string name="log_viewer_empty">暂无日志记录。</string>
+    <string name="log_viewer_export">导出</string>
+    <string name="log_viewer_clear">清空</string>
+    <string name="log_viewer_cleared">日志已清空</string>
+    <string name="log_viewer_exported">日志已复制到剪贴板</string>
 </resources>

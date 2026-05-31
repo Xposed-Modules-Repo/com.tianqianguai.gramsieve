@@ -4,7 +4,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.util.Base64;
-import android.util.Log;
 
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.MessageRuleFactory;
@@ -32,8 +31,7 @@ public final class ConfigUpdateReceiver extends BroadcastReceiver {
         ));
         FilterConfig merged = mergeForPersistence(local, incoming);
         ModuleConfigStore.save(context, merged);
-        Log.i(
-                TAG,
+        ModuleLogger.config(TAG,
                 "ConfigUpdateReceiver: saved config updatedAt=" + merged.updatedAtEpochMs
                         + " chatRules=" + merged.chatRules.size()
         );
@@ -48,7 +46,7 @@ public final class ConfigUpdateReceiver extends BroadcastReceiver {
             try {
                 return new String(Base64.decode(encoded, Base64.NO_WRAP), StandardCharsets.UTF_8);
             } catch (RuntimeException exception) {
-                Log.w(TAG, "ConfigUpdateReceiver: invalid base64 config", exception);
+                ModuleLogger.warn(ModuleLogger.CAT_CONFIG, TAG, "ConfigUpdateReceiver: invalid base64 config");
             }
         }
         return intent.getStringExtra(EXTRA_CONFIG_JSON);

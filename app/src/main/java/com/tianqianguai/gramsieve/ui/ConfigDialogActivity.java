@@ -1,5 +1,8 @@
 package com.tianqianguai.gramsieve.ui;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 import android.text.InputType;
@@ -24,11 +27,15 @@ import com.google.android.material.textfield.TextInputLayout;
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AppLocaleManager;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
+import com.tianqianguai.gramsieve.config.PersistentLogStore;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.RuleDraftMatrix;
 
+import java.text.DateFormat;
+import java.util.Date;
 import java.util.EnumMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 public final class ConfigDialogActivity extends AppCompatActivity {
@@ -353,6 +360,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
                 .setTitle(chatMode ? R.string.dialog_title_chat : R.string.dialog_title_global)
                 .setView(scrollView)
+                .setNeutralButton(R.string.dialog_view_logs, (d, which) -> showLogViewer())
                 .setNegativeButton(R.string.dialog_cancel, (d, which) -> finish())
                 .setPositiveButton(R.string.dialog_save, null)
                 .setOnDismissListener(d -> {
@@ -607,5 +615,64 @@ public final class ConfigDialogActivity extends AppCompatActivity {
 
     private int dp(int value) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics()));
+    }
+
+    private void showLogViewer() {
+        PersistentLogStore.LogSnapshot snapshot = PersistentLogStore.load(this);
+        DateFormat dateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM);
+
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout container = new LinearLayout(this);
+        container.setOrientation(LinearLayout.VERTICAL);
+        container.setPadding(dp(16), dp(8), dp(16), dp(8));
+        scroll.addView(container);
+
+        if (snapshot.entries.isEmpty()) {
+            addInfo(container, getString(R.string.log_viewer_empty));
+        } else {
+            for (PersistentLogStore.LogEntry entry : snapshot.entries) {
+                String time = dateFormat.format(new Date(entry.timestampEpochMs));
+                String label = time + " [" + entry.level + "] " + entry.category + "/" + entry.tag;
+                TextView header = addInfo(container, label);
+                header.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                if (!entry.message.isBlank()) {
+                    addInfo(container, entry.message);
+                }
+                if (!entry.throwable.isBlank()) {
+                    TextView tv = addInfo(container, entry.throwable);
+                    tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+                }
+            }
+        }
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.log_viewer_title)
+                .setView(scroll)
+                .setNeutralButton(R.string.log_viewer_export, (d, which) -> exportLogs(snapshot, dateFormat))
+                .setNegativeButton(R.string.log_viewer_clear, (d, which) -> {
+                    PersistentLogStore.clear(this);
+                    Toast.makeText(this, R.string.log_viewer_cleared, Toast.LENGTH_SHORT).show();
+                })
+                .setPositiveButton(R.string.dialog_cancel, null)
+                .show();
+    }
+
+    private void exportLogs(PersistentLogStore.LogSnapshot snapshot, DateFormat dateFormat) {
+        StringBuilder sb = new StringBuilder();
+        for (PersistentLogStore.LogEntry entry : snapshot.entries) {
+            String time = dateFormat.format(new Date(entry.timestampEpochMs));
+            sb.append(time).append(" [").append(entry.level).append("] ");
+            sb.append(entry.category).append("/").append(entry.tag).append(": ");
+            sb.append(entry.message);
+            if (!entry.throwable.isBlank()) {
+                sb.append("\n").append(entry.throwable);
+            }
+            sb.append("\n");
+        }
+        ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard != null) {
+            clipboard.setPrimaryClip(ClipData.newPlainText("GramSieve Logs", sb.toString()));
+        }
+        Toast.makeText(this, R.string.log_viewer_exported, Toast.LENGTH_SHORT).show();
     }
 }
