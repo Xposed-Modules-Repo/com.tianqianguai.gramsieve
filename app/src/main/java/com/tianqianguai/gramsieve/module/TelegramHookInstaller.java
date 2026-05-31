@@ -933,20 +933,25 @@ final class TelegramHookInstaller {
         }
         info("SelectAll: adapter=" + adapter.getClass().getSimpleName());
 
-        // Get visible cells
-        java.util.List<View> cells = new java.util.ArrayList<>();
-        findAllViewsByClassName(fragmentView, "SharedDocumentCell", cells, 0);
-        info("SelectAll: found " + cells.size() + " SharedDocumentCell views");
+        // Get ALL items from adapter (not just visible cells)
+        Object adapterObj = adapter;
+        Integer itemCount = Reflect.asInt(Reflect.invokeIfExists(adapterObj, "getItemCount", new Class<?>[0]), 0);
+        info("SelectAll: adapter has " + itemCount + " items total");
+        if (itemCount <= 0) return;
 
-        java.util.List<View> validCells = new java.util.ArrayList<>();
-        for (View cell : cells) {
-            if (cell.getVisibility() != View.VISIBLE || cell.getWidth() <= 0) continue;
-            Object message = Reflect.field(cell, "message");
-            if (message == null) continue;
-            validCells.add(cell);
+        // Find getMessage method on adapter
+        java.lang.reflect.Method getMessageMethod = null;
+        for (java.lang.reflect.Method m : adapterObj.getClass().getDeclaredMethods()) {
+            if (m.getName().equals("getMessage") && m.getParameterCount() == 1) {
+                getMessageMethod = m;
+                getMessageMethod.setAccessible(true);
+                break;
+            }
         }
-        info("SelectAll: " + validCells.size() + " valid cells");
-        if (validCells.isEmpty()) return;
+        if (getMessageMethod == null) {
+            info("SelectAll: getMessage not found on adapter");
+            return;
+        }
 
         // Find uiCallback (SearchViewPager) from the container
         // SearchDownloadsContainer delegates all selection to uiCallback.toggleItemSelection()
@@ -956,13 +961,6 @@ final class TelegramHookInstaller {
             return;
         }
         info("SelectAll: uiCallback class=" + uiCallback.getClass().getSimpleName());
-
-        // Get adapter to retrieve MessageObjects
-        Object adapterObj = Reflect.field(container, "adapter");
-        if (adapterObj == null) {
-            info("SelectAll: adapter not found");
-            return;
-        }
 
         // Find toggleItemSelection method by searching the class hierarchy
         java.lang.reflect.Method toggleMethod = null;
@@ -1026,21 +1024,22 @@ final class TelegramHookInstaller {
             info("SelectAll: already selected IDs: " + alreadySelectedIds.size());
         }
 
-        // Call toggleItemSelection for each cell, SKIP already-selected items
-        // to prevent selectedFiles from becoming empty (which dismisses action mode)
+        // Call toggleItemSelection for ALL adapter items, SKIP already-selected
         int selected = 0;
-        for (View cell : validCells) {
-            Object message = Reflect.field(cell, "message");
+        for (int i = 0; i < itemCount; i++) {
+            Object message;
+            try {
+                message = getMessageMethod.invoke(adapterObj, i);
+            } catch (Throwable ignored) { continue; }
             if (message == null) continue;
-            // Check if this message is already selected
             Object msgIdObj = Reflect.invokeIfExists(message, "getId", new Class<?>[0]);
             int msgId = msgIdObj instanceof Integer ? (Integer) msgIdObj : 0;
             if (alreadySelectedIds.contains(msgId)) continue;
             try {
-                toggleMethod.invoke(uiCallback, message, cell, 0);
+                toggleMethod.invoke(uiCallback, message, null, 0);
                 selected++;
             } catch (Throwable t) {
-                info("SelectAll: toggle error: " + (t.getCause() != null ? t.getCause().getMessage() : t.getMessage()));
+                info("SelectAll: toggle error at " + i + ": " + (t.getCause() != null ? t.getCause().getMessage() : t.getMessage()));
             }
         }
         info("SelectAll: " + selected + " new items selected, " + alreadySelectedIds.size() + " preserved");
