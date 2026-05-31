@@ -1024,7 +1024,21 @@ final class TelegramHookInstaller {
             info("SelectAll: already selected IDs: " + alreadySelectedIds.size());
         }
 
+        // Build a map of visible message ID -> SharedDocumentCell view
+        java.util.Map<Integer, View> visibleViews = new java.util.HashMap<>();
+        java.util.List<View> cells = new java.util.ArrayList<>();
+        findAllViewsByClassName(fragmentView, "SharedDocumentCell", cells, 0);
+        for (View cell : cells) {
+            if (cell.getVisibility() != View.VISIBLE) continue;
+            Object msg = Reflect.field(cell, "message");
+            if (msg == null) continue;
+            Object idObj = Reflect.invokeIfExists(msg, "getId", new Class<?>[0]);
+            if (idObj instanceof Integer) visibleViews.put((Integer) idObj, cell);
+        }
+        info("SelectAll: " + visibleViews.size() + " visible cells mapped");
+
         // Call toggleItemSelection for ALL adapter items, SKIP already-selected
+        // For visible items, pass the actual view so checkmark appears
         int selected = 0;
         for (int i = 0; i < itemCount; i++) {
             Object message;
@@ -1035,8 +1049,9 @@ final class TelegramHookInstaller {
             Object msgIdObj = Reflect.invokeIfExists(message, "getId", new Class<?>[0]);
             int msgId = msgIdObj instanceof Integer ? (Integer) msgIdObj : 0;
             if (alreadySelectedIds.contains(msgId)) continue;
+            View cellView = visibleViews.get(msgId);
             try {
-                toggleMethod.invoke(uiCallback, message, null, 0);
+                toggleMethod.invoke(uiCallback, message, cellView, 0);
                 selected++;
             } catch (Throwable t) {
                 info("SelectAll: toggle error at " + i + ": " + (t.getCause() != null ? t.getCause().getMessage() : t.getMessage()));
