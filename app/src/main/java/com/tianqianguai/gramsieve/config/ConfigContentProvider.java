@@ -19,11 +19,17 @@ public final class ConfigContentProvider extends ContentProvider {
     public static final String METHOD_GET_DIAGNOSTICS = "getDiagnostics";
     public static final String METHOD_APPEND_DIAGNOSTIC = "appendDiagnostic";
     public static final String METHOD_CLEAR_DIAGNOSTICS = "clearDiagnostics";
+    public static final String METHOD_GET_LOGS = "getLogs";
+    public static final String METHOD_APPEND_LOG = "appendLog";
+    public static final String METHOD_CLEAR_LOGS = "clearLogs";
     public static final String KEY_CONFIG_JSON = "config_json";
     public static final String KEY_UPDATED_AT_EPOCH_MS = "updated_at_epoch_ms";
     public static final String KEY_DIAGNOSTICS_JSON = "diagnostics_json";
     public static final String KEY_DIAGNOSTIC_COUNT = "diagnostic_count";
     public static final String KEY_DIAGNOSTIC_ENTRY_JSON = "diagnostic_entry_json";
+    public static final String KEY_LOGS_JSON = "logs_json";
+    public static final String KEY_LOG_COUNT = "log_count";
+    public static final String KEY_LOG_ENTRY_JSON = "log_entry_json";
 
     @Override
     public boolean onCreate() {
@@ -47,6 +53,15 @@ public final class ConfigContentProvider extends ContentProvider {
         }
         if (METHOD_CLEAR_DIAGNOSTICS.equals(method)) {
             return handleClearDiagnostics();
+        }
+        if (METHOD_GET_LOGS.equals(method)) {
+            return handleGetLogs();
+        }
+        if (METHOD_APPEND_LOG.equals(method)) {
+            return handleAppendLog(extras);
+        }
+        if (METHOD_CLEAR_LOGS.equals(method)) {
+            return handleClearLogs();
         }
         return super.call(method, arg, extras);
     }
@@ -116,6 +131,44 @@ public final class ConfigContentProvider extends ContentProvider {
             DiagnosticLogStore.clear(getContext());
         }
         bundle.putInt(KEY_DIAGNOSTIC_COUNT, 0);
+        return bundle;
+    }
+
+    @NonNull
+    private Bundle handleGetLogs() {
+        Bundle bundle = new Bundle();
+        if (getContext() == null) {
+            bundle.putString(KEY_LOGS_JSON, PersistentLogStore.toJson(new PersistentLogStore.LogSnapshot()));
+            bundle.putInt(KEY_LOG_COUNT, 0);
+            return bundle;
+        }
+        PersistentLogStore.LogSnapshot snapshot = PersistentLogStore.load(getContext());
+        bundle.putString(KEY_LOGS_JSON, PersistentLogStore.toJson(snapshot));
+        bundle.putInt(KEY_LOG_COUNT, snapshot.entries.size());
+        return bundle;
+    }
+
+    @NonNull
+    private Bundle handleAppendLog(@Nullable Bundle extras) {
+        Bundle bundle = new Bundle();
+        if (getContext() == null) {
+            bundle.putInt(KEY_LOG_COUNT, 0);
+            return bundle;
+        }
+        String entryJson = extras == null ? null : extras.getString(KEY_LOG_ENTRY_JSON, null);
+        PersistentLogStore.append(getContext(), PersistentLogStore.entryFromJson(entryJson));
+        PersistentLogStore.LogSnapshot snapshot = PersistentLogStore.load(getContext());
+        bundle.putInt(KEY_LOG_COUNT, snapshot.entries.size());
+        return bundle;
+    }
+
+    @NonNull
+    private Bundle handleClearLogs() {
+        Bundle bundle = new Bundle();
+        if (getContext() != null) {
+            PersistentLogStore.clear(getContext());
+        }
+        bundle.putInt(KEY_LOG_COUNT, 0);
         return bundle;
     }
 

@@ -4,6 +4,7 @@ import android.app.Application;
 
 import com.tianqianguai.gramsieve.config.AppLocaleManager;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
+import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import io.github.libxposed.service.XposedService;
 import io.github.libxposed.service.XposedServiceHelper;
@@ -14,6 +15,7 @@ public final class GramSieveApplication extends Application implements XposedSer
     @Override
     public void onCreate() {
         super.onCreate();
+        ModuleLogger.init(this);
         AppLocaleManager.apply(this, ModuleConfigStore.load(getSharedPreferences(
                 ModuleConfigStore.PREFS_NAME,
                 MODE_PRIVATE

@@ -83,4 +83,11 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="hook_block_saved_toast">Added a rule for this message</string>
     <string name="hook_block_no_text_toast">This message has no text to extract</string>
     <string name="dialog_saved_toast">GramSieve rules saved</string>
+    <string name="dialog_view_logs">View Logs</string>
+    <string name="log_viewer_title">GramSieve Logs</string>
+    <string name="log_viewer_empty">No log entries yet.</string>
+    <string name="log_viewer_export">Export</string>
+    <string name="log_viewer_clear">Clear</string>
+    <string name="log_viewer_cleared">Logs cleared</string>
+    <string name="log_viewer_exported">Logs exported to clipboard</string>
 </resources>

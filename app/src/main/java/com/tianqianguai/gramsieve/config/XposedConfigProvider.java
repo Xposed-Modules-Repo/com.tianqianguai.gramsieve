@@ -5,7 +5,6 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.SystemClock;
-import android.util.Log;
 
 import com.tianqianguai.gramsieve.core.FilterConfig;
 
@@ -103,45 +102,43 @@ public final class XposedConfigProvider {
             return null;
         }
         if (!remotePreferences.contains(ModuleConfigStore.KEY_CONFIG_JSON)) {
-            Log.i(TAG, "ConfigProvider: remote prefs empty");
+            ModuleLogger.config(TAG, "ConfigProvider: remote prefs empty");
             return null;
         }
         try {
             FilterConfig config = ModuleConfigStore.load(remotePreferences);
-            Log.i(
-                    TAG,
+            ModuleLogger.config(TAG,
                     "ConfigProvider: remote prefs updatedAt=" + config.updatedAtEpochMs
                             + " debug=" + config.debugLogging
                             + " globalRules=" + config.globalRules.size()
             );
             return config;
         } catch (RuntimeException exception) {
-            Log.e(TAG, "ConfigProvider: remote prefs load failed", exception);
+            ModuleLogger.configError(TAG, "ConfigProvider: remote prefs load failed", exception);
             return null;
         }
     }
 
     private FilterConfig loadFromContentProvider(Context context) {
         if (context == null) {
-            Log.i(TAG, "ConfigProvider: context=null");
+            ModuleLogger.config(TAG, "ConfigProvider: context=null");
             return null;
         }
         try {
             Bundle bundle = context.getContentResolver().call(CONTENT_URI, ConfigContentProvider.METHOD_GET_CONFIG, null, null);
             if (bundle == null) {
-                Log.i(TAG, "ConfigProvider: bundle=null");
+                ModuleLogger.config(TAG, "ConfigProvider: bundle=null");
                 return null;
             }
             long updatedAt = bundle.getLong(ConfigContentProvider.KEY_UPDATED_AT_EPOCH_MS, 0L);
             if (cachedConfig != null && updatedAt > 0L && updatedAt == lastLoadedUpdatedAt) {
-                Log.i(TAG, "ConfigProvider: using cached config updatedAt=" + updatedAt);
+                ModuleLogger.config(TAG, "ConfigProvider: using cached config updatedAt=" + updatedAt);
                 return cachedConfig;
             }
             String json = bundle.getString(ConfigContentProvider.KEY_CONFIG_JSON, null);
             FilterConfig config = ModuleConfigStore.fromJson(json);
             lastLoadedUpdatedAt = config.updatedAtEpochMs;
-            Log.i(
-                    TAG,
+            ModuleLogger.config(TAG,
                     "ConfigProvider: loaded updatedAt=" + updatedAt
                             + " parsedUpdatedAt=" + config.updatedAtEpochMs
                             + " debug=" + config.debugLogging
@@ -149,7 +146,7 @@ public final class XposedConfigProvider {
             );
             return config;
         } catch (RuntimeException exception) {
-            Log.e(TAG, "ConfigProvider: content provider load failed", exception);
+            ModuleLogger.configError(TAG, "ConfigProvider: content provider load failed", exception);
             return null;
         }
     }
@@ -176,10 +173,10 @@ public final class XposedConfigProvider {
             if (reloadMethod != null) {
                 reloadMethod.invoke(xSharedPreferences);
             }
-            Log.i(TAG, "ConfigProvider: using XSharedPreferences fallback");
+            ModuleLogger.config(TAG, "ConfigProvider: using XSharedPreferences fallback");
             return true;
         } catch (ReflectiveOperationException | ClassCastException ignored) {
-            Log.i(TAG, "ConfigProvider: XSharedPreferences unavailable");
+            ModuleLogger.config(TAG, "ConfigProvider: XSharedPreferences unavailable");
             return false;
         }
     }
