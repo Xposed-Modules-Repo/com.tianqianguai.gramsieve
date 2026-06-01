@@ -734,18 +734,19 @@ final class TelegramHookInstaller {
             }
         });
         info("SelectAll: added download button to ActionBarMenu");
-        downloadBtn.postDelayed(() -> {
-            int vis = downloadBtn.getVisibility();
-            int w = downloadBtn.getWidth();
-            int h = downloadBtn.getHeight();
-            int[] loc = new int[2];
-            downloadBtn.getLocationOnScreen(loc);
-            boolean visible = vis == View.VISIBLE && w > 0 && h > 0;
-            info("SelectAll: DOWNLOAD_BTN vis=" + vis + " w=" + w + " h=" + h + " x=" + loc[0] + " y=" + loc[1] + " VISIBLE=" + visible);
-            if (visible) {
-                downloadBtn.performClick();
-            }
-        }, 3000);
+        // [DEBUG] 自动打开下载页面的调试代码 - 已注释掉
+        // downloadBtn.postDelayed(() -> {
+        //     int vis = downloadBtn.getVisibility();
+        //     int w = downloadBtn.getWidth();
+        //     int h = downloadBtn.getHeight();
+        //     int[] loc = new int[2];
+        //     downloadBtn.getLocationOnScreen(loc);
+        //     boolean visible = vis == View.VISIBLE && w > 0 && h > 0;
+        //     info("SelectAll: DOWNLOAD_BTN vis=" + vis + " w=" + w + " h=" + h + " x=" + loc[0] + " y=" + loc[1] + " VISIBLE=" + visible);
+        //     if (visible) {
+        //         downloadBtn.performClick();
+        //     }
+        // }, 3000);
     }
 
     private ViewGroup findActionBarMenu(ViewGroup actionBar) {
