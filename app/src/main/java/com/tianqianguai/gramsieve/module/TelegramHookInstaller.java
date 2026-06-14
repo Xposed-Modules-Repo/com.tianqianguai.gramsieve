@@ -10,6 +10,7 @@ import android.util.Base64;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.ViewParent;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.TextView;
@@ -668,85 +669,8 @@ final class TelegramHookInstaller {
     }
 
     private void startKeepVisibleLoop(ViewGroup actionBar) {
-        if (actionBar.findViewWithTag("gramsieve_download_btn") != null) {
-            return;
-        }
-        ViewGroup menu = findActionBarMenu(actionBar);
-        if (menu == null) {
-            info("SelectAll: ActionBarMenu not found");
-            return;
-        }
-        Context context = actionBar.getContext();
-        android.widget.ImageButton downloadBtn = new android.widget.ImageButton(context);
-        downloadBtn.setTag("gramsieve_download_btn");
-        downloadBtn.setImageResource(android.R.drawable.stat_sys_download);
-        downloadBtn.setBackgroundColor(0x00000000);
-        downloadBtn.setScaleType(android.widget.ImageView.ScaleType.CENTER_INSIDE);
-        downloadBtn.setPadding(16, 16, 16, 16);
-        int size = dp(context, 48);
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(size, ViewGroup.LayoutParams.MATCH_PARENT);
-        menu.addView(downloadBtn, 0, lp);
-        downloadBtn.setOnClickListener(v -> {
-            info("SelectAll: download button clicked");
-            try {
-                ViewGroup parent = (ViewGroup) v.getParent();
-                while (parent != null) {
-                    Object host = Reflect.field(parent, "mHost");
-                    if (host == null) host = Reflect.field(parent, "this$0");
-                    if (host != null) {
-                        ViewGroup menuBar2 = findActionBarMenu((ViewGroup) v.getParent().getParent());
-                        if (menuBar2 != null) {
-                            for (int i = 0; i < menuBar2.getChildCount(); i++) {
-                                View item = menuBar2.getChildAt(i);
-                                Object tag = item.getTag();
-                                if (tag instanceof Integer && (Integer) tag == 3) {
-                                    item.setVisibility(View.VISIBLE);
-                                    ViewGroup.LayoutParams itemLp = item.getLayoutParams();
-                                    if (itemLp != null) {
-                                        itemLp.width = dp(context, 48);
-                                        itemLp.height = ViewGroup.LayoutParams.MATCH_PARENT;
-                                        item.setLayoutParams(itemLp);
-                                    }
-                                    View finalItem = item;
-                                    finalItem.postDelayed(() -> {
-                                        try {
-                                            finalItem.performClick();
-                                            info("SelectAll: performed click on original download btn");
-                                        } catch (Throwable t) {
-                                            error("SelectAll: performClick failed", t);
-                                        }
-                                    }, 200);
-                                    break;
-                                }
-                            }
-                        }
-                        break;
-                    }
-                    Object p = parent.getParent();
-                    if (p instanceof ViewGroup) {
-                        parent = (ViewGroup) p;
-                    } else {
-                        break;
-                    }
-                }
-            } catch (Throwable t) {
-                error("SelectAll: click handler failed", t);
-            }
-        });
-        info("SelectAll: added download button to ActionBarMenu");
-        // [DEBUG] 自动打开下载页面的调试代码 - 已注释掉
-        // downloadBtn.postDelayed(() -> {
-        //     int vis = downloadBtn.getVisibility();
-        //     int w = downloadBtn.getWidth();
-        //     int h = downloadBtn.getHeight();
-        //     int[] loc = new int[2];
-        //     downloadBtn.getLocationOnScreen(loc);
-        //     boolean visible = vis == View.VISIBLE && w > 0 && h > 0;
-        //     info("SelectAll: DOWNLOAD_BTN vis=" + vis + " w=" + w + " h=" + h + " x=" + loc[0] + " y=" + loc[1] + " VISIBLE=" + visible);
-        //     if (visible) {
-        //         downloadBtn.performClick();
-        //     }
-        // }, 3000);
+        // 不再添加自定义下载按钮，完全依赖原生逻辑
+        info("SelectAll: skipping custom download button, using native");
     }
 
     private ViewGroup findActionBarMenu(ViewGroup actionBar) {
@@ -1194,9 +1118,33 @@ final class TelegramHookInstaller {
                         ViewGroup vg = (ViewGroup) item;
                         for (int k = 0; k < vg.getChildCount(); k++) {
                             if (vg.getChildAt(k).getClass().getSimpleName().contains("DownloadProgress")) {
-                                if (item.getVisibility() != View.VISIBLE) {
-                                    item.setVisibility(View.VISIBLE);
-                                    info("SelectAll: forced download button VISIBLE");
+                                View downloadBtn = item;
+                                // 诊断日志：输出按钮状态
+                                int vis = downloadBtn.getVisibility();
+                                int w = downloadBtn.getWidth();
+                                int h = downloadBtn.getHeight();
+                                ViewGroup.LayoutParams lp = downloadBtn.getLayoutParams();
+                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? lp.getClass().getSimpleName() : "null"));
+                                if (lp != null) {
+                                    info("SelectAll: lp.width=" + lp.width + " lp.height=" + lp.height);
+                                }
+                                // 检查父容器
+                                ViewParent parent = downloadBtn.getParent();
+                                if (parent instanceof ViewGroup) {
+                                    ViewGroup parentVg = (ViewGroup) parent;
+                                    int parentVis = parentVg.getVisibility();
+                                    int parentW = parentVg.getWidth();
+                                    int parentH = parentVg.getHeight();
+                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + parentVg.getClass().getSimpleName());
+                                }
+                                // 强制设置尺寸并显示
+                                downloadBtn.setVisibility(View.VISIBLE);
+                                if (lp != null && (lp.width <= 0 || lp.height <= 0)) {
+                                    int size = dp(downloadBtn.getContext(), 48);
+                                    lp.width = size;
+                                    lp.height = size;
+                                    downloadBtn.setLayoutParams(lp);
+                                    info("SelectAll: forced size to " + size);
                                 }
                                 return item;
                             }
@@ -1220,13 +1168,39 @@ final class TelegramHookInstaller {
                         for (int k = 0; k < vg.getChildCount(); k++) {
                             if (vg.getChildAt(k).getClass().getSimpleName().contains("DownloadProgress")) {
                                 View downloadBtn = item;
+                                // 诊断日志：输出按钮状态
+                                int vis = downloadBtn.getVisibility();
+                                int w = downloadBtn.getWidth();
+                                int h = downloadBtn.getHeight();
+                                ViewGroup.LayoutParams lp = downloadBtn.getLayoutParams();
+                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? lp.getClass().getSimpleName() : "null"));
+                                if (lp != null) {
+                                    info("SelectAll: lp.width=" + lp.width + " lp.height=" + lp.height);
+                                }
+                                // 检查父容器
+                                ViewParent parent = downloadBtn.getParent();
+                                if (parent instanceof ViewGroup) {
+                                    ViewGroup parentVg = (ViewGroup) parent;
+                                    int parentVis = parentVg.getVisibility();
+                                    int parentW = parentVg.getWidth();
+                                    int parentH = parentVg.getHeight();
+                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + parentVg.getClass().getSimpleName());
+                                }
+                                // 强制设置尺寸并显示
+                                downloadBtn.setVisibility(View.VISIBLE);
+                                if (lp != null && (lp.width <= 0 || lp.height <= 0)) {
+                                    int size = dp(downloadBtn.getContext(), 48);
+                                    lp.width = size;
+                                    lp.height = size;
+                                    downloadBtn.setLayoutParams(lp);
+                                    info("SelectAll: forced size to " + size);
+                                }
                                 downloadBtn.addOnLayoutChangeListener((v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
                                     if (v.getVisibility() != View.VISIBLE) {
                                         info("SelectAll: download button hidden! Setting back to VISIBLE");
                                         v.setVisibility(View.VISIBLE);
                                     }
                                 });
-                                downloadBtn.setVisibility(View.VISIBLE);
                                 info("SelectAll: attached layout listener and set VISIBLE");
                                 return;
                             }

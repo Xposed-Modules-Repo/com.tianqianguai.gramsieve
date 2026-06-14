@@ -20,6 +20,9 @@ import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
+import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.chip.Chip;
+import com.google.android.material.chip.ChipGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.textfield.TextInputEditText;
@@ -78,8 +81,8 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         private final boolean chatMode;
         private final RuleDraftMatrix matchMatrix;
         private final RuleDraftMatrix exclusionMatrix;
-        private final RadioGroup kindGroup;
-        private final RadioGroup targetGroup;
+        private final ChipGroup kindGroup;
+        private final ChipGroup targetGroup;
         private final TextView targetInfo;
         private final RuleInputBox keywordInput;
         private final RuleInputBox regexInput;
@@ -91,6 +94,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         private boolean editingExclusions;
         private boolean binding;
         private FilterConfig.RuleTarget selectedTarget;
+        private TextView previewText;
 
         RuleMatrixEditor(
                 LinearLayout container,
@@ -107,21 +111,38 @@ public final class ConfigDialogActivity extends AppCompatActivity {
                     ? R.string.dialog_rule_editor_hint_chat
                     : R.string.dialog_rule_editor_hint_global));
 
-            kindGroup = new RadioGroup(ConfigDialogActivity.this);
-            kindGroup.setOrientation(LinearLayout.HORIZONTAL);
-            kindGroup.addView(createRadioButton(matchKindId, getString(R.string.dialog_rule_kind_filter)));
-            kindGroup.addView(createRadioButton(exclusionKindId, getString(R.string.dialog_rule_kind_keep)));
-            addGroup(container, kindGroup);
+            kindGroup = new ChipGroup(ConfigDialogActivity.this);
+            kindGroup.setSingleSelection(true);
+            kindGroup.setSelectionRequired(true);
+            
+            Chip matchChip = new Chip(ConfigDialogActivity.this);
+            matchChip.setId(matchKindId);
+            matchChip.setText("🚫 " + getString(R.string.dialog_rule_kind_filter));
+            matchChip.setCheckable(true);
+            kindGroup.addView(matchChip);
+            
+            Chip exclusionChip = new Chip(ConfigDialogActivity.this);
+            exclusionChip.setId(exclusionKindId);
+            exclusionChip.setText("✅ " + getString(R.string.dialog_rule_kind_keep));
+            exclusionChip.setCheckable(true);
+            kindGroup.addView(exclusionChip);
+            
+            addView(container, kindGroup, 8);
 
             addSectionLabel(container, getString(R.string.dialog_target_group_title));
-            targetGroup = new RadioGroup(ConfigDialogActivity.this);
-            targetGroup.setOrientation(LinearLayout.VERTICAL);
+            targetGroup = new ChipGroup(ConfigDialogActivity.this);
+            targetGroup.setSingleSelection(true);
+            targetGroup.setSelectionRequired(true);
             for (FilterConfig.RuleTarget target : editorTargets(chatMode)) {
                 int targetId = View.generateViewId();
                 targetIds.put(target, targetId);
-                targetGroup.addView(createRadioButton(targetId, targetOptionLabel(target)));
+                Chip targetChip = new Chip(ConfigDialogActivity.this);
+                targetChip.setId(targetId);
+                targetChip.setText(targetOptionLabel(target));
+                targetChip.setCheckable(true);
+                targetGroup.addView(targetChip);
             }
-            addGroup(container, targetGroup);
+            addView(container, targetGroup, 8);
 
             targetInfo = addInfo(container, "");
             keywordInput = addMultilineInputBox(
@@ -147,23 +168,133 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             targetGroup.check(targetIds.get(selectedTarget));
             bindVisibleFields();
 
-            kindGroup.setOnCheckedChangeListener((group, checkedId) -> {
+            kindGroup.setOnCheckedStateChangeListener((group, checkedIds) -> {
                 if (binding) {
                     return;
                 }
+                if (checkedIds.isEmpty()) {
+                    return;
+                }
+                int checkedId = checkedIds.get(0);
                 saveVisibleFields();
                 editingExclusions = checkedId == exclusionKindId;
                 updateTargetLabels();
                 bindVisibleFields();
             });
-            targetGroup.setOnCheckedChangeListener((group, checkedId) -> {
+
+            targetGroup.setOnCheckedStateChangeListener((group, checkedIds) -> {
                 if (binding) {
                     return;
                 }
+                if (checkedIds.isEmpty()) {
+                    return;
+                }
+                int checkedId = checkedIds.get(0);
                 saveVisibleFields();
                 selectedTarget = targetForId(checkedId);
                 bindVisibleFields();
             });
+
+            keywordInput.editText.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                public void onTextChanged(CharSequence s, int start, int before, int count) {}
+                public void afterTextChanged(android.text.Editable s) {
+                    if (binding) return;
+                    currentMatrix().set(selectedTarget, FilterConfig.RuleMode.KEYWORD, s.toString());
+                    updateTargetLabels();
+                    updateLivePreview();
+                }
+            });
+
+            regexInput.editText.addTextChangedListener(new android.text.TextWatcher() {
+                public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+                public void onTextChanged(CharSequence s, int start, int before, int count) {}
+                public void afterTextChanged(android.text.Editable s) {
+                    if (binding) return;
+                    currentMatrix().set(selectedTarget, FilterConfig.RuleMode.REGEX, s.toString());
+                    updateTargetLabels();
+                    updateLivePreview();
+                }
+            });
+        }
+
+        void setupPreviewCard(LinearLayout cardContent) {
+            addSectionLabel(cardContent, getString(R.string.dialog_preview_title));
+            previewText = new TextView(ConfigDialogActivity.this);
+            previewText.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+            
+            TypedValue tvColor = new TypedValue();
+            getTheme().resolveAttribute(com.google.android.material.R.attr.colorOnSurfaceVariant, tvColor, true);
+            previewText.setTextColor(tvColor.data);
+            
+            cardContent.addView(previewText, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            ));
+            
+            updateLivePreview();
+        }
+
+        private void updateLivePreview() {
+            if (previewText == null) return;
+            
+            RuleDraftMatrix matrix = currentMatrix();
+            boolean hasAny = false;
+            StringBuilder previewSb = new StringBuilder();
+            
+            for (FilterConfig.RuleTarget target : editorTargets(chatMode)) {
+                String keywords = matrix.get(target, FilterConfig.RuleMode.KEYWORD);
+                String regexes = matrix.get(target, FilterConfig.RuleMode.REGEX);
+                
+                String targetName = targetLabel(target);
+                String effectText = chatMode 
+                    ? (editingExclusions 
+                        ? getString(R.string.dialog_rule_effect_exclusion_message) 
+                        : getString(R.string.dialog_rule_effect_filter_message))
+                    : (editingExclusions
+                        ? (target == FilterConfig.RuleTarget.SENDER 
+                            ? getString(R.string.dialog_rule_effect_exclusion_sender) 
+                            : (target == FilterConfig.RuleTarget.CHAT 
+                                ? getString(R.string.dialog_rule_effect_exclusion_chat) 
+                                : getString(R.string.dialog_rule_effect_exclusion_message)))
+                        : (target == FilterConfig.RuleTarget.SENDER 
+                            ? getString(R.string.dialog_rule_effect_filter_sender) 
+                            : (target == FilterConfig.RuleTarget.CHAT 
+                                ? getString(R.string.dialog_rule_effect_filter_chat) 
+                                : getString(R.string.dialog_rule_effect_filter_message))));
+                
+                if (keywords != null && !keywords.isBlank()) {
+                    String[] lines = keywords.split("\\R");
+                    for (String line : lines) {
+                        if (!line.trim().isEmpty()) {
+                            hasAny = true;
+                            String clause = getString(R.string.dialog_rule_clause_keyword, targetName, line.trim());
+                            String sentence = getString(R.string.dialog_rule_sentence, clause, effectText);
+                            previewSb.append("• ").append(sentence).append("\n");
+                        }
+                    }
+                }
+                
+                if (regexes != null && !regexes.isBlank()) {
+                    String[] lines = regexes.split("\\R");
+                    for (String line : lines) {
+                        if (!line.trim().isEmpty()) {
+                            hasAny = true;
+                            String clause = getString(R.string.dialog_rule_clause_regex, targetName, line.trim());
+                            String sentence = getString(R.string.dialog_rule_sentence, clause, effectText);
+                            previewSb.append("• ").append(sentence).append("\n");
+                        }
+                    }
+                }
+            }
+            
+            if (!hasAny) {
+                previewText.setText(getString(editingExclusions 
+                    ? R.string.dialog_preview_empty_exclusion 
+                    : R.string.dialog_preview_empty_match));
+            } else {
+                previewText.setText(previewSb.toString().trim());
+            }
         }
 
         List<FilterConfig.RuleSpec> toMatchRules() {
@@ -196,6 +327,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             regexInput.layout.setHelperText(regexHint(target, chatMode));
             targetInfo.setText(targetHint(target, chatMode));
             binding = false;
+            updateLivePreview();
         }
 
         private RuleDraftMatrix currentMatrix() {
@@ -217,9 +349,9 @@ public final class ConfigDialogActivity extends AppCompatActivity {
                 if (targetId == null) {
                     continue;
                 }
-                RadioButton button = targetGroup.findViewById(targetId);
-                if (button != null) {
-                    button.setText(targetOptionLabel(target));
+                Chip chip = targetGroup.findViewById(targetId);
+                if (chip != null) {
+                    chip.setText(targetOptionLabel(target));
                 }
             }
         }
@@ -269,7 +401,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         RuleDraftMatrix matchMatrix = RuleDraftMatrix.fromRules(chatMode ? chatRuleSet.rules : config.globalRules);
         RuleDraftMatrix exclusionMatrix = RuleDraftMatrix.fromRules(chatMode ? chatRuleSet.exclusions : config.globalExclusions);
 
-        int padding = dp(20);
+        int padding = dp(16);
         ScrollView scrollView = new ScrollView(this);
         LinearLayout container = new LinearLayout(this);
         container.setOrientation(LinearLayout.VERTICAL);
@@ -279,36 +411,51 @@ public final class ConfigDialogActivity extends AppCompatActivity {
                 new ScrollView.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
         );
 
-        MaterialSwitch enabledSwitch = addSwitch(container, getString(R.string.dialog_enabled));
+        // General settings in Card 1
+        LinearLayout generalCardContent = addCard(container);
+        
+        MaterialSwitch enabledSwitch = addSwitch(generalCardContent, getString(R.string.dialog_enabled));
         enabledSwitch.setChecked(chatMode ? chatRuleSet.enabled : config.enabled);
 
         MaterialSwitch debugLoggingSwitch = null;
         MaterialSwitch excludeChatSwitch = null;
-        RadioGroup languageGroup = null;
-        RadioGroup actionGroup = null;
+        ChipGroup languageGroup = null;
+        ChipGroup actionGroup = null;
         int systemLanguageOptionId = View.NO_ID;
         int englishLanguageOptionId = View.NO_ID;
         int chineseLanguageOptionId = View.NO_ID;
+        int hideActionOptionId = View.NO_ID;
+        int collapseActionOptionId = View.NO_ID;
+        int markActionOptionId = View.NO_ID;
 
         if (!chatMode) {
-            addSectionLabel(container, getString(R.string.dialog_language_group));
-            languageGroup = new RadioGroup(this);
-            languageGroup.setOrientation(LinearLayout.VERTICAL);
-            RadioButton systemLanguageButton = new RadioButton(this);
+            addSectionLabel(generalCardContent, getString(R.string.dialog_language_group));
+            languageGroup = new ChipGroup(this);
+            languageGroup.setSingleSelection(true);
+            languageGroup.setSelectionRequired(true);
+
+            Chip systemLanguageButton = new Chip(this);
             systemLanguageOptionId = View.generateViewId();
             systemLanguageButton.setId(systemLanguageOptionId);
             systemLanguageButton.setText(R.string.dialog_language_system);
-            RadioButton englishLanguageButton = new RadioButton(this);
+            systemLanguageButton.setCheckable(true);
+
+            Chip englishLanguageButton = new Chip(this);
             englishLanguageOptionId = View.generateViewId();
             englishLanguageButton.setId(englishLanguageOptionId);
             englishLanguageButton.setText(R.string.dialog_language_english);
-            RadioButton chineseLanguageButton = new RadioButton(this);
+            englishLanguageButton.setCheckable(true);
+
+            Chip chineseLanguageButton = new Chip(this);
             chineseLanguageOptionId = View.generateViewId();
             chineseLanguageButton.setId(chineseLanguageOptionId);
             chineseLanguageButton.setText(R.string.dialog_language_simplified_chinese);
+            chineseLanguageButton.setCheckable(true);
+
             languageGroup.addView(systemLanguageButton);
             languageGroup.addView(englishLanguageButton);
             languageGroup.addView(chineseLanguageButton);
+
             String selectedLanguageTag = FilterConfig.normalizeAppLanguageTag(config.appLanguageTag);
             if (FilterConfig.APP_LANGUAGE_ENGLISH.equals(selectedLanguageTag)) {
                 languageGroup.check(englishLanguageOptionId);
@@ -317,45 +464,63 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             } else {
                 languageGroup.check(systemLanguageOptionId);
             }
-            addGroup(container, languageGroup);
+            addView(generalCardContent, languageGroup, 8);
 
-            debugLoggingSwitch = addSwitch(container, getString(R.string.dialog_debug_logging));
+            debugLoggingSwitch = addSwitch(generalCardContent, getString(R.string.dialog_debug_logging));
             debugLoggingSwitch.setChecked(config.debugLogging);
 
-            addSectionLabel(container, getString(R.string.dialog_action_group));
-            actionGroup = new RadioGroup(this);
-            actionGroup.setOrientation(LinearLayout.VERTICAL);
-            RadioButton hideButton = new RadioButton(this);
+            addSectionLabel(generalCardContent, getString(R.string.dialog_action_group));
+            actionGroup = new ChipGroup(this);
+            actionGroup.setSingleSelection(true);
+            actionGroup.setSelectionRequired(true);
+
+            Chip hideButton = new Chip(this);
+            hideActionOptionId = View.generateViewId();
+            hideButton.setId(hideActionOptionId);
             hideButton.setText(R.string.dialog_action_hide);
-            hideButton.setId(android.R.id.button1);
-            RadioButton collapseButton = new RadioButton(this);
+            hideButton.setCheckable(true);
+
+            Chip collapseButton = new Chip(this);
+            collapseActionOptionId = View.generateViewId();
+            collapseButton.setId(collapseActionOptionId);
             collapseButton.setText(R.string.dialog_action_collapse);
-            collapseButton.setId(android.R.id.button3);
-            RadioButton debugButton = new RadioButton(this);
+            collapseButton.setCheckable(true);
+
+            Chip debugButton = new Chip(this);
+            markActionOptionId = View.generateViewId();
+            debugButton.setId(markActionOptionId);
             debugButton.setText(R.string.dialog_action_mark);
-            debugButton.setId(android.R.id.button2);
+            debugButton.setCheckable(true);
+
             actionGroup.addView(hideButton);
             actionGroup.addView(collapseButton);
             actionGroup.addView(debugButton);
+
             if (config.action == FilterConfig.Action.DEBUG_MARK) {
-                actionGroup.check(debugButton.getId());
+                actionGroup.check(markActionOptionId);
             } else if (config.action == FilterConfig.Action.COLLAPSE) {
-                actionGroup.check(collapseButton.getId());
+                actionGroup.check(collapseActionOptionId);
             } else {
-                actionGroup.check(hideButton.getId());
+                actionGroup.check(hideActionOptionId);
             }
-            addGroup(container, actionGroup);
+            addView(generalCardContent, actionGroup, 8);
         } else {
-            excludeChatSwitch = addSwitch(container, getString(R.string.dialog_exclude_chat));
+            excludeChatSwitch = addSwitch(generalCardContent, getString(R.string.dialog_exclude_chat));
             excludeChatSwitch.setChecked(chatRuleSet.excludeFromGlobal);
             String chatTitle = getIntent().getStringExtra(EXTRA_DIALOG_TITLE);
             String scopeText = chatTitle == null || chatTitle.isBlank()
                     ? getString(R.string.dialog_scope_info_fallback, Long.toString(dialogId))
                     : getString(R.string.dialog_scope_info, chatTitle);
-            addInfo(container, scopeText);
+            addInfo(generalCardContent, scopeText);
         }
 
-        RuleMatrixEditor ruleEditor = new RuleMatrixEditor(container, matchMatrix, exclusionMatrix, chatMode);
+        // Rules matrix editor in Card 2
+        LinearLayout rulesCardContent = addCard(container);
+        RuleMatrixEditor ruleEditor = new RuleMatrixEditor(rulesCardContent, matchMatrix, exclusionMatrix, chatMode);
+
+        // Explanation / Preview in Card 3
+        LinearLayout previewCardContent = addCard(container);
+        ruleEditor.setupPreviewCard(previewCardContent);
 
         MaterialAlertDialogBuilder builder = new MaterialAlertDialogBuilder(this)
                 .setTitle(chatMode ? R.string.dialog_title_chat : R.string.dialog_title_global)
@@ -374,10 +539,14 @@ public final class ConfigDialogActivity extends AppCompatActivity {
 
         final MaterialSwitch debugLoggingSwitchFinal = debugLoggingSwitch;
         final MaterialSwitch excludeChatSwitchFinal = excludeChatSwitch;
-        final RadioGroup languageGroupFinal = languageGroup;
-        final RadioGroup actionGroupFinal = actionGroup;
+        final ChipGroup languageGroupFinal = languageGroup;
+        final ChipGroup actionGroupFinal = actionGroup;
         final int englishLanguageOptionIdFinal = englishLanguageOptionId;
         final int chineseLanguageOptionIdFinal = chineseLanguageOptionId;
+        final int hideActionOptionIdFinal = hideActionOptionId;
+        final int collapseActionOptionIdFinal = collapseActionOptionId;
+        final int markActionOptionIdFinal = markActionOptionId;
+        
         dialog = builder.create();
         dialog.setOnShowListener(dialogInterface -> dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(v -> {
             FilterConfig latest = ModuleConfigStore.load(this);
@@ -395,16 +564,16 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             } else {
                 latest.enabled = enabledSwitch.isChecked();
                 latest.debugLogging = debugLoggingSwitchFinal != null && debugLoggingSwitchFinal.isChecked();
-                int checkedLanguageId = languageGroupFinal == null ? View.NO_ID : languageGroupFinal.getCheckedRadioButtonId();
+                int checkedLanguageId = languageGroupFinal == null ? View.NO_ID : languageGroupFinal.getCheckedChipId();
                 latest.appLanguageTag = selectedLanguageTag(
                         checkedLanguageId,
                         englishLanguageOptionIdFinal,
                         chineseLanguageOptionIdFinal
                 );
-                int checkedId = actionGroupFinal == null ? android.R.id.button1 : actionGroupFinal.getCheckedRadioButtonId();
-                if (checkedId == android.R.id.button2) {
+                int checkedId = actionGroupFinal == null ? View.NO_ID : actionGroupFinal.getCheckedChipId();
+                if (checkedId == markActionOptionIdFinal) {
                     latest.action = FilterConfig.Action.DEBUG_MARK;
-                } else if (checkedId == android.R.id.button3) {
+                } else if (checkedId == collapseActionOptionIdFinal) {
                     latest.action = FilterConfig.Action.COLLAPSE;
                 } else {
                     latest.action = FilterConfig.Action.HIDE;
@@ -426,6 +595,37 @@ public final class ConfigDialogActivity extends AppCompatActivity {
 
     private static FilterConfig.RuleTarget[] editorTargets(boolean chatMode) {
         return chatMode ? CHAT_MODE_EDITOR_TARGETS : EDITOR_TARGETS;
+    }
+
+    private LinearLayout addCard(ViewGroup parent) {
+        MaterialCardView card = new MaterialCardView(this);
+        card.setCardElevation(dp(1));
+        card.setRadius(dp(12));
+        card.setStrokeWidth(dp(1));
+        
+        TypedValue typedValue = new TypedValue();
+        getTheme().resolveAttribute(com.google.android.material.R.attr.colorOutlineVariant, typedValue, true);
+        card.setStrokeColor(typedValue.data);
+        
+        getTheme().resolveAttribute(com.google.android.material.R.attr.colorSurface, typedValue, true);
+        card.setCardBackgroundColor(typedValue.data);
+
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        cardParams.bottomMargin = dp(12);
+        parent.addView(card, cardParams);
+
+        LinearLayout cardContent = new LinearLayout(this);
+        cardContent.setOrientation(LinearLayout.VERTICAL);
+        int cardPadding = dp(16);
+        cardContent.setPadding(cardPadding, cardPadding, cardPadding, cardPadding);
+        card.addView(cardContent, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        return cardContent;
     }
 
     private MaterialSwitch addSwitch(LinearLayout container, String text) {
@@ -450,11 +650,13 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         container.addView(group, params);
     }
 
-    private RadioButton createRadioButton(int id, String text) {
-        RadioButton button = new RadioButton(this);
-        button.setId(id);
-        button.setText(text);
-        return button;
+    private void addView(LinearLayout container, View view, int bottomMarginDp) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.bottomMargin = dp(bottomMarginDp);
+        container.addView(view, params);
     }
 
     private TextView addSectionLabel(LinearLayout container, String text) {
@@ -492,7 +694,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             int minLines,
             int maxLines
     ) {
-        TextInputLayout layout = new TextInputLayout(this);
+        TextInputLayout layout = new TextInputLayout(this, null, com.google.android.material.R.attr.textInputOutlinedStyle);
         layout.setHint(title);
         layout.setHelperText(hint);
         TextInputEditText editText = new TextInputEditText(this);
@@ -673,6 +875,5 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         if (clipboard != null) {
             clipboard.setPrimaryClip(ClipData.newPlainText("GramSieve Logs", sb.toString()));
         }
-        Toast.makeText(this, R.string.log_viewer_exported, Toast.LENGTH_SHORT).show();
     }
 }

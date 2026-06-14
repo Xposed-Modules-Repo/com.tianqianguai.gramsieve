@@ -1,22 +1,20 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.GramSieve" parent="Theme.MaterialComponents.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/purple_200</item>
-        <item name="colorPrimaryVariant">@color/purple_700</item>
+    <style name="Theme.GramSieve" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">@color/telegram_blue_accent</item>
         <item name="colorOnPrimary">@color/black</item>
-        <item name="colorSecondary">@color/teal_200</item>
-        <item name="colorSecondaryVariant">@color/teal_200</item>
+        <item name="colorSecondary">@color/telegram_blue_light</item>
         <item name="colorOnSecondary">@color/black</item>
-        <item name="android:statusBarColor">?attr/colorPrimaryVariant</item>
+        <item name="android:statusBarColor">?attr/colorPrimary</item>
     </style>
 
-    <style name="Theme.GramSieve.DialogHost" parent="Theme.MaterialComponents.DayNight.Dialog.Alert">
+    <style name="Theme.GramSieve.DialogHost" parent="Theme.Material3.DayNight.Dialog.Alert">
         <item name="android:windowCloseOnTouchOutside">true</item>
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowMinWidthMajor">88%</item>
         <item name="android:windowMinWidthMinor">96%</item>
     </style>
 
-    <style name="Theme.GramSieve.Transparent" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+    <style name="Theme.GramSieve.Transparent" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:windowIsTranslucent">true</item>
         <item name="android:windowNoTitle">true</item>
         <item name="android:windowDisablePreview">true</item>
