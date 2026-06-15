@@ -23,3 +23,6 @@ keystore.properties
 local.properties
 *.jks
 .understand-anything/
+/*.png
+/*.jpg
+/*.jpeg
