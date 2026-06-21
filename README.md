@@ -11,7 +11,7 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **丰富的匹配目标** — 消息文字、媒体说明、内联按钮文字/链接、发送者名称/ID、聊天名称/ID
 - **白名单优先** — 排除规则始终优先于过滤规则，适合管理员、公告或信任联系人
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
-- **消息标记与跳转** — 长按消息标记位置，随时从菜单跳转回去，每个聊天独立
+- **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
 - **双语界面** — 英文和简体中文，支持跟随系统
@@ -21,7 +21,7 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **Rich match targets** — message text, media captions, inline button labels/URLs, sender names/IDs, chat names/IDs
 - **Whitelist wins first** — exclusion rules always override filter rules; use them for admins, notices, or trusted contacts
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
-- **Mark & jump** — long-press to mark a message, jump back anytime from the menu; marks are per-chat
+- **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
@@ -69,12 +69,12 @@ In the current UI, each input box is already target-specific, so prefixes are us
 ## 入口 Entry Points
 
 - **Telegram 设置菜单** → `GramSieve 过滤规则`
-- **长按某条消息** → `屏蔽此消息` · `标记此消息`
+- **单击某条消息** → `屏蔽此消息` · `标记此消息`
 - **右上角三点菜单** → `跳转到上次浏览` · `跳转到标记位置`
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）
 
 - **Telegram settings menu** → `GramSieve filters`
-- **Long-press a message** → `Block this message` · `Mark this message`
+- **Click a message** → `Block this message` · `Mark this message`
 - **Top-right overflow menu** → `Jump to last viewed` · `Jump to marked position`
 - **Download page action mode** → `Select All` button (select all loaded download items at once)
 
