@@ -20,6 +20,7 @@
 .omx
 dist
 keystore.properties
+keystore.properties.example
 local.properties
 *.jks
 .understand-anything/

@@ -4,6 +4,7 @@ import android.content.pm.ApplicationInfo;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.os.Bundle;
 import android.util.Base64;
@@ -56,6 +57,8 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_BLOCK_MESSAGE = 0x47530013;
     private static final int MENU_ID_SCROLL_TOP = 0x47530014;
     private static final int MENU_ID_SELECT_ALL = 0x47530015;
+    private static final int MENU_ID_MARK_MESSAGE = 0x47530016;
+    private static final int MENU_ID_JUMP_TO_MARK = 0x47530017;
     private ViewGroup downloadPageFragmentView = null;
     private static final int SCROLL_JUMP_THRESHOLD = 50;
 
@@ -2806,21 +2809,39 @@ final class TelegramHookInstaller {
             addRuleForSelectedMessage(v.getContext(), messageView, selectedMessageObject);
         });
 
+        View markItem = createMessageMarkMenuItem(((View) contentView).getContext(), chatActivity);
+        if (markItem != null) {
+            markItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_MARK_MESSAGE);
+            markItem.setOnClickListener(v -> {
+                dismissScrimPopup(chatActivity);
+                markSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
+            });
+        }
+
         MenuInsertionPoint insertionPoint = findReportInsertionPoint((View) contentView);
         if (insertionPoint != null) {
             insertionPoint.parent.addView(
                     blockItem,
                     Math.min(insertionPoint.index + 1, insertionPoint.parent.getChildCount())
             );
+            if (markItem != null) {
+                insertionPoint.parent.addView(
+                        markItem,
+                        Math.min(insertionPoint.index + 2, insertionPoint.parent.getChildCount())
+                );
+            }
         } else {
             ViewGroup fallbackContainer = resolvePopupLinearLayout(contentView);
             if (fallbackContainer == null) {
                 return;
             }
             fallbackContainer.addView(blockItem);
+            if (markItem != null) {
+                fallbackContainer.addView(markItem);
+            }
         }
         refreshMessagePopup((View) contentView, blockItem, popupWindow);
-        info("Injected block-message menu item");
+        info("Injected block-message and mark-message menu items");
     }
 
     private ViewGroup resolvePopupLinearLayout(Object contentView) {
@@ -2873,6 +2894,70 @@ final class TelegramHookInstaller {
     private int resolveBlockMessageIcon(Context context) {
         int telegramIcon = context.getResources().getIdentifier("report", "drawable", "org.telegram.messenger");
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_close_clear_cancel;
+    }
+
+    private View createMessageMarkMenuItem(Context context, Object chatActivity) {
+        try {
+            ClassLoader classLoader = chatActivity.getClass().getClassLoader();
+            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
+            View item;
+            if (themeDelegate != null) {
+                Constructor<?> constructor = itemClass.getConstructor(
+                        Context.class,
+                        boolean.class,
+                        boolean.class,
+                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                );
+                item = (View) constructor.newInstance(context, false, true, themeDelegate);
+            } else {
+                Constructor<?> constructor = itemClass.getConstructor(Context.class, boolean.class, boolean.class);
+                item = (View) constructor.newInstance(context, false, true);
+            }
+            CharSequence label = localizedMarkMessageLabel(context);
+            int iconRes = resolveMarkMessageIcon(context);
+            Reflect.invokeIfExists(
+                    item,
+                    "setTextAndIcon",
+                    new Class<?>[]{CharSequence.class, int.class},
+                    label,
+                    iconRes
+            );
+            Reflect.invokeIfExists(item, "setText", new Class<?>[]{CharSequence.class}, label);
+            item.setMinimumWidth(dp(context, 160f));
+            return item;
+        } catch (Throwable throwable) {
+            error("Failed to create mark-message menu item", throwable);
+            return null;
+        }
+    }
+
+    private int resolveMarkMessageIcon(Context context) {
+        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", "org.telegram.messenger");
+        if (telegramIcon != 0) return telegramIcon;
+        telegramIcon = context.getResources().getIdentifier("msg_bookmark", "drawable", "org.telegram.messenger");
+        return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_save;
+    }
+
+    private void markSelectedMessage(Context context, Object chatActivity, Object messageObject) {
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        int messageId = resolveMessageId(messageObject);
+        if (dialogId == 0L || messageId <= 0) {
+            return;
+        }
+        saveMarkedPosition(context.getApplicationContext(), dialogId, messageId);
+        Toast.makeText(context, localizedMarkSavedToast(context), Toast.LENGTH_SHORT).show();
+        info("Marked message " + messageId + " for dialog " + dialogId);
+    }
+
+    private void saveMarkedPosition(Context context, long dialogId, int messageId) {
+        SharedPreferences prefs = context.getSharedPreferences("gramsieve_marked_positions", Context.MODE_PRIVATE);
+        prefs.edit().putInt("marked_msg_" + dialogId, messageId).apply();
+    }
+
+    private int loadMarkedPosition(Context context, long dialogId) {
+        SharedPreferences prefs = context.getSharedPreferences("gramsieve_marked_positions", Context.MODE_PRIVATE);
+        return prefs.getInt("marked_msg_" + dialogId, 0);
     }
 
     private MenuInsertionPoint findReportInsertionPoint(View root) {
@@ -3350,6 +3435,7 @@ final class TelegramHookInstaller {
             }
         }
         injectScrollToTopMenu(chatActivity, headerItem);
+        injectJumpToMarkMenu(chatActivity, headerItem);
     }
 
     private void beginReadPositionTracking(Object chatActivity) {
@@ -3463,6 +3549,62 @@ final class TelegramHookInstaller {
                 error("Scroll to top failed", throwable);
             }
         });
+    }
+
+    private void injectJumpToMarkMenu(Object chatActivity, Object headerItem) {
+        if (hasMenuItem(headerItem, MENU_ID_JUMP_TO_MARK)) {
+            return;
+        }
+        Context context = contextFromMenuItem(headerItem);
+        int iconRes = resolveJumpToMarkIcon(context);
+        Object subItem = addMenuSubItem(headerItem, MENU_ID_JUMP_TO_MARK, iconRes, localizedJumpToMarkLabel(context));
+        if (!(subItem instanceof View)) {
+            info("Jump-to-mark addSubItem unavailable on " + headerItem.getClass().getName());
+            return;
+        }
+        View subItemView = (View) subItem;
+        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_JUMP_TO_MARK);
+        subItemView.setOnClickListener(v -> {
+            try {
+                info("JumpToMark menu clicked");
+                Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+                jumpToMarkedPosition(chatActivity, v.getContext());
+            } catch (Throwable throwable) {
+                error("Jump to mark failed", throwable);
+            }
+        });
+    }
+
+    private void jumpToMarkedPosition(Object chatActivity, Context context) {
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        int markedMessageId = loadMarkedPosition(context.getApplicationContext(), dialogId);
+        if (markedMessageId <= 0) {
+            Toast.makeText(context, localizedNoMarkToast(context), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        Toast.makeText(context, localizedJumpToMarkStarted(context), Toast.LENGTH_SHORT).show();
+        boolean invoked = invokeScrollToMessageId(chatActivity, markedMessageId);
+        if (invoked) {
+            info("Called scrollToMessageId(" + markedMessageId + ") for marked position");
+        } else {
+            info("scrollToMessageId failed for marked position, falling back to scrollToLastMessage");
+            suppressNextSaveBeforeJump = true;
+            try {
+                Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
+                        new Class<?>[]{boolean.class, boolean.class}, false, false);
+            } finally {
+                suppressNextSaveBeforeJump = false;
+            }
+        }
+        Toast.makeText(context, localizedJumpToMarkDone(context), Toast.LENGTH_SHORT).show();
+    }
+
+    private int resolveJumpToMarkIcon(Context context) {
+        int telegramIcon = context.getResources().getIdentifier("msg_go_down", "drawable", "org.telegram.messenger");
+        if (telegramIcon != 0) return telegramIcon;
+        telegramIcon = context.getResources().getIdentifier("msg_arrow_down", "drawable", "org.telegram.messenger");
+        if (telegramIcon != 0) return telegramIcon;
+        return android.R.drawable.ic_menu_mylocation;
     }
 
     private volatile boolean suppressNextSaveBeforeJump;
@@ -3709,6 +3851,30 @@ final class TelegramHookInstaller {
 
     private CharSequence localizedBlockMessageLabel(Context context) {
         return isChineseLocale(context) ? "屏蔽此消息" : "Block this message";
+    }
+
+    private CharSequence localizedMarkMessageLabel(Context context) {
+        return isChineseLocale(context) ? "标记此消息" : "Mark this message";
+    }
+
+    private CharSequence localizedJumpToMarkLabel(Context context) {
+        return isChineseLocale(context) ? "跳转到标记位置" : "Jump to marked position";
+    }
+
+    private CharSequence localizedMarkSavedToast(Context context) {
+        return isChineseLocale(context) ? "已标记此消息" : "Message marked";
+    }
+
+    private CharSequence localizedNoMarkToast(Context context) {
+        return isChineseLocale(context) ? "没有标记位置" : "No marked position";
+    }
+
+    private CharSequence localizedJumpToMarkStarted(Context context) {
+        return isChineseLocale(context) ? "正在跳转到标记位置…" : "Jumping to marked position…";
+    }
+
+    private CharSequence localizedJumpToMarkDone(Context context) {
+        return isChineseLocale(context) ? "已到达标记位置" : "Reached marked position";
     }
 
     private CharSequence localizedChatMenuLabel(Context context) {
