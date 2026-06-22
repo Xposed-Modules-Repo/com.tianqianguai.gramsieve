@@ -82,12 +82,8 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="hook_menu_label_block_message">Block this message</string>
     <string name="hook_menu_label_mark_message">Mark this message</string>
     <string name="hook_menu_label_jump_to_mark">Jump to marked position</string>
-    <string name="hook_menu_label_translate_message">Translate this message</string>
     <string name="hook_mark_saved_toast">Message marked</string>
     <string name="hook_mark_no_position_toast">No marked position</string>
-    <string name="hook_translate_no_text_toast">This message has no text to translate</string>
-    <string name="hook_translate_title">Translation</string>
-    <string name="hook_translating_toast">Translating…</string>
     <string name="hook_block_saved_toast">Added a rule for this message</string>
     <string name="hook_block_no_text_toast">This message has no text to extract</string>
     <string name="dialog_saved_toast">GramSieve rules saved</string>

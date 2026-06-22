@@ -59,7 +59,6 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_SELECT_ALL = 0x47530015;
     private static final int MENU_ID_MARK_MESSAGE = 0x47530016;
     private static final int MENU_ID_JUMP_TO_MARK = 0x47530017;
-    private static final int MENU_ID_TRANSLATE_MESSAGE = 0x47530018;
     private ViewGroup downloadPageFragmentView = null;
     private static final int SCROLL_JUMP_THRESHOLD = 50;
 
@@ -2819,18 +2818,6 @@ final class TelegramHookInstaller {
             });
         }
 
-        View translateItem = null;
-        if (android.os.Build.VERSION.SDK_INT >= 34) {
-            translateItem = createMessageTranslateMenuItem(((View) contentView).getContext(), chatActivity);
-            if (translateItem != null) {
-                translateItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_TRANSLATE_MESSAGE);
-                translateItem.setOnClickListener(v -> {
-                    dismissScrimPopup(chatActivity);
-                    translateSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
-                });
-            }
-        }
-
         MenuInsertionPoint insertionPoint = findReportInsertionPoint((View) contentView);
         if (insertionPoint != null) {
             insertionPoint.parent.addView(
@@ -2843,12 +2830,6 @@ final class TelegramHookInstaller {
                         Math.min(insertionPoint.index + 2, insertionPoint.parent.getChildCount())
                 );
             }
-            if (translateItem != null) {
-                insertionPoint.parent.addView(
-                        translateItem,
-                        Math.min(insertionPoint.index + 3, insertionPoint.parent.getChildCount())
-                );
-            }
         } else {
             ViewGroup fallbackContainer = resolvePopupLinearLayout(contentView);
             if (fallbackContainer == null) {
@@ -2858,12 +2839,9 @@ final class TelegramHookInstaller {
             if (markItem != null) {
                 fallbackContainer.addView(markItem);
             }
-            if (translateItem != null) {
-                fallbackContainer.addView(translateItem);
-            }
         }
         refreshMessagePopup((View) contentView, blockItem, popupWindow);
-        info("Injected block-message, mark-message, and translate-message menu items");
+        info("Injected block-message and mark-message menu items");
     }
 
     private ViewGroup resolvePopupLinearLayout(Object contentView) {
@@ -2980,104 +2958,6 @@ final class TelegramHookInstaller {
     private int loadMarkedPosition(Context context, long dialogId) {
         SharedPreferences prefs = context.getSharedPreferences("gramsieve_marked_positions", Context.MODE_PRIVATE);
         return prefs.getInt("marked_msg_" + dialogId, 0);
-    }
-
-    private View createMessageTranslateMenuItem(Context context, Object chatActivity) {
-        try {
-            ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
-            Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
-            View item;
-            if (themeDelegate != null) {
-                Constructor<?> constructor = itemClass.getConstructor(
-                        Context.class,
-                        boolean.class,
-                        boolean.class,
-                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
-                );
-                item = (View) constructor.newInstance(context, false, true, themeDelegate);
-            } else {
-                Constructor<?> constructor = itemClass.getConstructor(Context.class, boolean.class, boolean.class);
-                item = (View) constructor.newInstance(context, false, true);
-            }
-            CharSequence label = localizedTranslateMessageLabel(context);
-            int iconRes = resolveTranslateMessageIcon(context);
-            Reflect.invokeIfExists(
-                    item,
-                    "setTextAndIcon",
-                    new Class<?>[]{CharSequence.class, int.class},
-                    label,
-                    iconRes
-            );
-            Reflect.invokeIfExists(item, "setText", new Class<?>[]{CharSequence.class}, label);
-            item.setMinimumWidth(dp(context, 160f));
-            return item;
-        } catch (Throwable throwable) {
-            error("Failed to create translate-message menu item", throwable);
-            return null;
-        }
-    }
-
-    private int resolveTranslateMessageIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_translate", "drawable", "org.telegram.messenger");
-        if (telegramIcon != 0) return telegramIcon;
-        telegramIcon = context.getResources().getIdentifier("msg_language", "drawable", "org.telegram.messenger");
-        return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_share;
-    }
-
-    @SuppressWarnings("deprecation")
-    private void translateSelectedMessage(Context context, Object chatActivity, Object messageObject) {
-        MessageSnapshot snapshot = TelegramMessageNormalizer.normalize(null, messageObject);
-        if (snapshot == null) {
-            Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        String sourceText = snapshot.combinedVisibleContent();
-        if (sourceText.isBlank()) {
-            Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        Toast.makeText(context, localizedTranslatingToast(context), Toast.LENGTH_SHORT).show();
-        try {
-            Object tm = context.getSystemService("translation");
-            if (tm == null) {
-                Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-                return;
-            }
-            Class<?> requestBuilderClass = Class.forName("android.view.translation.TranslationRequest$Builder");
-            Object builder = requestBuilderClass.getConstructor().newInstance();
-            Class<?> translationRequestClass = Class.forName("android.view.translation.TranslationRequest");
-            Method setTextMethod = requestBuilderClass.getMethod("setText", CharSequence.class);
-            setTextMethod.invoke(builder, sourceText);
-            Object request = requestBuilderClass.getMethod("build").invoke(builder);
-            java.util.concurrent.Executor executor = Runnable::run;
-            java.util.function.Consumer<Object> consumer = result -> {
-                try {
-                    Method getTranslationResults = result.getClass().getMethod("getTranslationResults");
-                    java.util.List<?> results = (java.util.List<?>) getTranslationResults.invoke(result);
-                    if (results == null || results.isEmpty()) {
-                        Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-                        return;
-                    }
-                    Object firstResult = results.get(0);
-                    Method getText = firstResult.getClass().getMethod("getText");
-                    CharSequence translated = (CharSequence) getText.invoke(firstResult);
-                    new android.app.AlertDialog.Builder(context)
-                            .setTitle(localizedTranslateDialogTitle(context))
-                            .setMessage(translated)
-                            .setPositiveButton(android.R.string.ok, null)
-                            .show();
-                } catch (Throwable t) {
-                    error("Translation result parsing failed", t);
-                    Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-                }
-            };
-            Method translateMethod = tm.getClass().getMethod("translate", translationRequestClass, java.util.concurrent.Executor.class, java.util.function.Consumer.class);
-            translateMethod.invoke(tm, request, executor, consumer);
-        } catch (Throwable throwable) {
-            error("Translation failed", throwable);
-            Toast.makeText(context, localizedTranslateNoTextToast(context), Toast.LENGTH_SHORT).show();
-        }
     }
 
     private MenuInsertionPoint findReportInsertionPoint(View root) {
@@ -3995,22 +3875,6 @@ final class TelegramHookInstaller {
 
     private CharSequence localizedJumpToMarkDone(Context context) {
         return isChineseLocale(context) ? "已到达标记位置" : "Reached marked position";
-    }
-
-    private CharSequence localizedTranslateMessageLabel(Context context) {
-        return isChineseLocale(context) ? "翻译此消息" : "Translate this message";
-    }
-
-    private CharSequence localizedTranslateNoTextToast(Context context) {
-        return isChineseLocale(context) ? "这条消息没有可翻译的文字" : "This message has no text to translate";
-    }
-
-    private CharSequence localizedTranslatingToast(Context context) {
-        return isChineseLocale(context) ? "正在翻译…" : "Translating…";
-    }
-
-    private CharSequence localizedTranslateDialogTitle(Context context) {
-        return isChineseLocale(context) ? "翻译结果" : "Translation";
     }
 
     private CharSequence localizedChatMenuLabel(Context context) {
