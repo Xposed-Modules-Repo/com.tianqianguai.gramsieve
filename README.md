@@ -12,7 +12,6 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **白名单优先** — 排除规则始终优先于过滤规则，适合管理员、公告或信任联系人
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
-- **消息翻译** — 单击消息调用系统翻译服务离线翻译，结果弹窗显示（Android 14+，API 33 不显示此选项）
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
 - **双语界面** — 英文和简体中文，支持跟随系统
@@ -23,7 +22,6 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **Whitelist wins first** — exclusion rules always override filter rules; use them for admins, notices, or trusted contacts
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
-- **Message translation** — tap a message to translate via the system translation service, result shown in a dialog (Android 14+ only, hidden on API 33)
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
@@ -71,12 +69,12 @@ In the current UI, each input box is already target-specific, so prefixes are us
 ## 入口 Entry Points
 
 - **Telegram 设置菜单** → `GramSieve 过滤规则`
-- **单击某条消息** → `屏蔽此消息` · `标记此消息` · `翻译此消息`（Android 14+）
+- **单击某条消息** → `屏蔽此消息` · `标记此消息`
 - **右上角三点菜单** → `跳转到上次浏览` · `跳转到标记位置`
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）
 
 - **Telegram settings menu** → `GramSieve filters`
-- **Click a message** → `Block this message` · `Mark this message` · `Translate this message` (Android 14+)
+- **Click a message** → `Block this message` · `Mark this message`
 - **Top-right overflow menu** → `Jump to last viewed` · `Jump to marked position`
 - **Download page action mode** → `Select All` button (select all loaded download items at once)
 

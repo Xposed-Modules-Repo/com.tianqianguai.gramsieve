@@ -82,12 +82,8 @@
     <string name="hook_menu_label_block_message">屏蔽此消息</string>
     <string name="hook_menu_label_mark_message">标记此消息</string>
     <string name="hook_menu_label_jump_to_mark">跳转到标记位置</string>
-    <string name="hook_menu_label_translate_message">翻译此消息</string>
     <string name="hook_mark_saved_toast">已标记此消息</string>
     <string name="hook_mark_no_position_toast">没有标记位置</string>
-    <string name="hook_translate_no_text_toast">这条消息没有可翻译的文字</string>
-    <string name="hook_translate_title">翻译结果</string>
-    <string name="hook_translating_toast">正在翻译…</string>
     <string name="hook_block_saved_toast">已把这条消息加入屏蔽规则</string>
     <string name="hook_block_no_text_toast">这条消息没有可提取的文字</string>
     <string name="dialog_saved_toast">GramSieve 规则已保存</string>
