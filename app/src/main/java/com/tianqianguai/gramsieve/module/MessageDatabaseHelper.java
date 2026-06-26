@@ -9,7 +9,7 @@ import android.database.sqlite.SQLiteOpenHelper;
 import java.util.ArrayList;
 import java.util.List;
 
-public final class MessageDatabaseHelper extends SQLiteOpenHelper {
+public final class MessageDatabaseHelper extends SQLiteOpenHelper implements MessageStore {
     private static final String DATABASE_NAME = "gramsieve_messages.db";
     private static final int DATABASE_VERSION = 1;
     private static final String TABLE_NAME = "cached_messages";
@@ -68,12 +68,17 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getReadableDatabase();
         Cursor cursor = db.query(TABLE_NAME, null, "dialog_id = ? AND message_id = ?",
                 new String[]{String.valueOf(dialogId), String.valueOf(messageId)}, null, null, null);
-        if (cursor != null && cursor.moveToFirst()) {
-            MessageCache.CachedMessage message = cursorToMessage(cursor);
-            cursor.close();
-            return message;
+        if (cursor == null) {
+            return null;
         }
-        return null;
+        try {
+            if (cursor.moveToFirst()) {
+                return cursorToMessage(cursor);
+            }
+            return null;
+        } finally {
+            cursor.close();
+        }
     }
 
     public List<MessageCache.CachedMessage> getRecalledMessages(long dialogId) {
@@ -81,10 +86,14 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getReadableDatabase();
         Cursor cursor = db.query(TABLE_NAME, null, "dialog_id = ? AND is_recalled = 1",
                 new String[]{String.valueOf(dialogId)}, null, null, "timestamp DESC");
-        if (cursor != null) {
+        if (cursor == null) {
+            return messages;
+        }
+        try {
             while (cursor.moveToNext()) {
                 messages.add(cursorToMessage(cursor));
             }
+        } finally {
             cursor.close();
         }
         return messages;
@@ -95,10 +104,14 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper {
         SQLiteDatabase db = getReadableDatabase();
         Cursor cursor = db.query(TABLE_NAME, null, "dialog_id = ? AND is_edited = 1",
                 new String[]{String.valueOf(dialogId)}, null, null, "timestamp DESC");
-        if (cursor != null) {
+        if (cursor == null) {
+            return messages;
+        }
+        try {
             while (cursor.moveToNext()) {
                 messages.add(cursorToMessage(cursor));
             }
+        } finally {
             cursor.close();
         }
         return messages;
@@ -111,7 +124,10 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper {
                 cursor.getLong(cursor.getColumnIndex("sender_id")),
                 cursor.getString(cursor.getColumnIndex("text")),
                 cursor.getString(cursor.getColumnIndex("caption")),
-                cursor.getLong(cursor.getColumnIndex("timestamp"))
+                cursor.getLong(cursor.getColumnIndex("timestamp")),
+                cursor.getInt(cursor.getColumnIndex("is_recalled")) != 0,
+                cursor.getInt(cursor.getColumnIndex("is_edited")) != 0,
+                cursor.getString(cursor.getColumnIndex("edited_text"))
         );
     }
 }

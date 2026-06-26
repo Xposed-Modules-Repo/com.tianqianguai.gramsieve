@@ -2,31 +2,50 @@ package com.tianqianguai.gramsieve.module;
 
 import android.util.LruCache;
 
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 public final class MessageCache {
-    private static final int MAX_CACHE_SIZE = 1000;
-    private final LruCache<String, CachedMessage> memoryCache;
-    private final MessageDatabaseHelper databaseHelper;
+    public interface MemoryCache {
+        CachedMessage get(String key);
+        void put(String key, CachedMessage value);
+    }
 
-    public MessageCache(MessageDatabaseHelper databaseHelper) {
-        this.memoryCache = new LruCache<>(MAX_CACHE_SIZE);
-        this.databaseHelper = databaseHelper;
+    private final MemoryCache memoryCache;
+    private final MessageStore store;
+
+    public MessageCache(MessageStore store) {
+        this(store, new LruCacheMemoryCache(1000));
+    }
+
+    public MessageCache(MessageStore store, MemoryCache memoryCache) {
+        this.memoryCache = memoryCache;
+        this.store = store;
     }
 
     public void put(long dialogId, long messageId, String text, String caption, long senderId) {
         String key = dialogId + ":" + messageId;
         CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis());
         memoryCache.put(key, message);
-        databaseHelper.insertMessage(message);
+        store.insertMessage(message);
     }
 
     public CachedMessage get(long dialogId, long messageId) {
         String key = dialogId + ":" + messageId;
-        CachedMessage message = memoryCache.get(key);
-        if (message == null) {
-            message = databaseHelper.getMessage(dialogId, messageId);
+        synchronized (memoryCache) {
+            CachedMessage message = memoryCache.get(key);
             if (message != null) {
+                return message;
+            }
+        }
+        CachedMessage message = store.getMessage(dialogId, messageId);
+        if (message != null) {
+            synchronized (memoryCache) {
+                CachedMessage existing = memoryCache.get(key);
+                if (existing != null) {
+                    return existing;
+                }
                 memoryCache.put(key, message);
             }
         }
@@ -37,7 +56,7 @@ public final class MessageCache {
         CachedMessage message = get(dialogId, messageId);
         if (message != null) {
             message.isRecalled = true;
-            databaseHelper.updateMessage(message);
+            store.updateMessage(message);
         }
     }
 
@@ -46,16 +65,34 @@ public final class MessageCache {
         if (message != null) {
             message.isEdited = true;
             message.editedText = newText;
-            databaseHelper.updateMessage(message);
+            store.updateMessage(message);
         }
     }
 
     public List<CachedMessage> getRecalledMessages(long dialogId) {
-        return databaseHelper.getRecalledMessages(dialogId);
+        return store.getRecalledMessages(dialogId);
     }
 
     public List<CachedMessage> getEditedMessages(long dialogId) {
-        return databaseHelper.getEditedMessages(dialogId);
+        return store.getEditedMessages(dialogId);
+    }
+
+    static final class LruCacheMemoryCache implements MemoryCache {
+        private final LruCache<String, CachedMessage> delegate;
+
+        LruCacheMemoryCache(int maxSize) {
+            this.delegate = new LruCache<>(maxSize);
+        }
+
+        @Override
+        public CachedMessage get(String key) {
+            return delegate.get(key);
+        }
+
+        @Override
+        public void put(String key, CachedMessage value) {
+            delegate.put(key, value);
+        }
     }
 
     public static final class CachedMessage {
@@ -76,6 +113,19 @@ public final class MessageCache {
             this.text = text;
             this.caption = caption;
             this.timestamp = timestamp;
+        }
+
+        public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp,
+                             boolean isRecalled, boolean isEdited, String editedText) {
+            this.dialogId = dialogId;
+            this.messageId = messageId;
+            this.senderId = senderId;
+            this.text = text;
+            this.caption = caption;
+            this.timestamp = timestamp;
+            this.isRecalled = isRecalled;
+            this.isEdited = isEdited;
+            this.editedText = editedText;
         }
     }
 }
