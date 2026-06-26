@@ -2182,12 +2182,16 @@ final class TelegramHookInstaller {
         Context context = cell.getContext();
         String markText = isChineseLocale(context) ? "[此消息已被撤回]" : "[This message was recalled]";
         cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
+        cell.setBackgroundColor(0x33FF0000);
+        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_SHORT).show());
     }
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
         String markText = isChineseLocale(context) ? "[已编辑]" : "[Edited]";
         cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
+        cell.setBackgroundColor(0x1AFFA500);
+        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_SHORT).show());
     }
 
     private Object handleCellLifecycle(XposedInterface.Chain chain) throws Throwable {
