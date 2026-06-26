@@ -2150,11 +2150,44 @@ final class TelegramHookInstaller {
         try {
             if (cell instanceof View) {
                 applyDecision((View) cell, (View) cell, messageObject);
+                applyAntiRecallMark((View) cell, messageObject);
             }
         } catch (Throwable throwable) {
             error("Message filtering failed", throwable);
         }
         return result;
+    }
+
+    private void applyAntiRecallMark(View cell, Object messageObject) {
+        if (messageObject == null || messageCache == null) {
+            return;
+        }
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
+        long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
+        if (dialogId == 0L || messageId == 0L) {
+            return;
+        }
+        MessageCache.CachedMessage cachedMessage = messageCache.get(dialogId, messageId);
+        if (cachedMessage == null) {
+            return;
+        }
+        if (cachedMessage.isRecalled) {
+            showRecalledMark(cell, cachedMessage);
+        } else if (cachedMessage.isEdited) {
+            showEditedMark(cell, cachedMessage);
+        }
+    }
+
+    private void showRecalledMark(View cell, MessageCache.CachedMessage cachedMessage) {
+        Context context = cell.getContext();
+        String markText = isChineseLocale(context) ? "[此消息已被撤回]" : "[This message was recalled]";
+        cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
+    }
+
+    private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
+        Context context = cell.getContext();
+        String markText = isChineseLocale(context) ? "[已编辑]" : "[Edited]";
+        cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
     }
 
     private Object handleCellLifecycle(XposedInterface.Chain chain) throws Throwable {
