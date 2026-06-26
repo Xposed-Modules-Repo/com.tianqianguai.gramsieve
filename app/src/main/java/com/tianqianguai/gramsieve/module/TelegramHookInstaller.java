@@ -130,23 +130,47 @@ final class TelegramHookInstaller {
         info("Installed Telegram hooks");
     }
 
+    private volatile ClassLoader savedClassLoader;
+
     private void initAntiRecall(ClassLoader classLoader) {
+        this.savedClassLoader = classLoader;
         try {
             Context context = resolveHostApplication();
             if (context == null) {
                 info("Anti-recall: host application context not available, deferring");
                 return;
             }
-            antiRecallConfigStore = new AntiRecallConfigStore(context);
-            MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
-            messageCache = new MessageCache(databaseHelper);
-            backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
-            recallDetector = new RecallDetector(messageCache, backgroundMessageLoader);
-            recallDetector.install(classLoader, module);
-            info("Anti-recall components initialized");
+            doInitAntiRecall(context, classLoader);
         } catch (Throwable throwable) {
             error("Failed to initialize anti-recall components", throwable);
         }
+    }
+
+    private void initAntiRecallDeferred() {
+        if (backgroundMessageLoader != null) {
+            return;
+        }
+        try {
+            Context context = resolveHostApplication();
+            if (context == null) {
+                return;
+            }
+            doInitAntiRecall(context, savedClassLoader);
+        } catch (Throwable throwable) {
+            error("Failed to deferred-initialize anti-recall", throwable);
+        }
+    }
+
+    private void doInitAntiRecall(Context context, ClassLoader classLoader) {
+        antiRecallConfigStore = new AntiRecallConfigStore(context);
+        MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
+        messageCache = new MessageCache(databaseHelper);
+        backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
+        recallDetector = new RecallDetector(messageCache, backgroundMessageLoader);
+        if (classLoader != null) {
+            recallDetector.install(classLoader, module);
+        }
+        info("Anti-recall components initialized");
     }
 
     private Context resolveHostApplication() {
@@ -3653,6 +3677,10 @@ final class TelegramHookInstaller {
     }
 
     private void injectAntiRecallMenu(Object chatActivity, Object headerItem) {
+        if (backgroundMessageLoader == null) {
+            // Try deferred initialization
+            initAntiRecallDeferred();
+        }
         if (backgroundMessageLoader == null) {
             return;
         }
