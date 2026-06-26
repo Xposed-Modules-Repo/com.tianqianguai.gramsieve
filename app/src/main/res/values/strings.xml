@@ -94,4 +94,7 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="log_viewer_clear">Clear</string>
     <string name="log_viewer_cleared">Logs cleared</string>
     <string name="log_viewer_exported">Logs exported to clipboard</string>
+    <string name="anti_recall_settings_title">主动加载与防撤回防修改</string>
+    <string name="anti_recall_enabled">启用主动加载与防撤回防修改</string>
+    <string name="anti_recall_load_interval">加载间隔（秒）</string>
 </resources>
