@@ -14,6 +14,7 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
+- **主动加载与防撤回防修改** — 后台主动加载消息，保留被撤回或修改的原始内容
 - **双语界面** — 英文和简体中文，支持跟随系统
 
 - **Local-only filtering** — all filtering happens on-device; no network requests, no data leaves your phone
@@ -24,6 +25,7 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
+- **Anti-recall & anti-edit** — proactively loads messages in background, preserves original content when recalled or edited
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
 
 ## 规则写法 How Rules Work
