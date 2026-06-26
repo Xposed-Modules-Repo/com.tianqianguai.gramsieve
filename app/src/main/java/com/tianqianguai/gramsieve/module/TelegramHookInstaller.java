@@ -25,6 +25,7 @@ import com.tianqianguai.gramsieve.config.ChatReadPositionStore;
 import com.tianqianguai.gramsieve.config.ConfigContentProvider;
 import com.tianqianguai.gramsieve.config.ConfigUpdateReceiver;
 import com.tianqianguai.gramsieve.config.DiagnosticLogStore;
+import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.config.XposedConfigProvider;
@@ -59,7 +60,12 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_SELECT_ALL = 0x47530015;
     private static final int MENU_ID_MARK_MESSAGE = 0x47530016;
     private static final int MENU_ID_JUMP_TO_MARK = 0x47530017;
+    private static final int MENU_ID_ANTI_RECALL = 0x47530018;
     private ViewGroup downloadPageFragmentView = null;
+    private MessageCache messageCache;
+    private BackgroundMessageLoader backgroundMessageLoader;
+    private RecallDetector recallDetector;
+    private AntiRecallConfigStore antiRecallConfigStore;
     private static final int SCROLL_JUMP_THRESHOLD = 50;
 
     private final XposedModule module;
@@ -104,6 +110,7 @@ final class TelegramHookInstaller {
                     () -> module.getRemotePreferences(ModuleConfigStore.PREFS_NAME)
             );
         }
+        initAntiRecall(classLoader);
         logRemoteCapabilities();
         logTelegramVersion(classLoader, applicationInfo);
         hookTaggedViewMeasure();
@@ -121,6 +128,38 @@ final class TelegramHookInstaller {
         hookOnItemClickDiagnostic(classLoader);
         installed = true;
         info("Installed Telegram hooks");
+    }
+
+    private void initAntiRecall(ClassLoader classLoader) {
+        try {
+            Context context = resolveHostApplication();
+            if (context == null) {
+                info("Anti-recall: host application context not available, deferring");
+                return;
+            }
+            antiRecallConfigStore = new AntiRecallConfigStore(context);
+            MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
+            messageCache = new MessageCache(databaseHelper);
+            backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
+            recallDetector = new RecallDetector(messageCache, backgroundMessageLoader);
+            recallDetector.install(classLoader, module);
+            info("Anti-recall components initialized");
+        } catch (Throwable throwable) {
+            error("Failed to initialize anti-recall components", throwable);
+        }
+    }
+
+    private Context resolveHostApplication() {
+        try {
+            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+            java.lang.reflect.Method currentApplication = activityThreadClass.getDeclaredMethod("currentApplication");
+            currentApplication.setAccessible(true);
+            Object app = currentApplication.invoke(null);
+            return app instanceof Context ? (Context) app : null;
+        } catch (Throwable throwable) {
+            info("Anti-recall: ActivityThread.currentApplication() unavailable");
+            return null;
+        }
     }
 
     private void hookTaggedViewMeasure() {
@@ -3436,6 +3475,7 @@ final class TelegramHookInstaller {
         }
         injectScrollToTopMenu(chatActivity, headerItem);
         injectJumpToMarkMenu(chatActivity, headerItem);
+        injectAntiRecallMenu(chatActivity, headerItem);
     }
 
     private void beginReadPositionTracking(Object chatActivity) {
@@ -3573,6 +3613,60 @@ final class TelegramHookInstaller {
                 error("Jump to mark failed", throwable);
             }
         });
+    }
+
+    private void injectAntiRecallMenu(Object chatActivity, Object headerItem) {
+        if (backgroundMessageLoader == null) {
+            return;
+        }
+        if (hasMenuItem(headerItem, MENU_ID_ANTI_RECALL)) {
+            return;
+        }
+        Context context = contextFromMenuItem(headerItem);
+        int iconRes = resolveAntiRecallIcon(context);
+        Object subItem = addMenuSubItem(headerItem, MENU_ID_ANTI_RECALL, iconRes, localizedAntiRecallLabel(context));
+        if (!(subItem instanceof View)) {
+            info("Anti-recall addSubItem unavailable on " + headerItem.getClass().getName());
+            return;
+        }
+        View subItemView = (View) subItem;
+        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
+        subItemView.setOnClickListener(v -> {
+            try {
+                long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+                toggleAntiRecall(dialogId, subItemView);
+            } finally {
+                Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+            }
+        });
+    }
+
+    private void toggleAntiRecall(long dialogId, View menuItem) {
+        boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
+        if (enabled) {
+            backgroundMessageLoader.disableChat(dialogId);
+            Toast.makeText(menuItem.getContext(), localizedAntiRecallDisabled(menuItem.getContext()), Toast.LENGTH_SHORT).show();
+        } else {
+            backgroundMessageLoader.enableChat(dialogId);
+            Toast.makeText(menuItem.getContext(), localizedAntiRecallEnabled(menuItem.getContext()), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private int resolveAntiRecallIcon(Context context) {
+        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", "org.telegram.messenger");
+        return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_save;
+    }
+
+    private CharSequence localizedAntiRecallLabel(Context context) {
+        return isChineseLocale(context) ? "主动加载与防撤回防修改" : "Proactive Loading & Anti-Recall";
+    }
+
+    private CharSequence localizedAntiRecallEnabled(Context context) {
+        return isChineseLocale(context) ? "已启用主动加载与防撤回防修改" : "Anti-recall enabled";
+    }
+
+    private CharSequence localizedAntiRecallDisabled(Context context) {
+        return isChineseLocale(context) ? "已禁用主动加载与防撤回防修改" : "Anti-recall disabled";
     }
 
     private void jumpToMarkedPosition(Object chatActivity, Context context) {
