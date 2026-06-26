@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`app/` is the only Android module. Production code lives in `app/src/main/java/com/tianqianguai/gramsieve/` and is split by responsibility: `core/` for filtering logic and rule parsing, `config/` for preferences and providers, `module/` for LSPosed/Telegram hooks, and `ui/` for the companion config activity. Android resources live in `app/src/main/res/`. Xposed metadata lives in `app/src/main/resources/META-INF/xposed/`. JVM tests are in `app/src/test/`, instrumented tests in `app/src/androidTest/`, and sample rule/config files in `examples/`.
+`app/` is the only Android module. Production code lives in `app/src/main/java/com/tianqianguai/gramsieve/` and is split by responsibility: `core/` for filtering logic and rule parsing, `config/` for preferences and providers (including `AntiRecallConfigStore` for anti-recall settings), `module/` for LSPosed/Telegram hooks (including `MessageCache`, `RecallDetector`, `BackgroundMessageLoader`, and `MessageDatabaseHelper` for the anti-recall subsystem), and `ui/` for the companion config activity. Android resources live in `app/src/main/res/`. Xposed metadata lives in `app/src/main/resources/META-INF/xposed/`. JVM tests are in `app/src/test/`, instrumented tests in `app/src/androidTest/`, and sample rule/config files in `examples/`.
 
 ## Build, Test, and Development Commands
 - `./gradlew.bat assembleDebug` builds the debug APK at `app/build/outputs/apk/debug/app-debug.apk`.
