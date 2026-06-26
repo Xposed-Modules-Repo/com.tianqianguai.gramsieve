@@ -27,6 +27,9 @@ public final class BackgroundMessageLoader {
         if (running) {
             return;
         }
+        if (configStore == null) {
+            return;
+        }
         running = true;
         int interval = configStore.getLoadIntervalSeconds();
         scheduler.scheduleAtFixedRate(this::loadMessages, 0, interval, TimeUnit.SECONDS);

@@ -123,15 +123,15 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
 
     private MessageCache.CachedMessage cursorToMessage(Cursor cursor) {
         return new MessageCache.CachedMessage(
-                cursor.getLong(cursor.getColumnIndex("dialog_id")),
-                cursor.getLong(cursor.getColumnIndex("message_id")),
-                cursor.getLong(cursor.getColumnIndex("sender_id")),
-                cursor.getString(cursor.getColumnIndex("text")),
-                cursor.getString(cursor.getColumnIndex("caption")),
-                cursor.getLong(cursor.getColumnIndex("timestamp")),
-                cursor.getInt(cursor.getColumnIndex("is_recalled")) != 0,
-                cursor.getInt(cursor.getColumnIndex("is_edited")) != 0,
-                cursor.getString(cursor.getColumnIndex("edited_text"))
+                cursor.getLong(cursor.getColumnIndexOrThrow("dialog_id")),
+                cursor.getLong(cursor.getColumnIndexOrThrow("message_id")),
+                cursor.getLong(cursor.getColumnIndexOrThrow("sender_id")),
+                cursor.getString(cursor.getColumnIndexOrThrow("text")),
+                cursor.getString(cursor.getColumnIndexOrThrow("caption")),
+                cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
+                cursor.getInt(cursor.getColumnIndexOrThrow("is_recalled")) != 0,
+                cursor.getInt(cursor.getColumnIndexOrThrow("is_edited")) != 0,
+                cursor.getString(cursor.getColumnIndexOrThrow("edited_text"))
         );
     }
 }
