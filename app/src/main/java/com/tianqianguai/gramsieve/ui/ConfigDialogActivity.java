@@ -28,6 +28,7 @@ import com.google.android.material.materialswitch.MaterialSwitch;
 import com.google.android.material.textfield.TextInputEditText;
 import com.google.android.material.textfield.TextInputLayout;
 import com.tianqianguai.gramsieve.R;
+import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.AppLocaleManager;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.config.PersistentLogStore;
@@ -514,6 +515,13 @@ public final class ConfigDialogActivity extends AppCompatActivity {
             addInfo(generalCardContent, scopeText);
         }
 
+        // Anti-recall settings
+        AntiRecallConfigStore antiRecallConfigStore = new AntiRecallConfigStore(this);
+        if (!chatMode) {
+            LinearLayout antiRecallContent = addCard(container);
+            addAntiRecallSettings(antiRecallContent, antiRecallConfigStore);
+        }
+
         // Rules matrix editor in Card 2
         LinearLayout rulesCardContent = addCard(container);
         RuleMatrixEditor ruleEditor = new RuleMatrixEditor(rulesCardContent, matchMatrix, exclusionMatrix, chatMode);
@@ -817,6 +825,24 @@ public final class ConfigDialogActivity extends AppCompatActivity {
 
     private int dp(int value) {
         return Math.round(TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, value, getResources().getDisplayMetrics()));
+    }
+
+    private void addAntiRecallSettings(ViewGroup container, AntiRecallConfigStore configStore) {
+        addSectionLabel((LinearLayout) container, getString(R.string.anti_recall_settings_title));
+
+        MaterialSwitch enabledSwitch = new MaterialSwitch(this);
+        enabledSwitch.setText(getString(R.string.anti_recall_enabled));
+        enabledSwitch.setChecked(configStore.isEnabled());
+        enabledSwitch.setShowText(false);
+        enabledSwitch.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            configStore.setEnabled(isChecked);
+        });
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.bottomMargin = dp(6);
+        container.addView(enabledSwitch, params);
     }
 
     private void showLogViewer() {

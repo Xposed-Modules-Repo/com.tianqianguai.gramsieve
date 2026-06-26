@@ -94,4 +94,7 @@
     <string name="log_viewer_clear">清空</string>
     <string name="log_viewer_cleared">日志已清空</string>
     <string name="log_viewer_exported">日志已复制到剪贴板</string>
+    <string name="anti_recall_settings_title">主动加载与防撤回防修改</string>
+    <string name="anti_recall_enabled">启用主动加载与防撤回防修改</string>
+    <string name="anti_recall_load_interval">加载间隔（秒）</string>
 </resources>
