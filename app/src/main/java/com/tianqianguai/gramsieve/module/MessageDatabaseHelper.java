@@ -11,7 +11,7 @@ import java.util.List;
 
 public final class MessageDatabaseHelper extends SQLiteOpenHelper implements MessageStore {
     private static final String DATABASE_NAME = "gramsieve_messages.db";
-    private static final int DATABASE_VERSION = 1;
+    private static final int DATABASE_VERSION = 2;
     private static final String TABLE_NAME = "cached_messages";
 
     public MessageDatabaseHelper(Context context) {
@@ -31,12 +31,16 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
                 + "is_edited INTEGER DEFAULT 0, "
                 + "edited_text TEXT, "
                 + "PRIMARY KEY (dialog_id, message_id))");
+        db.execSQL("CREATE INDEX idx_recalled ON " + TABLE_NAME + " (dialog_id, is_recalled)");
+        db.execSQL("CREATE INDEX idx_edited ON " + TABLE_NAME + " (dialog_id, is_edited)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE_NAME);
-        onCreate(db);
+        if (oldVersion < 2) {
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_recalled ON " + TABLE_NAME + " (dialog_id, is_recalled)");
+            db.execSQL("CREATE INDEX IF NOT EXISTS idx_edited ON " + TABLE_NAME + " (dialog_id, is_edited)");
+        }
     }
 
     public void insertMessage(MessageCache.CachedMessage message) {

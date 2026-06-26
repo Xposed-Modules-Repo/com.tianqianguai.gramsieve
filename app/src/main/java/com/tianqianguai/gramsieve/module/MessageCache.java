@@ -13,8 +13,14 @@ public final class MessageCache {
     private final MemoryCache memoryCache;
     private final MessageStore store;
 
+    public static final int DEFAULT_CACHE_SIZE = 1000;
+
     public MessageCache(MessageStore store) {
-        this(store, new LruCacheMemoryCache(1000));
+        this(store, DEFAULT_CACHE_SIZE);
+    }
+
+    public MessageCache(MessageStore store, int cacheSize) {
+        this(store, new LruCacheMemoryCache(cacheSize));
     }
 
     public MessageCache(MessageStore store, MemoryCache memoryCache) {
