@@ -2,9 +2,7 @@ package com.tianqianguai.gramsieve.module;
 
 import android.util.LruCache;
 
-import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.Map;
 
 public final class MessageCache {
     public interface MemoryCache {
@@ -27,7 +25,9 @@ public final class MessageCache {
     public void put(long dialogId, long messageId, String text, String caption, long senderId) {
         String key = dialogId + ":" + messageId;
         CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis());
-        memoryCache.put(key, message);
+        synchronized (memoryCache) {
+            memoryCache.put(key, message);
+        }
         store.insertMessage(message);
     }
 
@@ -55,7 +55,9 @@ public final class MessageCache {
     public void markRecalled(long dialogId, long messageId) {
         CachedMessage message = get(dialogId, messageId);
         if (message != null) {
-            message.isRecalled = true;
+            synchronized (memoryCache) {
+                message.isRecalled = true;
+            }
             store.updateMessage(message);
         }
     }
@@ -63,8 +65,10 @@ public final class MessageCache {
     public void markEdited(long dialogId, long messageId, String newText) {
         CachedMessage message = get(dialogId, messageId);
         if (message != null) {
-            message.isEdited = true;
-            message.editedText = newText;
+            synchronized (memoryCache) {
+                message.isEdited = true;
+                message.editedText = newText;
+            }
             store.updateMessage(message);
         }
     }
