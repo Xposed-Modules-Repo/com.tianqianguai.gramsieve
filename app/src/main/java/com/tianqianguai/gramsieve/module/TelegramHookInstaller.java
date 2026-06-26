@@ -3698,22 +3698,28 @@ final class TelegramHookInstaller {
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
         subItemView.setOnClickListener(v -> {
             try {
-                long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
-                toggleAntiRecall(dialogId, subItemView);
-            } finally {
+                info("Anti-recall menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+                long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+                info("Anti-recall: dialogId=" + dialogId);
+                toggleAntiRecall(dialogId, v.getContext());
+            } catch (Throwable throwable) {
+                error("Anti-recall click failed", throwable);
             }
         });
     }
 
-    private void toggleAntiRecall(long dialogId, View menuItem) {
+    private void toggleAntiRecall(long dialogId, Context context) {
         boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
+        info("Anti-recall: toggle dialogId=" + dialogId + " currentlyEnabled=" + enabled);
         if (enabled) {
             backgroundMessageLoader.disableChat(dialogId);
-            Toast.makeText(menuItem.getContext(), localizedAntiRecallDisabled(menuItem.getContext()), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, localizedAntiRecallDisabled(context), Toast.LENGTH_SHORT).show();
+            info("Anti-recall: disabled for dialog " + dialogId);
         } else {
             backgroundMessageLoader.enableChat(dialogId);
-            Toast.makeText(menuItem.getContext(), localizedAntiRecallEnabled(menuItem.getContext()), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, localizedAntiRecallEnabled(context), Toast.LENGTH_SHORT).show();
+            info("Anti-recall: enabled for dialog " + dialogId);
         }
     }
 
