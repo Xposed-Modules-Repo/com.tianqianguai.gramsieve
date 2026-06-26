@@ -3714,11 +3714,11 @@ final class TelegramHookInstaller {
         info("Anti-recall: toggle dialogId=" + dialogId + " currentlyEnabled=" + enabled);
         if (enabled) {
             backgroundMessageLoader.disableChat(dialogId);
-            Toast.makeText(context, localizedAntiRecallDisabled(context), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, "❌ " + localizedAntiRecallDisabled(context), Toast.LENGTH_LONG).show();
             info("Anti-recall: disabled for dialog " + dialogId);
         } else {
             backgroundMessageLoader.enableChat(dialogId);
-            Toast.makeText(context, localizedAntiRecallEnabled(context), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, "✅ " + localizedAntiRecallEnabled(context), Toast.LENGTH_LONG).show();
             info("Anti-recall: enabled for dialog " + dialogId);
         }
     }
