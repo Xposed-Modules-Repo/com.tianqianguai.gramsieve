@@ -3721,9 +3721,7 @@ final class TelegramHookInstaller {
         // Update menu text to reflect new state
         Context context = menuItem.getContext();
         CharSequence newLabel = antiRecallStatusLabel(context, dialogId);
-        if (menuItem instanceof TextView) {
-            ((TextView) menuItem).setText(newLabel);
-        }
+        Reflect.invokeIfExists(menuItem, "setText", new Class<?>[]{CharSequence.class}, newLabel);
     }
 
     private int resolveAntiRecallIcon(Context context) {
