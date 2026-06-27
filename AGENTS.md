@@ -1,25 +1,85 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-`app/` is the only Android module. Production code lives in `app/src/main/java/com/tianqianguai/gramsieve/` and is split by responsibility: `core/` for filtering logic and rule parsing, `config/` for preferences and providers (including `AntiRecallConfigStore` for anti-recall settings), `module/` for LSPosed/Telegram hooks (including `MessageCache`, `RecallDetector`, `BackgroundMessageLoader`, and `MessageDatabaseHelper` for the anti-recall subsystem), and `ui/` for the companion config activity. Android resources live in `app/src/main/res/`. Xposed metadata lives in `app/src/main/resources/META-INF/xposed/`. JVM tests are in `app/src/test/`, instrumented tests in `app/src/androidTest/`, and sample rule/config files in `examples/`.
+`app/` is the only Android module. Production code in `app/src/main/java/com/tianqianguai/gramsieve/`:
+- `core/` — Filter logic, rule parsing, no Android deps in FilterEngine
+- `config/` — Preferences, providers, logging (`AntiRecallConfigStore` for anti-recall)
+- `module/` — LSPosed/Telegram hooks: `GramSieveModule` (entry), `TelegramHookInstaller` (~4300 lines, main hook orchestrator), `RecallDetector`, `BackgroundMessageLoader`, `MessageCache`, `MessageDatabaseHelper`, `Reflect`
+- `ui/` — Config dialog (programmatic Material UI, no XML layouts)
 
 ## Build, Test, and Development Commands
-- `./gradlew.bat assembleDebug` builds the debug APK at `app/build/outputs/apk/debug/app-debug.apk`.
-- `./gradlew.bat testDebugUnitTest` runs fast JVM tests for filtering, config storage, and reflection helpers.
-- `./gradlew.bat connectedDebugAndroidTest` runs instrumented tests on a connected device or emulator.
-- `./gradlew.bat lintDebug` runs Android lint before review.
-- `./gradlew.bat clean` clears generated outputs if Gradle state gets stale.
+```powershell
+./gradlew.bat assembleDebug          # APK at app/build/outputs/apk/debug/app-debug.apk
+./gradlew.bat testDebugUnitTest      # JVM tests
+./gradlew.bat lintDebug              # Android lint
+./gradlew.bat connectedDebugAndroidTest  # Instrumented tests (requires device)
+```
 
-Use `./gradlew` instead of `./gradlew.bat` on non-Windows shells.
+## Device Connection & Log Capture
+```powershell
+adb connect <ip>:5555               # WiFi ADB
+adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
+
+# Persistent log capture (写入文件而非依赖缓冲区)
+adb -s <ip>:5555 logcat -f /sdcard/gramsieve.log -s GramSieve:I LSPosedFramework:I
+
+# 实时查看日志
+adb -s <ip>:5555 logcat -s GramSieve:I
+
+# 过滤特定功能日志
+adb -s <ip>:5555 logcat -d | findstr "GramSieve" | findstr "Anti-recall\|RecallDetector\|BackgroundMessage"
+```
+
+## Telegram Hook Architecture
+
+### Xposed Module Lifecycle
+1. `GramSieveModule.onPackageLoaded` — fires when Telegram loads
+2. `GramSieveModule.onPackageReady` — calls `TelegramHookInstaller.install()`
+3. `install()` hooks ChatMessageCell, ChatActivity, RecyclerView, etc.
+
+### Deferred Initialization Pattern
+`ActivityThread.currentApplication()` returns null during `install()`. Anti-recall components defer initialization until menu injection when chat context is available:
+```java
+// In injectAntiRecallMenu():
+if (backgroundMessageLoader == null) {
+    initAntiRecallFromChat(chatActivity);  // uses chat context
+}
+```
+
+### Key Telegram Internal Classes (via Reflection)
+- `MessageObject` — wrapper with `messageText`, `caption`, `messageOwner` fields
+- `MessageObject.messageOwner` — TLRPC.TL_message with `message`, `media`, `from_id`, `peer_id`
+- `TLRPC.TL_updateEditChannelMessage` — edit update (has `message` field, NOT `edit_message`)
+- `TLRPC.TL_updateDeleteChannelMessages` — delete update (has `channel_id` + `messages` ArrayList)
+- `MessagesController.processUpdateArray(ArrayList)` — receives all updates
+- `MessagesController.loadMessages(...)` — 20-param method for loading chat history
+- `ChatMessageCell.setMessageObject(...)` — binds MessageObject to cell
+
+### Hook Timing
+- `handleMessageBinding` runs AFTER `chain.proceed()` — cell already rendered
+- Modifying `messageObject.messageText` or `messageOwner.message` before `chain.proceed()` does NOT prevent Telegram from displaying edited content (cell reads from internal copies)
+- `setBackgroundColor()` on cell gets overwritten by Telegram's own rendering
+- `post()` callbacks and child view additions work but may be overridden by Telegram's draw cycle
+
+### Anti-Recall Subsystem
+```
+AntiRecallConfigStore → SharedPreferences (per-chat toggle)
+BackgroundMessageLoader → periodic loadMessages via ScheduledExecutorService
+RecallDetector → hooks processUpdateArray/deleteMessages/editMessage
+MessageCache → LRU (1000) + SQLite (MessageDatabaseHelper)
+```
+- Enabled chats persisted in SharedPreferences, auto-loaded on startup
+- Messages cached when first displayed via `handleMessageBinding`
+- Edits detected via `TL_updateEditChannelMessage` class name check
 
 ## Coding Style & Naming Conventions
-Use 4-space indentation and keep source compatible with Java 11. Match the existing package split instead of adding broad utility layers. Use PascalCase for classes, camelCase for fields and methods, `UPPER_SNAKE_CASE` for constants, and `EXTRA_*` for intent extras. Keep pure logic classes small and deterministic; keep Telegram-specific hook code isolated under `module/`.
+Java 11, 4-space indent. PascalCase classes, camelCase fields/methods, `UPPER_SNAKE_CASE` constants. Keep hook code in `module/`, pure logic in `core/`.
 
-## Testing Guidelines
-Use JUnit 4 for JVM tests and AndroidX JUnit/Espresso for instrumented coverage. Name test classes `*Test` and write behavior-focused method names such as `exclusionWinsOverKeywordRule`. Add or update unit tests whenever changes touch rule parsing, matching order, config persistence, or reflection behavior.
+## Testing
+JUnit 4 for JVM tests. Mockito added for SharedPreferences mocking. Test classes named `*Test`. Instrumented tests in `app/src/androidTest/`.
 
-## Commit & Pull Request Guidelines
-This checkout does not include `.git`, so follow the repo's documented intent-first style. Write commit subjects around why the change exists, then add Lore-style trailers when useful: `Constraint:`, `Rejected:`, `Confidence:`, `Scope-risk:`, `Tested:`, `Not-tested:`. Keep pull requests narrow, link the issue, summarize user-visible behavior changes, and list the verification commands you ran. Include screenshots only for UI changes such as the config dialog.
+## Commit Style
+Intent-first. Lore-style trailers: `Constraint:`, `Tested:`, `Not-tested:`.
 
-## Security & Configuration Tips
-Keep LSPosed scope limited to `org.telegram.messenger`. Do not commit `build/`, `.gradle/`, generated APKs, or machine-specific files such as `local.properties`. Treat `examples/` as templates, not a place for personal rule sets or device data.
+## Security
+LSPosed scope limited to `org.telegram.messenger`. Do not commit `build/`, `.gradle/`, APKs, `local.properties`.
