@@ -161,6 +161,23 @@ final class TelegramHookInstaller {
         }
     }
 
+    private void initAntiRecallFromChat(Object chatActivity) {
+        if (backgroundMessageLoader != null) {
+            return;
+        }
+        try {
+            Context context = resolveContextFromActivity(chatActivity);
+            if (context == null) {
+                info("Anti-recall: chat context is null");
+                return;
+            }
+            info("Anti-recall: initializing from chat context");
+            doInitAntiRecall(context.getApplicationContext(), savedClassLoader);
+        } catch (Throwable throwable) {
+            error("Failed to initialize anti-recall from chat", throwable);
+        }
+    }
+
     private void doInitAntiRecall(Context context, ClassLoader classLoader) {
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
@@ -3681,7 +3698,15 @@ final class TelegramHookInstaller {
 
     private void injectAntiRecallMenu(Object chatActivity, Object headerItem) {
         if (backgroundMessageLoader == null) {
-            initAntiRecallDeferred();
+            // Try deferred initialization with chat context
+            initAntiRecallFromChat(chatActivity);
+        }
+        if (backgroundMessageLoader == null) {
+            info("Anti-recall: backgroundMessageLoader is null after init");
+            return;
+        }
+        if (hasMenuItem(headerItem, MENU_ID_ANTI_RECALL)) {
+            return;
         }
         if (backgroundMessageLoader == null) {
             info("Anti-recall: backgroundMessageLoader is null after deferred init");
