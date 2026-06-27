@@ -256,11 +256,35 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
             
-            String text = Reflect.asString(Reflect.field(message, "message"));
-            if (loader.isChatEnabled(dialogId)) {
-                messageCache.put(dialogId, msgId, text, "", 0L);
-                ModuleLogger.hook(TAG, "RecallDetector: cached new message dialogId=" + dialogId + " msgId=" + msgId);
+            if (!loader.isChatEnabled(dialogId)) {
+                return;
             }
+            
+            // Get all content types
+            String text = Reflect.asString(Reflect.field(message, "message"));
+            String caption = "";
+            
+            // Check for media caption
+            Object media = Reflect.field(message, "media");
+            if (media != null) {
+                String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
+                if (mediaCaption != null && !mediaCaption.isEmpty()) {
+                    caption = mediaCaption;
+                }
+            }
+            
+            // Combine text and caption for caching
+            String fullContent = text;
+            if (!caption.isEmpty()) {
+                if (!fullContent.isEmpty()) {
+                    fullContent += "\n" + caption;
+                } else {
+                    fullContent = caption;
+                }
+            }
+            
+            messageCache.put(dialogId, msgId, fullContent, caption, 0L);
+            ModuleLogger.hook(TAG, "RecallDetector: cached new message dialogId=" + dialogId + " msgId=" + msgId + " content=" + (fullContent.length() > 30 ? fullContent.substring(0, 30) + "..." : fullContent));
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
         }
@@ -282,12 +306,36 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
             
-            String newText = Reflect.asString(Reflect.field(message, "message"));
-            ModuleLogger.hook(TAG, "RecallDetector: edit_message dialogId=" + dialogId + " msgId=" + msgId + " enabled=" + loader.isChatEnabled(dialogId));
-            if (loader.isChatEnabled(dialogId)) {
-                messageCache.markEdited(dialogId, msgId, newText);
-                ModuleLogger.hook(TAG, "RecallDetector: marked edited dialogId=" + dialogId + " msgId=" + msgId);
+            if (!loader.isChatEnabled(dialogId)) {
+                return;
             }
+            
+            // Get the new content
+            String newText = Reflect.asString(Reflect.field(message, "message"));
+            String newCaption = "";
+            
+            // Check for media caption
+            Object media = Reflect.field(message, "media");
+            if (media != null) {
+                String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
+                if (mediaCaption != null && !mediaCaption.isEmpty()) {
+                    newCaption = mediaCaption;
+                }
+            }
+            
+            // Combine text and caption
+            String newContent = newText;
+            if (!newCaption.isEmpty()) {
+                if (!newContent.isEmpty()) {
+                    newContent += "\n" + newCaption;
+                } else {
+                    newContent = newCaption;
+                }
+            }
+            
+            // Mark as edited with new content
+            messageCache.markEdited(dialogId, msgId, newContent);
+            ModuleLogger.hook(TAG, "RecallDetector: marked edited dialogId=" + dialogId + " msgId=" + msgId);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process edited message", throwable);
         }

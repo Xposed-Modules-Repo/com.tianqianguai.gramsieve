@@ -2224,7 +2224,17 @@ final class TelegramHookInstaller {
 
     private void showRecalledMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
-        String markText = isChineseLocale(context) ? "[此消息已被撤回，原内容: " + cachedMessage.text + "]" : "[This message was recalled, original: " + cachedMessage.text + "]";
+        String originalContent = cachedMessage.text != null && !cachedMessage.text.isEmpty() 
+            ? cachedMessage.text 
+            : (cachedMessage.caption != null && !cachedMessage.caption.isEmpty() ? cachedMessage.caption : "");
+        
+        final String markText;
+        if (isChineseLocale(context)) {
+            markText = "[此消息已被撤回]" + (originalContent.isEmpty() ? "" : "\n原内容: " + originalContent);
+        } else {
+            markText = "[This message was recalled]" + (originalContent.isEmpty() ? "" : "\nOriginal: " + originalContent);
+        }
+        
         cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
         cell.setBackgroundColor(0x33FF0000);
         cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
@@ -2232,7 +2242,17 @@ final class TelegramHookInstaller {
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
-        String markText = isChineseLocale(context) ? "[消息已编辑，原内容: " + cachedMessage.text + "]" : "[Message edited, original: " + cachedMessage.text + "]";
+        String originalContent = cachedMessage.text != null && !cachedMessage.text.isEmpty() 
+            ? cachedMessage.text 
+            : (cachedMessage.caption != null && !cachedMessage.caption.isEmpty() ? cachedMessage.caption : "");
+        
+        final String markText;
+        if (isChineseLocale(context)) {
+            markText = "[消息已编辑]" + (originalContent.isEmpty() ? "" : "\n原内容: " + originalContent);
+        } else {
+            markText = "[Message edited]" + (originalContent.isEmpty() ? "" : "\nOriginal: " + originalContent);
+        }
+        
         cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
         cell.setBackgroundColor(0x1AFFA500);
         cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
