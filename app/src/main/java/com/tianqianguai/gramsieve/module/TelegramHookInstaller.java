@@ -2210,31 +2210,36 @@ final class TelegramHookInstaller {
             if (dialogId == 0L || messageId == 0L) return;
             if (!backgroundMessageLoader.isChatEnabled(dialogId)) return;
 
-            Object owner = Reflect.field(messageObject, "messageOwner");
-            String fullContent = "";
-            String caption = "";
-            if (owner != null) {
-                String text = Reflect.asString(Reflect.field(owner, "message"));
-                Object media = Reflect.field(owner, "media");
-                if (media != null) {
-                    caption = Reflect.asString(Reflect.field(media, "caption"));
+            // Check existing cache BEFORE updating — preserve edit/recall flags
+            MessageCache.CachedMessage existing = messageCache.get(dialogId, messageId);
+            boolean wasEdited = existing != null && existing.isEdited;
+            boolean wasRecalled = existing != null && existing.isRecalled;
+
+            if (!wasEdited && !wasRecalled) {
+                // Only update cache for clean messages
+                Object owner = Reflect.field(messageObject, "messageOwner");
+                String fullContent = "";
+                String caption = "";
+                if (owner != null) {
+                    String text = Reflect.asString(Reflect.field(owner, "message"));
+                    Object media = Reflect.field(owner, "media");
+                    if (media != null) {
+                        caption = Reflect.asString(Reflect.field(media, "caption"));
+                    }
+                    fullContent = text != null ? text : "";
+                    if (caption != null && !caption.isEmpty()) {
+                        fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+                    }
                 }
-                fullContent = text != null ? text : "";
-                if (caption != null && !caption.isEmpty()) {
-                    fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
-                }
+                messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L);
             }
-            messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L);
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
             if (cached != null && cached.isEdited) {
-                info("Anti-recall: EDITED msg " + messageId);
-                applyOverlay(cell, 0x1AFFA500);
                 final String originalText = cached.text;
-                cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, false));
+                final String editedText = cached.editedText;
+                cell.setOnClickListener(v -> showEditDialog(v, originalText, editedText));
             } else if (cached != null && cached.isRecalled) {
-                info("Anti-recall: RECALLED msg " + messageId);
-                applyOverlay(cell, 0x33FF0000);
                 final String originalText = cached.text;
                 cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, true));
             }
@@ -2269,7 +2274,6 @@ final class TelegramHookInstaller {
             android.graphics.drawable.ColorDrawable drawable = new android.graphics.drawable.ColorDrawable(color);
             drawable.setBounds(0, 0, cell.getWidth(), cell.getHeight());
             cell.getOverlay().add(drawable);
-            info("Anti-recall: overlay applied");
         } catch (Throwable t) {
             error("Anti-recall: overlay failed", t);
         }
@@ -2284,6 +2288,27 @@ final class TelegramHookInstaller {
         new android.app.AlertDialog.Builder(context)
                 .setTitle(title)
                 .setMessage(originalText)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private void showEditDialog(View anchor, String originalText, String editedText) {
+        Context context = anchor.getContext();
+        String title = isChineseLocale(context) ? "消息已编辑" : "Message Edited";
+        StringBuilder body = new StringBuilder();
+        if (originalText != null && !originalText.isEmpty()) {
+            body.append(isChineseLocale(context) ? "原始内容：\n" : "Original:\n");
+            body.append(originalText);
+        }
+        if (editedText != null && !editedText.isEmpty()) {
+            if (body.length() > 0) body.append("\n\n");
+            body.append(isChineseLocale(context) ? "编辑后：\n" : "Edited:\n");
+            body.append(editedText);
+        }
+        if (body.length() == 0) return;
+        new android.app.AlertDialog.Builder(context)
+                .setTitle(title)
+                .setMessage(body.toString())
                 .setPositiveButton("OK", null)
                 .show();
     }
@@ -3136,11 +3161,19 @@ final class TelegramHookInstaller {
         if (!(contentView instanceof ViewGroup)) {
             return null;
         }
+        // Look for ActionBarPopupWindowLayout in children
+        ViewGroup group = (ViewGroup) contentView;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child.getClass().getSimpleName().equals("ActionBarPopupWindowLayout")) {
+                return (ViewGroup) child;
+            }
+        }
         Object linearLayout = Reflect.field(contentView, "linearLayout");
         if (linearLayout instanceof ViewGroup) {
             return (ViewGroup) linearLayout;
         }
-        return (ViewGroup) contentView;
+        return group;
     }
 
     private View createMessageBlockMenuItem(Context context, Object chatActivity) {
