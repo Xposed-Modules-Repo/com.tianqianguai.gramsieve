@@ -65,6 +65,23 @@ final class Reflect {
         return null;
     }
 
+    static void setField(Object target, String name, Object value) {
+        if (target == null) {
+            return;
+        }
+        Class<?> current = target.getClass();
+        while (current != null) {
+            try {
+                Field field = current.getDeclaredField(name);
+                field.setAccessible(true);
+                field.set(target, value);
+                return;
+            } catch (ReflectiveOperationException ignored) {
+                current = current.getSuperclass();
+            }
+        }
+    }
+
     static Object staticField(Class<?> type, String name) {
         Class<?> current = type;
         while (current != null) {
