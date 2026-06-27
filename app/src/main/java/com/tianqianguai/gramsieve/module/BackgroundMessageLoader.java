@@ -24,6 +24,20 @@ public final class BackgroundMessageLoader {
         this.messageCache = messageCache;
         this.configStore = configStore;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
+        loadEnabledChats();
+    }
+
+    private void loadEnabledChats() {
+        if (configStore == null) return;
+        java.util.Set<Long> savedChats = configStore.getEnabledChatIds();
+        if (!savedChats.isEmpty()) {
+            enabledChats.addAll(savedChats);
+            info("BackgroundMessageLoader: loaded " + savedChats.size() + " enabled chats from config");
+            // Auto-start if there are enabled chats
+            if (!running) {
+                start();
+            }
+        }
     }
 
     public void setTelegramClassLoader(ClassLoader classLoader) {

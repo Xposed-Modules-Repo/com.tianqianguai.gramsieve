@@ -2190,14 +2190,11 @@ final class TelegramHookInstaller {
         Object cell = chain.getThisObject();
         Object messageObject = chain.getArg(0);
         emitHookEntry("message", cell, messageObject);
-        if (messageObject != null && messageCache != null) {
-            restoreOriginalIfEdited(messageObject);
-        }
         Object result = chain.proceed();
         try {
             if (cell instanceof View) {
                 applyDecision((View) cell, (View) cell, messageObject);
-                applyAntiRecallMark((View) cell, messageObject);
+                cacheAndApplyAntiRecall((View) cell, messageObject);
             }
         } catch (Throwable throwable) {
             error("Message filtering failed", throwable);
@@ -2205,27 +2202,50 @@ final class TelegramHookInstaller {
         return result;
     }
 
-    private void restoreOriginalIfEdited(Object messageObject) {
+    private void cacheAndApplyAntiRecall(View cell, Object messageObject) {
+        if (messageObject == null || messageCache == null) return;
         try {
             long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
             long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
             if (dialogId == 0L || messageId == 0L) return;
+            
+            if (!backgroundMessageLoader.isChatEnabled(dialogId)) return;
+            
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-            if (cached == null || !cached.isEdited) return;
-            Object owner = Reflect.field(messageObject, "messageOwner");
-            if (owner == null) return;
-            String cur = Reflect.asString(Reflect.field(owner, "message"));
-            if (cached.text != null && !cached.text.equals(cur)) {
-                Reflect.setField(owner, "message", cached.text);
-            }
-            Object media = Reflect.field(owner, "media");
-            if (media != null && cached.caption != null) {
-                String curCap = Reflect.asString(Reflect.field(media, "caption"));
-                if (!cached.caption.equals(curCap)) {
-                    Reflect.setField(media, "caption", cached.caption);
+            
+            // Cache message content when first displayed (only if not already edited)
+            if (cached == null || (!cached.isEdited && !cached.isRecalled)) {
+                Object owner = Reflect.field(messageObject, "messageOwner");
+                if (owner != null) {
+                    String text = Reflect.asString(Reflect.field(owner, "message"));
+                    String caption = "";
+                    Object media = Reflect.field(owner, "media");
+                    if (media != null) {
+                        caption = Reflect.asString(Reflect.field(media, "caption"));
+                    }
+                    String fullContent = text;
+                    if (caption != null && !caption.isEmpty()) {
+                        fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+                    }
+                    if (fullContent != null && !fullContent.isEmpty()) {
+                        messageCache.put(dialogId, messageId, fullContent, caption, 0L);
+                        info("Anti-recall: cached msg " + messageId + " content=" + fullContent.substring(0, Math.min(30, fullContent.length())));
+                    }
                 }
             }
-        } catch (Throwable ignored) {}
+            
+            // Apply anti-recall marks for edited/recalled messages
+            cached = messageCache.get(dialogId, messageId);
+            if (cached != null) {
+                if (cached.isRecalled) {
+                    showRecalledMark(cell, cached);
+                } else if (cached.isEdited) {
+                    showEditedMark(cell, cached);
+                }
+            }
+        } catch (Throwable throwable) {
+            error("Anti-recall: cacheAndApplyAntiRecall failed", throwable);
+        }
     }
 
     private void applyAntiRecallMark(View cell, Object messageObject) {
