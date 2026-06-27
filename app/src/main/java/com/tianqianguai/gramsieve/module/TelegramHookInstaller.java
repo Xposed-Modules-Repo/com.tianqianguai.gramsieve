@@ -2219,6 +2219,37 @@ final class TelegramHookInstaller {
             showRecalledMark(cell, cachedMessage);
         } else if (cachedMessage.isEdited) {
             showEditedMark(cell, cachedMessage);
+            // Intercept and restore original content
+            interceptAndRestoreContent(messageObject, cachedMessage);
+        }
+    }
+
+    private void interceptAndRestoreContent(Object messageObject, MessageCache.CachedMessage cachedMessage) {
+        try {
+            // Get the messageOwner object
+            Object messageOwner = Reflect.field(messageObject, "messageOwner");
+            if (messageOwner == null) {
+                return;
+            }
+            
+            // Restore original text content
+            String currentText = Reflect.asString(Reflect.field(messageOwner, "message"));
+            if (cachedMessage.text != null && !cachedMessage.text.equals(currentText)) {
+                Reflect.setField(messageOwner, "message", cachedMessage.text);
+                info("Anti-recall: restored original text for msg " + cachedMessage.messageId);
+            }
+            
+            // Restore original caption if it exists
+            Object media = Reflect.field(messageOwner, "media");
+            if (media != null) {
+                String currentCaption = Reflect.asString(Reflect.field(media, "caption"));
+                if (cachedMessage.caption != null && !cachedMessage.caption.equals(currentCaption)) {
+                    Reflect.setField(media, "caption", cachedMessage.caption);
+                    info("Anti-recall: restored original caption for msg " + cachedMessage.messageId);
+                }
+            }
+        } catch (Throwable throwable) {
+            error("Anti-recall: interceptAndRestoreContent failed", throwable);
         }
     }
 
@@ -2242,20 +2273,8 @@ final class TelegramHookInstaller {
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
-        String originalContent = cachedMessage.text != null && !cachedMessage.text.isEmpty() 
-            ? cachedMessage.text 
-            : (cachedMessage.caption != null && !cachedMessage.caption.isEmpty() ? cachedMessage.caption : "");
-        
-        final String markText;
-        if (isChineseLocale(context)) {
-            markText = "[消息已编辑]" + (originalContent.isEmpty() ? "" : "\n原内容: " + originalContent);
-        } else {
-            markText = "[Message edited]" + (originalContent.isEmpty() ? "" : "\nOriginal: " + originalContent);
-        }
-        
         cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
         cell.setBackgroundColor(0x1AFFA500);
-        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
     }
 
     private Object handleCellLifecycle(XposedInterface.Chain chain) throws Throwable {
