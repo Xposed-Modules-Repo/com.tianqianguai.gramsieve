@@ -166,6 +166,9 @@ final class TelegramHookInstaller {
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
         messageCache = new MessageCache(databaseHelper);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
+        if (classLoader != null) {
+            backgroundMessageLoader.setTelegramClassLoader(classLoader);
+        }
         recallDetector = new RecallDetector(messageCache, backgroundMessageLoader);
         if (classLoader != null) {
             recallDetector.install(classLoader, module);
@@ -3678,19 +3681,22 @@ final class TelegramHookInstaller {
 
     private void injectAntiRecallMenu(Object chatActivity, Object headerItem) {
         if (backgroundMessageLoader == null) {
-            // Try deferred initialization
             initAntiRecallDeferred();
         }
         if (backgroundMessageLoader == null) {
+            info("Anti-recall: backgroundMessageLoader is null after deferred init");
             return;
         }
         if (hasMenuItem(headerItem, MENU_ID_ANTI_RECALL)) {
+            info("Anti-recall: menu item already exists");
             return;
         }
         Context context = contextFromMenuItem(headerItem);
         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        info("Anti-recall: injecting menu for dialogId=" + dialogId);
         int iconRes = resolveAntiRecallIcon(context);
         CharSequence label = antiRecallStatusLabel(context, dialogId);
+        info("Anti-recall: label=" + label);
         Object subItem = addMenuSubItem(headerItem, MENU_ID_ANTI_RECALL, iconRes, label);
         if (!(subItem instanceof View)) {
             info("Anti-recall addSubItem unavailable on " + headerItem.getClass().getName());
@@ -3698,30 +3704,28 @@ final class TelegramHookInstaller {
         }
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
+        info("Anti-recall: menu item created, class=" + subItemView.getClass().getName());
         subItemView.setOnClickListener(v -> {
             try {
-                info("Anti-recall menu clicked");
-                toggleAntiRecall(dialogId, subItemView);
+                info("Anti-recall: onClick fired");
+                boolean wasEnabled = backgroundMessageLoader.isChatEnabled(dialogId);
+                info("Anti-recall: wasEnabled=" + wasEnabled + " dialogId=" + dialogId);
+                if (wasEnabled) {
+                    backgroundMessageLoader.disableChat(dialogId);
+                } else {
+                    backgroundMessageLoader.enableChat(dialogId);
+                }
+                boolean nowEnabled = backgroundMessageLoader.isChatEnabled(dialogId);
+                info("Anti-recall: nowEnabled=" + nowEnabled);
+                CharSequence newLabel = antiRecallStatusLabel(v.getContext(), dialogId);
+                info("Anti-recall: newLabel=" + newLabel);
+                Reflect.invokeIfExists(v, "setText", new Class<?>[]{CharSequence.class}, newLabel);
+                info("Anti-recall: setText called");
             } catch (Throwable throwable) {
                 error("Anti-recall click failed", throwable);
             }
         });
-    }
-
-    private void toggleAntiRecall(long dialogId, View menuItem) {
-        boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
-        info("Anti-recall: toggle dialogId=" + dialogId + " currentlyEnabled=" + enabled);
-        if (enabled) {
-            backgroundMessageLoader.disableChat(dialogId);
-            info("Anti-recall: disabled for dialog " + dialogId);
-        } else {
-            backgroundMessageLoader.enableChat(dialogId);
-            info("Anti-recall: enabled for dialog " + dialogId);
-        }
-        // Update menu text to reflect new state
-        Context context = menuItem.getContext();
-        CharSequence newLabel = antiRecallStatusLabel(context, dialogId);
-        Reflect.invokeIfExists(menuItem, "setText", new Class<?>[]{CharSequence.class}, newLabel);
+        info("Anti-recall: menu injection complete");
     }
 
     private int resolveAntiRecallIcon(Context context) {
