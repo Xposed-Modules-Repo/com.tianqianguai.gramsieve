@@ -2210,28 +2210,23 @@ final class TelegramHookInstaller {
             if (dialogId == 0L || messageId == 0L) return;
             if (!backgroundMessageLoader.isChatEnabled(dialogId)) return;
 
-            MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-
-            if (cached == null || (!cached.isEdited && !cached.isRecalled)) {
-                Object owner = Reflect.field(messageObject, "messageOwner");
-                if (owner != null) {
-                    String text = Reflect.asString(Reflect.field(owner, "message"));
-                    String caption = "";
-                    Object media = Reflect.field(owner, "media");
-                    if (media != null) {
-                        caption = Reflect.asString(Reflect.field(media, "caption"));
-                    }
-                    String fullContent = text;
-                    if (caption != null && !caption.isEmpty()) {
-                        fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
-                    }
-                    if (fullContent != null && !fullContent.isEmpty()) {
-                        messageCache.put(dialogId, messageId, fullContent, caption, 0L);
-                    }
+            Object owner = Reflect.field(messageObject, "messageOwner");
+            String fullContent = "";
+            String caption = "";
+            if (owner != null) {
+                String text = Reflect.asString(Reflect.field(owner, "message"));
+                Object media = Reflect.field(owner, "media");
+                if (media != null) {
+                    caption = Reflect.asString(Reflect.field(media, "caption"));
+                }
+                fullContent = text != null ? text : "";
+                if (caption != null && !caption.isEmpty()) {
+                    fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
                 }
             }
+            messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L);
 
-            cached = messageCache.get(dialogId, messageId);
+            MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
             if (cached != null && cached.isEdited) {
                 info("Anti-recall: EDITED msg " + messageId);
                 applyOverlay(cell, 0x1AFFA500);
