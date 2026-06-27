@@ -204,8 +204,15 @@ public final class RecallDetector {
                 Object message = Reflect.field(update, "message");
                 if (message != null) {
                     if (className.contains("Edit")) {
-                        // This is an edit update
-                        processEditedMessage(message);
+                        // This is an edit update — but Telegram also sends TL_updateEditChannelMessage
+                        // for non-content changes (reactions, views, etc.). Only mark as edited
+                        // if the message text actually changed.
+                        if (isRealEdit(message)) {
+                            processEditedMessage(message);
+                        } else {
+                            // Not a real edit (e.g. reaction added) — refresh cache
+                            processMessageFromUpdate(message);
+                        }
                     } else {
                         // This is a new message
                         processMessageFromUpdate(message);
@@ -280,6 +287,49 @@ public final class RecallDetector {
             }
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
+        }
+    }
+
+    private boolean isRealEdit(Object message) {
+        try {
+            int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
+            if (msgId == 0) return false;
+
+            Object peerId = Reflect.field(message, "peer_id");
+            long dialogId = 0L;
+            if (peerId != null) {
+                long userId = Reflect.asLong(Reflect.field(peerId, "user_id"), 0L);
+                long chatId = Reflect.asLong(Reflect.field(peerId, "chat_id"), 0L);
+                long channelId = Reflect.asLong(Reflect.field(peerId, "channel_id"), 0L);
+                if (userId != 0L) dialogId = userId;
+                else if (chatId != 0L) dialogId = -chatId;
+                else if (channelId != 0L) dialogId = -channelId;
+            }
+            if (dialogId == 0L) return false;
+
+            MessageCache.CachedMessage cached = messageCache.get(dialogId, msgId);
+            if (cached == null || cached.text == null) {
+                return false;
+            }
+
+            String newText = Reflect.asString(Reflect.field(message, "message"));
+            String newCaption = "";
+            Object media = Reflect.field(message, "media");
+            if (media != null) {
+                String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
+                if (mediaCaption != null && !mediaCaption.isEmpty()) {
+                    newCaption = mediaCaption;
+                }
+            }
+            String newContent = newText != null ? newText : "";
+            if (!newCaption.isEmpty()) {
+                newContent = newContent.isEmpty() ? newCaption : newContent + "\n" + newCaption;
+            }
+
+            return !cached.text.equals(newContent);
+        } catch (Throwable t) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "isRealEdit failed", t);
+            return false;
         }
     }
 
