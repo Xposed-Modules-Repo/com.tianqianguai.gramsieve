@@ -2190,11 +2190,53 @@ final class TelegramHookInstaller {
         Object cell = chain.getThisObject();
         Object messageObject = chain.getArg(0);
         emitHookEntry("message", cell, messageObject);
+
+        String savedText = null;
+        String savedCaption = null;
+        Object savedOwner = null;
+        Object savedMedia = null;
+
+        if (messageObject != null && messageCache != null && backgroundMessageLoader != null) {
+            try {
+                long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
+                long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
+                if (dialogId != 0L && messageId != 0L && backgroundMessageLoader.isChatEnabled(dialogId)) {
+                    MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+                    if (cached != null && cached.isEdited && cached.text != null) {
+                        savedOwner = Reflect.field(messageObject, "messageOwner");
+                        if (savedOwner != null) {
+                            String cur = Reflect.asString(Reflect.field(savedOwner, "message"));
+                            if (!cached.text.equals(cur)) {
+                                savedText = cur;
+                                Reflect.setField(savedOwner, "message", cached.text);
+                            }
+                            savedMedia = Reflect.field(savedOwner, "media");
+                            if (savedMedia != null && cached.caption != null) {
+                                String curCap = Reflect.asString(Reflect.field(savedMedia, "caption"));
+                                if (!cached.caption.equals(curCap)) {
+                                    savedCaption = curCap;
+                                    Reflect.setField(savedMedia, "caption", cached.caption);
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {}
+        }
+
         Object result = chain.proceed();
+
+        if (savedOwner != null && savedText != null) {
+            Reflect.setField(savedOwner, "message", savedText);
+        }
+        if (savedMedia != null && savedCaption != null) {
+            Reflect.setField(savedMedia, "caption", savedCaption);
+        }
+
         try {
             if (cell instanceof View) {
                 applyDecision((View) cell, (View) cell, messageObject);
-                cacheAndApplyAntiRecall((View) cell, messageObject);
+                applyAntiRecallMark((View) cell, messageObject);
             }
         } catch (Throwable throwable) {
             error("Message filtering failed", throwable);
@@ -2203,17 +2245,16 @@ final class TelegramHookInstaller {
     }
 
     private void cacheAndApplyAntiRecall(View cell, Object messageObject) {
-        if (messageObject == null || messageCache == null) return;
+        if (messageObject == null || messageCache == null || backgroundMessageLoader == null) return;
         try {
             long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
             long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
             if (dialogId == 0L || messageId == 0L) return;
-            
             if (!backgroundMessageLoader.isChatEnabled(dialogId)) return;
-            
+
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-            
-            // Cache message content when first displayed (only if not already edited)
+
+            // Cache message content when first displayed (only if not already edited/recalled)
             if (cached == null || (!cached.isEdited && !cached.isRecalled)) {
                 Object owner = Reflect.field(messageObject, "messageOwner");
                 if (owner != null) {
@@ -2229,24 +2270,20 @@ final class TelegramHookInstaller {
                     }
                     if (fullContent != null && !fullContent.isEmpty()) {
                         messageCache.put(dialogId, messageId, fullContent, caption, 0L);
-                        info("Anti-recall: cached msg " + messageId + " content=" + fullContent.substring(0, Math.min(30, fullContent.length())));
                     }
                 }
             }
-            
-            // Apply anti-recall marks for edited/recalled messages
+
+            // Apply visual marks for edited/recalled messages
             cached = messageCache.get(dialogId, messageId);
-            if (cached != null && cached.isEdited) {
-                showEditedMark(cell, cached);
-                // Replace text AFTER cell is fully rendered
-                final String originalText = cached.text;
-                cell.post(() -> replaceTextInCell(cell, originalText));
-            } else if (cached != null && cached.isRecalled) {
-                showRecalledMark(cell, cached);
+            if (cached != null) {
+                if (cached.isRecalled) {
+                    cell.setBackgroundColor(0x33FF0000);
+                } else if (cached.isEdited) {
+                    cell.setBackgroundColor(0x1AFFA500);
+                }
             }
-        } catch (Throwable throwable) {
-            error("Anti-recall: cacheAndApplyAntiRecall failed", throwable);
-        }
+        } catch (Throwable ignored) {}
     }
 
     private void replaceTextInCell(View cell, String originalText) {
