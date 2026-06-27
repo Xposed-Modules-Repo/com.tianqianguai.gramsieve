@@ -2190,6 +2190,9 @@ final class TelegramHookInstaller {
         Object cell = chain.getThisObject();
         Object messageObject = chain.getArg(0);
         emitHookEntry("message", cell, messageObject);
+        if (messageObject != null && messageCache != null) {
+            restoreOriginalIfEdited(messageObject);
+        }
         Object result = chain.proceed();
         try {
             if (cell instanceof View) {
@@ -2200,6 +2203,29 @@ final class TelegramHookInstaller {
             error("Message filtering failed", throwable);
         }
         return result;
+    }
+
+    private void restoreOriginalIfEdited(Object messageObject) {
+        try {
+            long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
+            long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
+            if (dialogId == 0L || messageId == 0L) return;
+            MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+            if (cached == null || !cached.isEdited) return;
+            Object owner = Reflect.field(messageObject, "messageOwner");
+            if (owner == null) return;
+            String cur = Reflect.asString(Reflect.field(owner, "message"));
+            if (cached.text != null && !cached.text.equals(cur)) {
+                Reflect.setField(owner, "message", cached.text);
+            }
+            Object media = Reflect.field(owner, "media");
+            if (media != null && cached.caption != null) {
+                String curCap = Reflect.asString(Reflect.field(media, "caption"));
+                if (!cached.caption.equals(curCap)) {
+                    Reflect.setField(media, "caption", cached.caption);
+                }
+            }
+        } catch (Throwable ignored) {}
     }
 
     private void applyAntiRecallMark(View cell, Object messageObject) {
