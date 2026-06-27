@@ -2224,18 +2224,18 @@ final class TelegramHookInstaller {
 
     private void showRecalledMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
-        String markText = isChineseLocale(context) ? "[此消息已被撤回]" : "[This message was recalled]";
+        String markText = isChineseLocale(context) ? "[此消息已被撤回，原内容: " + cachedMessage.text + "]" : "[This message was recalled, original: " + cachedMessage.text + "]";
         cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
         cell.setBackgroundColor(0x33FF0000);
-        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_SHORT).show());
+        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
     }
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
-        String markText = isChineseLocale(context) ? "[已编辑]" : "[Edited]";
+        String markText = isChineseLocale(context) ? "[消息已编辑，原内容: " + cachedMessage.text + "]" : "[Message edited, original: " + cachedMessage.text + "]";
         cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
         cell.setBackgroundColor(0x1AFFA500);
-        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_SHORT).show());
+        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
     }
 
     private Object handleCellLifecycle(XposedInterface.Chain chain) throws Throwable {
