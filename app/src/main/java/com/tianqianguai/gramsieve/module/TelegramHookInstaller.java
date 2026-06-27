@@ -2212,7 +2212,6 @@ final class TelegramHookInstaller {
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
 
-            // Cache message content when first displayed (only if not already edited/recalled)
             if (cached == null || (!cached.isEdited && !cached.isRecalled)) {
                 Object owner = Reflect.field(messageObject, "messageOwner");
                 if (owner != null) {
@@ -2232,20 +2231,53 @@ final class TelegramHookInstaller {
                 }
             }
 
-            // Apply visual marks and click listener for edited/recalled messages
             cached = messageCache.get(dialogId, messageId);
-            if (cached != null) {
-                if (cached.isRecalled) {
-                    cell.setBackgroundColor(0x33FF0000);
-                    final String originalText = cached.text;
-                    cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, true));
-                } else if (cached.isEdited) {
-                    cell.setBackgroundColor(0x1AFFA500);
-                    final String originalText = cached.text;
-                    cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, false));
-                }
+            if (cached != null && cached.isEdited) {
+                info("Anti-recall: EDITED msg " + messageId);
+                applyOverlay(cell, 0x1AFFA500);
+                final String originalText = cached.text;
+                cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, false));
+            } else if (cached != null && cached.isRecalled) {
+                info("Anti-recall: RECALLED msg " + messageId);
+                applyOverlay(cell, 0x33FF0000);
+                final String originalText = cached.text;
+                cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, true));
             }
-        } catch (Throwable ignored) {}
+        } catch (Throwable t) {
+            error("Anti-recall: cacheAndApply failed", t);
+        }
+    }
+
+    private void addColorIndicator(View cell, int color) {
+        info("Anti-recall: addColorIndicator called, cell class=" + cell.getClass().getSimpleName());
+        if (!(cell instanceof ViewGroup)) {
+            info("Anti-recall: cell is NOT a ViewGroup, cannot add indicator");
+            return;
+        }
+        ViewGroup group = (ViewGroup) cell;
+        if (group.findViewWithTag("gramsieve_indicator") != null) {
+            info("Anti-recall: indicator already exists");
+            return;
+        }
+        Context context = cell.getContext();
+        View indicator = new View(context);
+        indicator.setTag("gramsieve_indicator");
+        indicator.setBackgroundColor(color);
+        int height = (int) (3 * context.getResources().getDisplayMetrics().density);
+        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, height);
+        group.addView(indicator, lp);
+        info("Anti-recall: indicator added, height=" + height);
+    }
+
+    private void applyOverlay(View cell, int color) {
+        try {
+            android.graphics.drawable.ColorDrawable drawable = new android.graphics.drawable.ColorDrawable(color);
+            drawable.setBounds(0, 0, cell.getWidth(), cell.getHeight());
+            cell.getOverlay().add(drawable);
+            info("Anti-recall: overlay applied");
+        } catch (Throwable t) {
+            error("Anti-recall: overlay failed", t);
+        }
     }
 
     private void showOriginalContentDialog(View anchor, String originalText, boolean isRecalled) {

@@ -21,7 +21,8 @@ adb connect <ip>:5555               # WiFi ADB
 adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 
 # Persistent log capture (写入文件而非依赖缓冲区)
-adb -s <ip>:5555 logcat -f /sdcard/gramsieve.log -s GramSieve:I LSPosedFramework:I
+# 日志文件自动写入 /sdcard/GramSieve/gramsieve.log
+adb -s <ip>:5555 pull /sdcard/GramSieve/gramsieve.log ./gramsieve.log
 
 # 实时查看日志
 adb -s <ip>:5555 logcat -s GramSieve:I

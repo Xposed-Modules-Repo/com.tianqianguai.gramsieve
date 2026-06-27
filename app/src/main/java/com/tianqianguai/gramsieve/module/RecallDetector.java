@@ -240,11 +240,9 @@ public final class RecallDetector {
 
     private void processMessageFromUpdate(Object message) {
         try {
-            // TLRPC.TL_message fields
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
             if (msgId == 0) return;
-            
-            // Get dialog ID from peer_id
+
             Object peerId = Reflect.field(message, "peer_id");
             long dialogId = 0L;
             if (peerId != null) {
@@ -255,16 +253,13 @@ public final class RecallDetector {
                 else if (chatId != 0L) dialogId = -chatId;
                 else if (channelId != 0L) dialogId = -channelId;
             }
-            
+
             if (!loader.isChatEnabled(dialogId)) {
                 return;
             }
-            
-            // Get all content types
+
             String text = Reflect.asString(Reflect.field(message, "message"));
             String caption = "";
-            
-            // Check for media caption
             Object media = Reflect.field(message, "media");
             if (media != null) {
                 String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
@@ -272,19 +267,17 @@ public final class RecallDetector {
                     caption = mediaCaption;
                 }
             }
-            
-            // Combine text and caption for caching
+
             String fullContent = text;
             if (!caption.isEmpty()) {
-                if (!fullContent.isEmpty()) {
-                    fullContent += "\n" + caption;
-                } else {
-                    fullContent = caption;
-                }
+                fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
             }
-            
-            messageCache.put(dialogId, msgId, fullContent, caption, 0L);
-            ModuleLogger.hook(TAG, "RecallDetector: cached new message dialogId=" + dialogId + " msgId=" + msgId + " content=" + (fullContent.length() > 30 ? fullContent.substring(0, 30) + "..." : fullContent));
+
+            if (fullContent != null && !fullContent.isEmpty()) {
+                // Fresh update from Telegram — this message is NOT edited/recalled at this point
+                // Reset any stale flags from prior sessions
+                messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L);
+            }
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
         }
