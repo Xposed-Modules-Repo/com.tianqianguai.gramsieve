@@ -2236,16 +2236,60 @@ final class TelegramHookInstaller {
             
             // Apply anti-recall marks for edited/recalled messages
             cached = messageCache.get(dialogId, messageId);
-            if (cached != null) {
-                if (cached.isRecalled) {
-                    showRecalledMark(cell, cached);
-                } else if (cached.isEdited) {
-                    showEditedMark(cell, cached);
-                }
+            if (cached != null && cached.isEdited) {
+                showEditedMark(cell, cached);
+                // Replace text AFTER cell is fully rendered
+                final String originalText = cached.text;
+                cell.post(() -> replaceTextInCell(cell, originalText));
+            } else if (cached != null && cached.isRecalled) {
+                showRecalledMark(cell, cached);
             }
         } catch (Throwable throwable) {
             error("Anti-recall: cacheAndApplyAntiRecall failed", throwable);
         }
+    }
+
+    private void replaceTextInCell(View cell, String originalText) {
+        if (originalText == null || originalText.isEmpty()) return;
+        try {
+            if (cell instanceof ViewGroup) {
+                TextView tv = findLargestTextView((ViewGroup) cell);
+                if (tv != null) {
+                    String current = tv.getText().toString();
+                    if (!originalText.equals(current)) {
+                        tv.setText(originalText);
+                        info("Anti-recall: replaced text in cell");
+                    }
+                }
+            }
+        } catch (Throwable throwable) {
+            error("Anti-recall: replaceTextInCell failed", throwable);
+        }
+    }
+
+    private TextView findLargestTextView(ViewGroup group) {
+        TextView largest = null;
+        int maxLen = 0;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof TextView && child.getVisibility() == View.VISIBLE) {
+                String text = ((TextView) child).getText().toString();
+                if (text.length() > maxLen) {
+                    maxLen = text.length();
+                    largest = (TextView) child;
+                }
+            } else if (child instanceof ViewGroup) {
+                TextView found = findLargestTextView((ViewGroup) child);
+                if (found != null) {
+                    String text = found.getText().toString();
+                    if (text.length() > maxLen) {
+                        maxLen = text.length();
+                        largest = found;
+                    }
+                }
+            }
+        }
+        return largest;
     }
 
     private void applyAntiRecallMark(View cell, Object messageObject) {
