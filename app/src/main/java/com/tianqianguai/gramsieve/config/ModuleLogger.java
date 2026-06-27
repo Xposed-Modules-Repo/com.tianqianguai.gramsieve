@@ -2,7 +2,15 @@ package com.tianqianguai.gramsieve.config;
 
 import android.content.Context;
 import android.os.Bundle;
+import android.os.Environment;
 import android.util.Log;
+
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.text.SimpleDateFormat;
+import java.util.Date;
+import java.util.Locale;
 
 import io.github.libxposed.api.XposedModule;
 
@@ -14,20 +22,74 @@ public final class ModuleLogger {
     public static final String CAT_ERROR = "error";
     public static final String CAT_DECISION = "decision";
 
+    private static final String LOG_DIR = "GramSieve";
+    private static final String LOG_FILE = "gramsieve.log";
+    private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
+
     private static volatile Context appContext;
     private static volatile boolean hookProcessMode;
     private static volatile XposedModule xposedModule;
+    private static volatile File logFile;
 
     private ModuleLogger() {
     }
 
     public static void init(Context context) {
         appContext = context.getApplicationContext();
+        initLogFile();
     }
 
     public static void setHookProcessMode(XposedModule module) {
         hookProcessMode = true;
         xposedModule = module;
+        initLogFile();
+    }
+
+    private static void initLogFile() {
+        try {
+            Context context = appContext;
+            if (context == null) {
+                return;
+            }
+            File dir = context.getFilesDir();
+            if (dir != null && !dir.exists()) {
+                dir.mkdirs();
+            }
+            logFile = new File(dir, LOG_FILE);
+            if (!logFile.exists()) {
+                logFile.createNewFile();
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to init log file", e);
+        }
+    }
+
+    private static void writeToFile(String level, String category, String tag, String message, String throwableStr) {
+        File file = logFile;
+        if (file == null) {
+            return;
+        }
+        try {
+            String timestamp = DATE_FORMAT.format(new Date());
+            StringBuilder sb = new StringBuilder();
+            sb.append(timestamp).append(" ").append(level).append("/");
+            sb.append(category).append(": ").append(tag).append(": ").append(message);
+            if (throwableStr != null && !throwableStr.isEmpty()) {
+                sb.append("\n").append(throwableStr);
+            }
+            sb.append("\n");
+
+            synchronized (ModuleLogger.class) {
+                FileWriter writer = new FileWriter(file, true);
+                try {
+                    writer.write(sb.toString());
+                } finally {
+                    writer.close();
+                }
+            }
+        } catch (IOException e) {
+            Log.e(TAG, "Failed to write to log file", e);
+        }
     }
 
     public static void info(String category, String tag, String message) {
@@ -35,6 +97,7 @@ public final class ModuleLogger {
         if (xposedModule != null) {
             xposedModule.log(Log.INFO, TAG, "[" + category + "] " + tag + ": " + message);
         }
+        writeToFile("INFO", category, tag, message, null);
         persist("INFO", category, tag, message, (String) null);
     }
 
@@ -43,6 +106,7 @@ public final class ModuleLogger {
         if (xposedModule != null) {
             xposedModule.log(Log.WARN, TAG, "[" + category + "] " + tag + ": " + message);
         }
+        writeToFile("WARN", category, tag, message, null);
         persist("WARN", category, tag, message, (String) null);
     }
 
@@ -51,6 +115,7 @@ public final class ModuleLogger {
         if (xposedModule != null) {
             xposedModule.log(Log.ERROR, TAG, "[" + category + "] " + tag + ": " + message, throwable);
         }
+        writeToFile("ERROR", category, tag, message, throwableToString(throwable));
         persist("ERROR", category, tag, message, throwable);
     }
 

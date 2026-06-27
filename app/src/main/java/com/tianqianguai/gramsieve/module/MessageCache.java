@@ -37,6 +37,23 @@ public final class MessageCache {
         store.insertMessage(message);
     }
 
+    /**
+     * Insert a fresh (non-edit) message, resetting any stale isEdited/isRecalled flags.
+     * Used when Telegram sends a new message update — this is ground truth that the
+     * message is NOT edited/recalled at this point.
+     */
+    public void putFresh(long dialogId, long messageId, String text, String caption, long senderId) {
+        String key = dialogId + ":" + messageId;
+        CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis());
+        message.isEdited = false;
+        message.isRecalled = false;
+        message.editedText = null;
+        synchronized (memoryCache) {
+            memoryCache.put(key, message);
+        }
+        store.insertOrReplaceFresh(message);
+    }
+
     public CachedMessage get(long dialogId, long messageId) {
         String key = dialogId + ":" + messageId;
         synchronized (memoryCache) {

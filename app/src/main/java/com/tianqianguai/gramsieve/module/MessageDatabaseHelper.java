@@ -11,7 +11,7 @@ import java.util.List;
 
 public final class MessageDatabaseHelper extends SQLiteOpenHelper implements MessageStore {
     private static final String DATABASE_NAME = "gramsieve_messages.db";
-    private static final int DATABASE_VERSION = 2;
+    private static final int DATABASE_VERSION = 3;
     private static final String TABLE_NAME = "cached_messages";
 
     public MessageDatabaseHelper(Context context) {
@@ -41,6 +41,14 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_recalled ON " + TABLE_NAME + " (dialog_id, is_recalled)");
             db.execSQL("CREATE INDEX IF NOT EXISTS idx_edited ON " + TABLE_NAME + " (dialog_id, is_edited)");
         }
+        if (oldVersion < 3) {
+            // Reset stale isEdited/isRecalled flags from prior test sessions
+            ContentValues values = new ContentValues();
+            values.put("is_edited", 0);
+            values.put("is_recalled", 0);
+            values.putNull("edited_text");
+            db.update(TABLE_NAME, values, "is_edited = 1 OR is_recalled = 1", null);
+        }
     }
 
     public void insertMessage(MessageCache.CachedMessage message) {
@@ -55,6 +63,25 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
         values.put("is_recalled", message.isRecalled ? 1 : 0);
         values.put("is_edited", message.isEdited ? 1 : 0);
         values.put("edited_text", message.editedText);
+        db.insertWithOnConflict(TABLE_NAME, null, values, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    /**
+     * Insert a fresh message, explicitly resetting is_edited and is_recalled to 0.
+     * This is the ground truth from Telegram — the message is NOT edited/recalled.
+     */
+    public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
+        SQLiteDatabase db = getWritableDatabase();
+        ContentValues values = new ContentValues();
+        values.put("dialog_id", message.dialogId);
+        values.put("message_id", message.messageId);
+        values.put("sender_id", message.senderId);
+        values.put("text", message.text);
+        values.put("caption", message.caption);
+        values.put("timestamp", message.timestamp);
+        values.put("is_recalled", 0);
+        values.put("is_edited", 0);
+        values.put("edited_text", (String) null);
         db.insertWithOnConflict(TABLE_NAME, null, values, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
