@@ -94,8 +94,10 @@ public final class RecallDetector {
 
     void processUpdates(ArrayList<?> updates) {
         if (messageCache == null || loader == null || updates == null) {
+            ModuleLogger.hook(TAG, "RecallDetector: processUpdates skipped - cache=" + (messageCache != null) + " loader=" + (loader != null) + " updates=" + (updates != null));
             return;
         }
+        ModuleLogger.hook(TAG, "RecallDetector: processUpdates size=" + updates.size());
         for (Object update : updates) {
             try {
                 Object message = Reflect.field(update, "message");
@@ -105,8 +107,11 @@ public final class RecallDetector {
                     String text = Reflect.asString(Reflect.field(message, "messageText"));
                     String caption = Reflect.asString(Reflect.field(message, "caption"));
                     long senderId = resolveSenderId(message);
-                    if (loader.isChatEnabled(dialogId)) {
+                    boolean chatEnabled = loader.isChatEnabled(dialogId);
+                    ModuleLogger.hook(TAG, "RecallDetector: update dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + chatEnabled + " text=" + (text != null ? text.substring(0, Math.min(30, text.length())) : "null"));
+                    if (chatEnabled) {
                         messageCache.put(dialogId, messageId, text, caption, senderId);
+                        ModuleLogger.hook(TAG, "RecallDetector: cached message dialogId=" + dialogId + " msgId=" + messageId);
                     }
                 }
             } catch (Throwable throwable) {
@@ -119,6 +124,7 @@ public final class RecallDetector {
         if (messageCache == null || loader == null || messageIds == null) {
             return;
         }
+        ModuleLogger.hook(TAG, "RecallDetector: processDeletions dialogId=" + dialogId + " count=" + messageIds.size() + " enabled=" + loader.isChatEnabled(dialogId));
         if (!loader.isChatEnabled(dialogId)) {
             return;
         }
@@ -126,6 +132,7 @@ public final class RecallDetector {
             int messageId = Reflect.asInt(messageIdObj, 0);
             if (messageId > 0) {
                 messageCache.markRecalled(dialogId, messageId);
+                ModuleLogger.hook(TAG, "RecallDetector: marked recalled dialogId=" + dialogId + " msgId=" + messageId);
             }
         }
     }
@@ -134,10 +141,12 @@ public final class RecallDetector {
         if (messageCache == null || loader == null) {
             return;
         }
+        ModuleLogger.hook(TAG, "RecallDetector: processEdit dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + loader.isChatEnabled(dialogId));
         if (!loader.isChatEnabled(dialogId)) {
             return;
         }
         messageCache.markEdited(dialogId, messageId, newText);
+        ModuleLogger.hook(TAG, "RecallDetector: marked edited dialogId=" + dialogId + " msgId=" + messageId);
     }
 
     private long resolveSenderId(Object message) {
