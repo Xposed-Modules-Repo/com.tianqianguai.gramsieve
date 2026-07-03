@@ -15,6 +15,21 @@
 ./gradlew.bat connectedDebugAndroidTest  # Instrumented tests (requires device)
 ```
 
+## Release Notes & Publishing Workflow
+中文：
+- GitHub Release 正文只写更新日志，不写下载说明、校验说明或发布机制解释。
+- Release notes 必须先中文后英文；中文区标题用 `## 更新日志`，英文区标题用 `## Changelog`。
+- 在 PowerShell 中不要用内联 `--notes "..."` 传包含 Markdown 反引号的内容；反引号会把 `a`、`v` 等字符转成控制字符并导致页面乱码。先写 UTF-8 notes 文件，再使用 `gh release edit/create --notes-file <file>`。
+- Xposed-Modules-Repo 上传原始 APK 资产时可能会把 release tag 自动规范化成 `versionCode-versionName`，例如 `2-0.2.0`。如果需要用户可见 tag 保持 `v0.2.0`，发布资产使用 zip 包承载 APK，并在发布后核对 release 列表。
+- 发布后必须验证：`gh release list --repo Xposed-Modules-Repo/Gramsieve --limit 5`，以及 `gh release view <tag> --json body,tagName,url`。
+
+English:
+- GitHub Release bodies should contain changelog entries only, not download instructions, verification details, or publishing-mechanism notes.
+- Release notes must be bilingual with Chinese first and English second; use `## 更新日志` for Chinese and `## Changelog` for English.
+- Do not pass Markdown notes containing backticks through inline PowerShell `--notes "..."`; PowerShell can turn sequences such as `a` and `v` into control characters. Write a UTF-8 notes file and use `gh release edit/create --notes-file <file>`.
+- Raw APK assets in Xposed-Modules-Repo may normalize the visible release tag to `versionCode-versionName`, such as `2-0.2.0`. If the public tag must remain `v0.2.0`, upload a zip that contains the APK and verify the release list afterward.
+- After publishing, verify with `gh release list --repo Xposed-Modules-Repo/Gramsieve --limit 5` and `gh release view <tag> --json body,tagName,url`.
+
 ## Device Connection & Log Capture
 ```powershell
 adb connect <ip>:5555               # WiFi ADB
