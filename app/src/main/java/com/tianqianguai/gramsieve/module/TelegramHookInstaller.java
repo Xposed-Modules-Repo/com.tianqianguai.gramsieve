@@ -3611,17 +3611,94 @@ final class TelegramHookInstaller {
             Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
             return;
         }
-        if (showOriginalMediaHistory(anchor, cached)) {
+        if (showOriginalMediaHistory(anchor, chatActivity, messageObject, cached)) {
             return;
         }
         showEditDialog(anchor, firstNonEmpty(cached.text, cached.caption), cached.editedText);
     }
 
-    private boolean showOriginalMediaHistory(View anchor, MessageCache.CachedMessage cachedMessage) {
+    private boolean showOriginalMediaHistory(View anchor, Object chatActivity, Object selectedMessageObject,
+                                             MessageCache.CachedMessage cachedMessage) {
         java.io.File file = resolveCachedMediaFile(cachedMessage);
         if (file == null) {
             return false;
         }
+        Object mediaObject = messageCache != null
+                ? messageCache.getMediaObject(cachedMessage.dialogId, cachedMessage.messageId)
+                : null;
+        if (mediaObject != null
+                && showOriginalMediaMessageInPhotoViewer(anchor, chatActivity, selectedMessageObject, cachedMessage, file, mediaObject, false)) {
+            return true;
+        }
+        if (!isVideoHistoryFile(cachedMessage, file)
+                && showOriginalSyntheticPhotoInPhotoViewer(anchor, chatActivity, selectedMessageObject, cachedMessage, file)) {
+            return true;
+        }
+        info("Anti-recall: using local media history preview msgId=" + cachedMessage.messageId
+                + " hasTelegramMedia=" + (mediaObject != null));
+        return showOriginalMediaDialog(anchor, cachedMessage, file);
+    }
+
+    private boolean showOriginalSyntheticPhotoInPhotoViewer(View anchor, Object chatActivity, Object selectedMessageObject,
+                                                           MessageCache.CachedMessage cachedMessage, java.io.File file) {
+        try {
+            ClassLoader classLoader = resolveTelegramClassLoader(anchor.getContext(), chatActivity);
+            Object mediaObject = createSyntheticHistoryPhotoMedia(classLoader, cachedMessage, file);
+            boolean opened = showOriginalMediaMessageInPhotoViewer(
+                    anchor,
+                    chatActivity,
+                    selectedMessageObject,
+                    cachedMessage,
+                    file,
+                    mediaObject,
+                    true
+            );
+            if (opened) {
+                info("Anti-recall: opened original image history with synthetic Telegram photo msgId="
+                        + cachedMessage.messageId + " file=" + file.getName());
+            }
+            return opened;
+        } catch (Throwable throwable) {
+            error("Anti-recall: synthetic Telegram photo open failed", throwable);
+            return false;
+        }
+    }
+
+    private boolean showOriginalMediaMessageInPhotoViewer(View anchor, Object chatActivity, Object selectedMessageObject,
+                                                         MessageCache.CachedMessage cachedMessage, java.io.File file,
+                                                         Object mediaObject, boolean isolateIdentity) {
+        try {
+            ClassLoader classLoader = resolveTelegramClassLoader(anchor.getContext(), chatActivity);
+            if (mediaObject == null) {
+                return false;
+            }
+
+            int account = resolveSelectedTelegramAccount(classLoader);
+            Object message = createSyntheticHistoryMessage(classLoader, selectedMessageObject, cachedMessage, mediaObject, file, isolateIdentity);
+            java.io.File telegramPath = syncHistoryFileToTelegramPath(classLoader, account, message, file);
+            if (telegramPath == null) {
+                return false;
+            }
+            Object messageObject = createTelegramMessageObject(classLoader, account, message);
+            if (messageObject == null) {
+                return false;
+            }
+
+            boolean opened = openTelegramPhotoViewerWithMessage(anchor, chatActivity, cachedMessage, messageObject, isolateIdentity);
+            if (opened) {
+                info("Anti-recall: opened original media history in official PhotoViewer msgId="
+                        + cachedMessage.messageId + " file=" + file.getName()
+                        + " isolated=" + isolateIdentity
+                        + " telegramPath=" + telegramPath.getAbsolutePath());
+            }
+            return opened;
+        } catch (Throwable throwable) {
+            error("Anti-recall: official PhotoViewer message open failed", throwable);
+            return false;
+        }
+    }
+
+    private boolean showOriginalMediaDialog(View anchor, MessageCache.CachedMessage cachedMessage, java.io.File file) {
         if (isVideoHistoryFile(cachedMessage, file)) {
             return showOriginalVideoHistory(anchor, cachedMessage, file);
         }
@@ -3644,7 +3721,7 @@ final class TelegramHookInstaller {
         root.setOnClickListener(v -> dialog.dismiss());
         dialog.setContentView(root);
         dialog.show();
-        info("Anti-recall: opened original media history msgId=" + cachedMessage.messageId + " file=" + file.getName());
+        info("Anti-recall: opened original image history locally msgId=" + cachedMessage.messageId + " file=" + file.getName());
         return true;
     }
 
@@ -3690,8 +3767,257 @@ final class TelegramHookInstaller {
         dialog.setOnDismissListener(ignored -> videoView.stopPlayback());
         dialog.setContentView(root);
         dialog.show();
-        info("Anti-recall: opened original video history msgId=" + cachedMessage.messageId + " file=" + file.getName());
+        info("Anti-recall: opened original video history locally msgId=" + cachedMessage.messageId + " file=" + file.getName());
         return true;
+    }
+
+    private ClassLoader resolveTelegramClassLoader(Context context, Object chatActivity) {
+        if (savedClassLoader != null) {
+            return savedClassLoader;
+        }
+        if (chatActivity != null && chatActivity.getClass().getClassLoader() != null) {
+            return chatActivity.getClass().getClassLoader();
+        }
+        return context.getClassLoader();
+    }
+
+    private Object getTelegramPhotoViewer(ClassLoader classLoader) throws Throwable {
+        Class<?> photoViewerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer");
+        Method getInstance = photoViewerClass.getMethod("getInstance");
+        return getInstance.invoke(null);
+    }
+
+    private boolean setTelegramPhotoViewerParent(Object photoViewer, Object chatActivity) {
+        if (photoViewer == null || chatActivity == null) {
+            return false;
+        }
+        Object resourcesProvider = Reflect.field(chatActivity, "themeDelegate");
+        for (Method method : photoViewer.getClass().getMethods()) {
+            if (!method.getName().equals("setParentActivity") || method.getParameterCount() != 2 || resourcesProvider == null) {
+                continue;
+            }
+            Class<?>[] types = method.getParameterTypes();
+            if (types[0].isAssignableFrom(chatActivity.getClass()) && types[1].isAssignableFrom(resourcesProvider.getClass())) {
+                try {
+                    method.invoke(photoViewer, chatActivity, resourcesProvider);
+                    return true;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        for (Method method : photoViewer.getClass().getMethods()) {
+            if (!method.getName().equals("setParentActivity") || method.getParameterCount() != 1) {
+                continue;
+            }
+            Class<?> type = method.getParameterTypes()[0];
+            if (type.isAssignableFrom(chatActivity.getClass())) {
+                try {
+                    method.invoke(photoViewer, chatActivity);
+                    return true;
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return false;
+    }
+
+    private Object createTelegramPhotoViewerProvider(ClassLoader classLoader) throws Throwable {
+        Class<?> providerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer$EmptyPhotoViewerProvider");
+        Constructor<?> constructor = providerClass.getDeclaredConstructor();
+        constructor.setAccessible(true);
+        return constructor.newInstance();
+    }
+
+    private Object createSyntheticHistoryMessage(ClassLoader classLoader, Object selectedMessageObject,
+                                                 MessageCache.CachedMessage cachedMessage, Object mediaObject,
+                                                 java.io.File file, boolean isolateIdentity) throws Throwable {
+        Class<?> messageClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$TL_message");
+        Object message = messageClass.getDeclaredConstructor().newInstance();
+        Object selectedOwner = Reflect.field(selectedMessageObject, "messageOwner");
+        Reflect.setField(message, "id", isolateIdentity ? syntheticHistoryMessageId(cachedMessage, file) : (int) cachedMessage.messageId);
+        Reflect.setField(message, "date", (int) Math.max(0L, cachedMessage.timestamp / 1000L));
+        Reflect.setField(message, "dialog_id", isolateIdentity ? 0L : cachedMessage.dialogId);
+        Reflect.setField(message, "from_id", Reflect.field(selectedOwner, "from_id"));
+        Reflect.setField(message, "peer_id", firstNonNull(Reflect.field(selectedOwner, "peer_id"), createPeerForDialogId(classLoader, cachedMessage.dialogId)));
+        Reflect.setField(message, "message", firstNonEmpty(cachedMessage.text, cachedMessage.caption));
+        Reflect.setField(message, "attachPath", file.getAbsolutePath());
+        Reflect.setField(message, "media", mediaObject);
+        return message;
+    }
+
+    private int syntheticHistoryMessageId(MessageCache.CachedMessage cachedMessage, java.io.File file) {
+        long id = syntheticHistoryId(cachedMessage, file) & 0x3fffffffL;
+        int value = (int) Math.max(1L, id);
+        return -value;
+    }
+
+    private Object createSyntheticHistoryPhotoMedia(ClassLoader classLoader, MessageCache.CachedMessage cachedMessage,
+                                                   java.io.File file) throws Throwable {
+        int[] dimensions = readImageBounds(file);
+        long id = syntheticHistoryId(cachedMessage, file);
+
+        Object location = newTelegramObject(
+                classLoader,
+                "org.telegram.tgnet.TLRPC$TL_fileLocationToBeDeprecated",
+                "org.telegram.tgnet.TLRPC$TL_fileLocation"
+        );
+        Reflect.setField(location, "volume_id", id);
+        Reflect.setField(location, "local_id", (int) (id & 0x7fffffff));
+        Reflect.setField(location, "secret", 0L);
+        Reflect.setField(location, "dc_id", 0);
+        Reflect.setField(location, "file_reference", new byte[0]);
+
+        Object photoSize = newTelegramObject(classLoader, "org.telegram.tgnet.TLRPC$TL_photoSize");
+        Reflect.setField(photoSize, "type", "x");
+        Reflect.setField(photoSize, "w", Math.max(1, dimensions[0]));
+        Reflect.setField(photoSize, "h", Math.max(1, dimensions[1]));
+        Reflect.setField(photoSize, "size", (int) Math.min(Integer.MAX_VALUE, Math.max(1L, file.length())));
+        Reflect.setField(photoSize, "location", location);
+
+        ArrayList<Object> sizes = new ArrayList<>();
+        sizes.add(photoSize);
+
+        Object photo = newTelegramObject(classLoader, "org.telegram.tgnet.TLRPC$TL_photo");
+        Reflect.setField(photo, "id", id);
+        Reflect.setField(photo, "access_hash", 0L);
+        Reflect.setField(photo, "file_reference", new byte[0]);
+        Reflect.setField(photo, "date", (int) Math.max(0L, cachedMessage.timestamp / 1000L));
+        Reflect.setField(photo, "sizes", sizes);
+        Reflect.setField(photo, "dc_id", 0);
+        Reflect.setField(photo, "has_stickers", false);
+
+        Object media = newTelegramObject(classLoader, "org.telegram.tgnet.TLRPC$TL_messageMediaPhoto");
+        Reflect.setField(media, "photo", photo);
+        Reflect.setField(media, "caption", firstNonEmpty(cachedMessage.caption, cachedMessage.text));
+        Reflect.setField(media, "ttl_seconds", 0);
+        return media;
+    }
+
+    private Object newTelegramObject(ClassLoader classLoader, String... classNames) throws Throwable {
+        Throwable last = null;
+        for (String className : classNames) {
+            try {
+                Constructor<?> constructor = classLoader.loadClass(className).getDeclaredConstructor();
+                constructor.setAccessible(true);
+                return constructor.newInstance();
+            } catch (Throwable throwable) {
+                last = throwable;
+            }
+        }
+        throw last != null ? last : new ClassNotFoundException("No Telegram class candidates");
+    }
+
+    private long syntheticHistoryId(MessageCache.CachedMessage cachedMessage, java.io.File file) {
+        long hash = 1469598103934665603L;
+        String key = "gramsieve-photo:" + cachedMessage.dialogId + ":" + cachedMessage.messageId
+                + ":" + file.length() + ":" + file.getName();
+        for (int i = 0; i < key.length(); i++) {
+            hash ^= key.charAt(i);
+            hash *= 1099511628211L;
+        }
+        hash &= Long.MAX_VALUE;
+        return hash == 0L ? 1L : hash;
+    }
+
+    private Object createPeerForDialogId(ClassLoader classLoader, long dialogId) throws Throwable {
+        long normalizedId = Math.abs(dialogId);
+        String className = dialogId < 0 ? "org.telegram.tgnet.TLRPC$TL_peerChannel" : "org.telegram.tgnet.TLRPC$TL_peerUser";
+        Object peer = classLoader.loadClass(className).getDeclaredConstructor().newInstance();
+        if (dialogId < 0) {
+            Reflect.setField(peer, "channel_id", normalizedId);
+            Reflect.setField(peer, "chat_id", normalizedId);
+        } else {
+            Reflect.setField(peer, "user_id", normalizedId);
+        }
+        return peer;
+    }
+
+    private java.io.File syncHistoryFileToTelegramPath(ClassLoader classLoader, int account, Object message,
+                                                       java.io.File sourceFile) throws Throwable {
+        Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+        Class<?> messageBaseClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+        Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance", new Class<?>[]{int.class}, account);
+        if (fileLoader == null) {
+            return null;
+        }
+        Method getPathToMessage = fileLoaderClass.getMethod("getPathToMessage", messageBaseClass);
+        java.io.File targetFile = (java.io.File) getPathToMessage.invoke(fileLoader, message);
+        if (targetFile == null || targetFile.getPath().isEmpty()) {
+            info("Anti-recall: FileLoader returned empty path for original history media");
+            return null;
+        }
+        if (!sourceFile.getCanonicalPath().equals(targetFile.getCanonicalPath())
+                && (!targetFile.exists() || targetFile.length() != sourceFile.length())) {
+            copyFile(sourceFile, targetFile);
+        }
+        return targetFile.exists() && targetFile.length() > 0 ? targetFile : null;
+    }
+
+    private void copyFile(java.io.File sourceFile, java.io.File targetFile) throws java.io.IOException {
+        java.io.File parent = targetFile.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new java.io.IOException("Failed to create " + parent);
+        }
+        try (java.io.FileInputStream input = new java.io.FileInputStream(sourceFile);
+             java.io.FileOutputStream output = new java.io.FileOutputStream(targetFile)) {
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                output.write(buffer, 0, read);
+            }
+        }
+    }
+
+    private Object createTelegramMessageObject(ClassLoader classLoader, int account, Object message) throws Throwable {
+        Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
+        Class<?> messageBaseClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+        Constructor<?> constructor = messageObjectClass.getConstructor(int.class, messageBaseClass, boolean.class, boolean.class);
+        return constructor.newInstance(account, message, false, true);
+    }
+
+    private boolean openTelegramPhotoViewerWithMessage(View anchor, Object chatActivity,
+                                                      MessageCache.CachedMessage cachedMessage, Object messageObject,
+                                                      boolean isolateIdentity) throws Throwable {
+        ClassLoader classLoader = resolveTelegramClassLoader(anchor.getContext(), chatActivity);
+        Object photoViewer = getTelegramPhotoViewer(classLoader);
+        if (photoViewer == null || !setTelegramPhotoViewerParent(photoViewer, chatActivity)) {
+            return false;
+        }
+        Object provider = createTelegramPhotoViewerProvider(classLoader);
+        Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
+        Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+        Class<?> providerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer$PhotoViewerProvider");
+        Method openPhoto = photoViewer.getClass().getMethod(
+                "openPhoto",
+                messageObjectClass,
+                chatActivityClass,
+                long.class,
+                long.class,
+                long.class,
+                providerClass
+        );
+        Object result = openPhoto.invoke(photoViewer, messageObject, chatActivity, 0L, isolateIdentity ? 0L : cachedMessage.dialogId, 0L, provider);
+        return Boolean.TRUE.equals(result);
+    }
+
+    private int resolveSelectedTelegramAccount(ClassLoader classLoader) {
+        try {
+            Class<?> userConfigClass = classLoader.loadClass("org.telegram.messenger.UserConfig");
+            return Reflect.asInt(Reflect.staticField(userConfigClass, "selectedAccount"), 0);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private Object firstNonNull(Object first, Object second) {
+        return first != null ? first : second;
+    }
+
+    private int[] readImageBounds(java.io.File file) {
+        android.graphics.BitmapFactory.Options options = new android.graphics.BitmapFactory.Options();
+        options.inJustDecodeBounds = true;
+        android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+        return new int[]{Math.max(0, options.outWidth), Math.max(0, options.outHeight)};
     }
 
     private boolean isVideoHistoryFile(MessageCache.CachedMessage cachedMessage, java.io.File file) {
