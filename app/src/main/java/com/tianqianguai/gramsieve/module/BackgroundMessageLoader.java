@@ -1,9 +1,13 @@
 package com.tianqianguai.gramsieve.module;
 
 import android.os.Handler;
+import android.os.Looper;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
@@ -12,6 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 public final class BackgroundMessageLoader {
     private static final String TAG = "GramSieve";
+    private static final int DEFAULT_HISTORY_LOAD_COUNT = 50;
     private final MessageCache messageCache;
     private final AntiRecallConfigStore configStore;
     private final ScheduledExecutorService scheduler;
@@ -43,6 +48,13 @@ public final class BackgroundMessageLoader {
     public void setTelegramClassLoader(ClassLoader classLoader) {
         this.telegramClassLoader = classLoader;
         info("BackgroundMessageLoader: telegramClassLoader set");
+        if (!enabledChats.isEmpty()) {
+            if (!running) {
+                start();
+            } else {
+                loadMessages();
+            }
+        }
     }
 
     public void start() {
@@ -91,6 +103,18 @@ public final class BackgroundMessageLoader {
         if (enabledChats.isEmpty()) {
             return;
         }
+        Handler handler = ensureMainHandler();
+        if (handler != null && Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(this::loadMessagesOnCurrentThread);
+            return;
+        }
+        loadMessagesOnCurrentThread();
+    }
+
+    private void loadMessagesOnCurrentThread() {
+        if (enabledChats.isEmpty()) {
+            return;
+        }
         info("BackgroundMessageLoader: loadMessages for " + enabledChats.size() + " chats");
         for (long dialogId : enabledChats) {
             try {
@@ -98,6 +122,20 @@ public final class BackgroundMessageLoader {
             } catch (Throwable throwable) {
                 error("BackgroundMessageLoader: loadMessages failed for dialog " + dialogId, throwable);
             }
+        }
+    }
+
+    private Handler ensureMainHandler() {
+        Handler handler = mainHandler;
+        if (handler != null) {
+            return handler;
+        }
+        try {
+            handler = new Handler(Looper.getMainLooper());
+            mainHandler = handler;
+            return handler;
+        } catch (Throwable throwable) {
+            return null;
         }
     }
 
@@ -114,48 +152,76 @@ public final class BackgroundMessageLoader {
                 info("BackgroundMessageLoader: controller is null for dialog " + dialogId);
                 return;
             }
-            // Search for loadMessages method
-            java.lang.reflect.Method loadMessagesMethod = null;
+            List<java.lang.reflect.Method> candidates = new ArrayList<>();
             for (java.lang.reflect.Method m : messagesControllerClass.getDeclaredMethods()) {
                 if (m.getName().equals("loadMessages")) {
-                    info("BackgroundMessageLoader: found loadMessages with " + m.getParameterCount() + " params");
-                    loadMessagesMethod = m;
-                    break;
+                    candidates.add(m);
                 }
             }
-            if (loadMessagesMethod == null) {
+            if (candidates.isEmpty()) {
                 info("BackgroundMessageLoader: loadMessages method not found");
                 return;
             }
-            loadMessagesMethod.setAccessible(true);
-            // Build args array based on parameter count
-            int paramCount = loadMessagesMethod.getParameterCount();
-            Object[] args = new Object[paramCount];
-            Class<?>[] paramTypes = loadMessagesMethod.getParameterTypes();
-            for (int i = 0; i < paramCount; i++) {
-                Class<?> type = paramTypes[i];
-                if (type == long.class) {
-                    args[i] = (i == 0) ? dialogId : 0L;
-                } else if (type == int.class) {
-                    args[i] = 0;
-                } else if (type == boolean.class) {
-                    args[i] = false;
-                } else {
-                    args[i] = null;
+            candidates.sort(Comparator.comparingInt(Method::getParameterCount).reversed());
+            Throwable lastFailure = null;
+            for (java.lang.reflect.Method loadMessagesMethod : candidates) {
+                Object[] args = buildLoadMessagesArgs(loadMessagesMethod, dialogId);
+                if (args == null) {
+                    info("BackgroundMessageLoader: skip loadMessages params=" + loadMessagesMethod.getParameterCount());
+                    continue;
+                }
+                try {
+                    loadMessagesMethod.setAccessible(true);
+                    loadMessagesMethod.invoke(controller, args);
+                    info("BackgroundMessageLoader: loadMessages called for dialog " + dialogId + " with " + loadMessagesMethod.getParameterCount() + " params");
+                    return;
+                } catch (Throwable throwable) {
+                    lastFailure = throwable;
+                    info("BackgroundMessageLoader: loadMessages params=" + loadMessagesMethod.getParameterCount() + " failed: " + throwable.getClass().getSimpleName());
                 }
             }
-            // Set dialogId as first long param
-            for (int i = 0; i < paramCount; i++) {
-                if (paramTypes[i] == long.class) {
-                    args[i] = dialogId;
-                    break;
-                }
+            if (lastFailure != null) {
+                error("BackgroundMessageLoader: no loadMessages overload succeeded for dialog " + dialogId, lastFailure);
             }
-            loadMessagesMethod.invoke(controller, args);
-            info("BackgroundMessageLoader: loadMessages called for dialog " + dialogId + " with " + paramCount + " params");
         } catch (Throwable throwable) {
             error("BackgroundMessageLoader: loadMessagesForChat failed for dialog " + dialogId, throwable);
         }
+    }
+
+    static Object[] buildLoadMessagesArgs(Method method, long dialogId) {
+        Class<?>[] paramTypes = method.getParameterTypes();
+        Object[] args = new Object[paramTypes.length];
+        boolean assignedDialogId = false;
+        boolean assignedCount = false;
+        for (int i = 0; i < paramTypes.length; i++) {
+            Class<?> type = paramTypes[i];
+            if (type == long.class || type == Long.class) {
+                args[i] = assignedDialogId ? 0L : dialogId;
+                assignedDialogId = true;
+            } else if (type == int.class || type == Integer.class) {
+                args[i] = assignedCount ? 0 : DEFAULT_HISTORY_LOAD_COUNT;
+                assignedCount = true;
+            } else if (type == boolean.class || type == Boolean.class) {
+                args[i] = false;
+            } else if (type == float.class || type == Float.class) {
+                args[i] = 0f;
+            } else if (type == double.class || type == Double.class) {
+                args[i] = 0d;
+            } else if (type == short.class || type == Short.class) {
+                args[i] = (short) 0;
+            } else if (type == byte.class || type == Byte.class) {
+                args[i] = (byte) 0;
+            } else if (type == char.class || type == Character.class) {
+                args[i] = (char) 0;
+            } else if (ArrayList.class.isAssignableFrom(type) || List.class.isAssignableFrom(type)) {
+                args[i] = new ArrayList<>();
+            } else if (!type.isPrimitive()) {
+                args[i] = null;
+            } else {
+                return null;
+            }
+        }
+        return assignedDialogId ? args : null;
     }
 
     public void onMessageReceived(long dialogId, long messageId, String text, String caption, long senderId) {

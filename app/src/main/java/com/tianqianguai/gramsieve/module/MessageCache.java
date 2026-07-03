@@ -3,6 +3,7 @@ package com.tianqianguai.gramsieve.module;
 import android.util.LruCache;
 
 import java.util.List;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class MessageCache {
     public interface MemoryCache {
@@ -12,6 +13,7 @@ public final class MessageCache {
 
     private final MemoryCache memoryCache;
     private final MessageStore store;
+    private final ConcurrentHashMap<String, Object> mediaObjects = new ConcurrentHashMap<>();
 
     public static final int DEFAULT_CACHE_SIZE = 1000;
 
@@ -29,8 +31,12 @@ public final class MessageCache {
     }
 
     public void put(long dialogId, long messageId, String text, String caption, long senderId) {
+        put(dialogId, messageId, text, caption, senderId, null, null);
+    }
+
+    public void put(long dialogId, long messageId, String text, String caption, long senderId, String mediaType, String mediaId) {
         String key = dialogId + ":" + messageId;
-        CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis());
+        CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis(), mediaType, mediaId);
         synchronized (memoryCache) {
             memoryCache.put(key, message);
         }
@@ -38,20 +44,38 @@ public final class MessageCache {
     }
 
     /**
-     * Insert a fresh (non-edit) message, resetting any stale isEdited/isRecalled flags.
-     * Used when Telegram sends a new message update — this is ground truth that the
-     * message is NOT edited/recalled at this point.
+     * Insert a fresh (non-edit) message. Preserves isEdited/isRecalled flags
+     * if already set by RecallDetector.
      */
     public void putFresh(long dialogId, long messageId, String text, String caption, long senderId) {
+        putFresh(dialogId, messageId, text, caption, senderId, null, null, null);
+    }
+
+    public void putFresh(long dialogId, long messageId, String text, String caption, long senderId, String mediaType, String mediaId) {
+        putFresh(dialogId, messageId, text, caption, senderId, mediaType, mediaId, null);
+    }
+
+    public void putFresh(long dialogId, long messageId, String text, String caption, long senderId, String mediaType, String mediaId, String cachedMediaPath) {
         String key = dialogId + ":" + messageId;
-        CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis());
-        message.isEdited = false;
-        message.isRecalled = false;
-        message.editedText = null;
+        CachedMessage existing = get(dialogId, messageId);
+        boolean preserveEdit = existing != null && existing.isEdited;
+        boolean preserveRecall = existing != null && existing.isRecalled;
+        String preservedEditedText = preserveEdit ? existing.editedText : null;
+        // Preserve existing cached media path if we don't have a new one
+        String effectiveMediaPath = cachedMediaPath != null ? cachedMediaPath : (existing != null ? existing.cachedMediaPath : null);
+
+        CachedMessage message = new CachedMessage(dialogId, messageId, senderId, text, caption, System.currentTimeMillis(), mediaType, mediaId, effectiveMediaPath);
+        message.isEdited = preserveEdit;
+        message.isRecalled = preserveRecall;
+        message.editedText = preservedEditedText;
         synchronized (memoryCache) {
             memoryCache.put(key, message);
         }
-        store.insertOrReplaceFresh(message);
+        if (preserveEdit || preserveRecall) {
+            store.updateMessage(message);
+        } else {
+            store.insertOrReplaceFresh(message);
+        }
     }
 
     public CachedMessage get(long dialogId, long messageId) {
@@ -75,6 +99,17 @@ public final class MessageCache {
         return message;
     }
 
+    public void putMediaObject(long dialogId, long messageId, Object mediaObject) {
+        if (mediaObject == null) {
+            return;
+        }
+        mediaObjects.put(dialogId + ":" + messageId, mediaObject);
+    }
+
+    public Object getMediaObject(long dialogId, long messageId) {
+        return mediaObjects.get(dialogId + ":" + messageId);
+    }
+
     public void markRecalled(long dialogId, long messageId) {
         CachedMessage message = get(dialogId, messageId);
         if (message != null) {
@@ -93,6 +128,16 @@ public final class MessageCache {
                 message.editedText = newText;
             }
             store.updateMessage(message);
+        } else {
+            // No cached version — create entry with empty original text
+            CachedMessage newMsg = new CachedMessage(dialogId, messageId, 0L, "", "", System.currentTimeMillis());
+            newMsg.isEdited = true;
+            newMsg.editedText = newText;
+            String key = dialogId + ":" + messageId;
+            synchronized (memoryCache) {
+                memoryCache.put(key, newMsg);
+            }
+            store.insertMessage(newMsg);
         }
     }
 
@@ -129,27 +174,52 @@ public final class MessageCache {
         public final String text;
         public final String caption;
         public final long timestamp;
+        public final String mediaType;
+        public final String mediaId;
+        public final String cachedMediaPath;
         public boolean isRecalled;
         public boolean isEdited;
         public String editedText;
 
         public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp) {
-            this.dialogId = dialogId;
-            this.messageId = messageId;
-            this.senderId = senderId;
-            this.text = text;
-            this.caption = caption;
-            this.timestamp = timestamp;
+            this(dialogId, messageId, senderId, text, caption, timestamp, null, null, null);
         }
 
         public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp,
-                             boolean isRecalled, boolean isEdited, String editedText) {
+                             String mediaType, String mediaId) {
+            this(dialogId, messageId, senderId, text, caption, timestamp, mediaType, mediaId, null);
+        }
+
+        public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp,
+                             String mediaType, String mediaId, String cachedMediaPath) {
             this.dialogId = dialogId;
             this.messageId = messageId;
             this.senderId = senderId;
             this.text = text;
             this.caption = caption;
             this.timestamp = timestamp;
+            this.mediaType = mediaType;
+            this.mediaId = mediaId;
+            this.cachedMediaPath = cachedMediaPath;
+        }
+
+        public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp,
+                              boolean isRecalled, boolean isEdited, String editedText) {
+            this(dialogId, messageId, senderId, text, caption, timestamp, null, null, null, isRecalled, isEdited, editedText);
+        }
+
+        public CachedMessage(long dialogId, long messageId, long senderId, String text, String caption, long timestamp,
+                             String mediaType, String mediaId, String cachedMediaPath,
+                              boolean isRecalled, boolean isEdited, String editedText) {
+            this.dialogId = dialogId;
+            this.messageId = messageId;
+            this.senderId = senderId;
+            this.text = text;
+            this.caption = caption;
+            this.timestamp = timestamp;
+            this.mediaType = mediaType;
+            this.mediaId = mediaId;
+            this.cachedMediaPath = cachedMediaPath;
             this.isRecalled = isRecalled;
             this.isEdited = isEdited;
             this.editedText = editedText;

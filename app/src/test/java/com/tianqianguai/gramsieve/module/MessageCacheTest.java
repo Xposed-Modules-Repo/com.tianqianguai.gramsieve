@@ -150,6 +150,18 @@ public class MessageCacheTest {
     }
 
     @Test
+    public void testFreshUpdatePreservesExistingCachedMediaPathWhenMissing() {
+        cache.putFresh(1, 1, "", "", 1, "TL_messageMediaPhoto", "old_photo", "/tmp/original.jpg");
+
+        cache.putFresh(1, 1, "", "", 1, "TL_messageMediaPhoto", "old_photo", null);
+
+        MessageCache.CachedMessage msg = cache.get(1, 1);
+        assertNotNull(msg);
+        assertEquals("/tmp/original.jpg", msg.cachedMediaPath);
+        assertEquals("old_photo", msg.mediaId);
+    }
+
+    @Test
     public void testGetRecalledMessages() {
         cache.put(1, 1, "a", null, 1);
         cache.put(1, 2, "b", null, 1);
@@ -215,6 +227,12 @@ public class MessageCacheTest {
 
         @Override
         public void insertMessage(MessageCache.CachedMessage message) {
+            String key = message.dialogId + ":" + message.messageId;
+            db.put(key, message);
+        }
+
+        @Override
+        public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
             String key = message.dialogId + ":" + message.messageId;
             db.put(key, message);
         }

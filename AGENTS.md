@@ -20,14 +20,20 @@
 adb connect <ip>:5555               # WiFi ADB
 adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 
-# Persistent log capture (写入文件而非依赖缓冲区)
+# Persistent log capture is the source of truth.
+# Always read this file first when diagnosing behavior after a repro; logcat buffers overflow easily.
 # 日志文件自动写入 /sdcard/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell cat /sdcard/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell tail -n 300 /sdcard/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell grep -E "Anti-recall|RecallDetector|BackgroundMessage|MediaCache" /sdcard/GramSieve/gramsieve.log
+
+# Pull only when you need to archive/share the whole log locally.
 adb -s <ip>:5555 pull /sdcard/GramSieve/gramsieve.log ./gramsieve.log
 
-# 实时查看日志
+# 实时查看日志 only for live observation; do not rely on buffered logcat for historical diagnosis.
 adb -s <ip>:5555 logcat -s GramSieve:I
 
-# 过滤特定功能日志
+# Buffered logcat is a fallback when the persistent file is unavailable or for very recent live output.
 adb -s <ip>:5555 logcat -d | findstr "GramSieve" | findstr "Anti-recall\|RecallDetector\|BackgroundMessage"
 ```
 

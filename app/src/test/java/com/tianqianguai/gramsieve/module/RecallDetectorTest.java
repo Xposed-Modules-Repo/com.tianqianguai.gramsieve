@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Before;
@@ -112,6 +113,29 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void testProcessEditUpdateRecordsHistoryWithoutChangingTelegramMessage() {
+        FakeMedia originalMedia = new FakeMedia("old caption");
+        FakeMedia editedMedia = new FakeMedia("new caption");
+        cache.putFresh(100, 1, "original", "old caption", 42, "TL_messageMediaPhoto", "old_photo");
+        cache.putMediaObject(100, 1, originalMedia);
+        loader.enableChat(100);
+
+        FakeTelegramMessage editedMessage = new FakeTelegramMessage(100, 1, "edited", editedMedia);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(new FakeEditUpdate(editedMessage));
+
+        detector.processUpdates(updates);
+
+        MessageCache.CachedMessage msg = cache.get(100, 1);
+        assertNotNull(msg);
+        assertTrue(msg.isEdited);
+        assertEquals("edited\nnew caption", msg.editedText);
+        assertEquals("edited", editedMessage.message);
+        assertSame(editedMedia, editedMessage.media);
+        assertSame(originalMedia, cache.getMediaObject(100, 1));
+    }
+
+    @Test
     public void testProcessEditSkipsDisabledChat() {
         cache.put(200, 1, "original", null, 42);
 
@@ -179,6 +203,50 @@ public class RecallDetectorTest {
         }
     }
 
+    private static class FakeEditUpdate {
+        final Object message;
+
+        FakeEditUpdate(Object message) {
+            this.message = message;
+        }
+    }
+
+    private static class FakeTelegramMessage {
+        int id;
+        Object peer_id;
+        String message;
+        Object media;
+
+        FakeTelegramMessage(long dialogId, int messageId, String text, Object media) {
+            this.id = messageId;
+            this.peer_id = new FakePeer(dialogId);
+            this.message = text;
+            this.media = media;
+        }
+    }
+
+    private static class FakePeer {
+        long user_id;
+        long chat_id;
+        long channel_id;
+
+        FakePeer(long dialogId) {
+            if (dialogId > 0) {
+                this.user_id = dialogId;
+            } else {
+                this.channel_id = -dialogId;
+            }
+        }
+    }
+
+    private static class FakeMedia {
+        String caption;
+
+        FakeMedia(String caption) {
+            this.caption = caption;
+        }
+    }
+
     private static class FakeMessage {
         private final long dialogId;
         private final long messageId;
@@ -216,6 +284,11 @@ public class RecallDetectorTest {
 
         @Override
         public void insertMessage(MessageCache.CachedMessage message) {
+            db.put(message.dialogId + ":" + message.messageId, message);
+        }
+
+        @Override
+        public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
             db.put(message.dialogId + ":" + message.messageId, message);
         }
 
