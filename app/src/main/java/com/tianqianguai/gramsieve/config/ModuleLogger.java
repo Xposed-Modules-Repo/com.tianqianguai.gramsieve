@@ -60,7 +60,7 @@ public final class ModuleLogger {
                 logFile.createNewFile();
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to init log file", e);
+            logError("Failed to init log file", e);
         }
     }
 
@@ -88,12 +88,12 @@ public final class ModuleLogger {
                 }
             }
         } catch (IOException e) {
-            Log.e(TAG, "Failed to write to log file", e);
+            logError("Failed to write to log file", e);
         }
     }
 
     public static void info(String category, String tag, String message) {
-        Log.i(TAG, "[" + category + "] " + tag + ": " + message);
+        logInfo("[" + category + "] " + tag + ": " + message);
         if (xposedModule != null) {
             xposedModule.log(Log.INFO, TAG, "[" + category + "] " + tag + ": " + message);
         }
@@ -102,7 +102,7 @@ public final class ModuleLogger {
     }
 
     public static void warn(String category, String tag, String message) {
-        Log.w(TAG, "[" + category + "] " + tag + ": " + message);
+        logWarn("[" + category + "] " + tag + ": " + message);
         if (xposedModule != null) {
             xposedModule.log(Log.WARN, TAG, "[" + category + "] " + tag + ": " + message);
         }
@@ -111,7 +111,7 @@ public final class ModuleLogger {
     }
 
     public static void error(String category, String tag, String message, Throwable throwable) {
-        Log.e(TAG, "[" + category + "] " + tag + ": " + message, throwable);
+        logError("[" + category + "] " + tag + ": " + message, throwable);
         if (xposedModule != null) {
             xposedModule.log(Log.ERROR, TAG, "[" + category + "] " + tag + ": " + message, throwable);
         }
@@ -201,5 +201,26 @@ public final class ModuleLogger {
             sb.append("\n  at ").append(trace[i]);
         }
         return sb.toString();
+    }
+
+    private static void logInfo(String message) {
+        try {
+            Log.i(TAG, message);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private static void logWarn(String message) {
+        try {
+            Log.w(TAG, message);
+        } catch (RuntimeException ignored) {
+        }
+    }
+
+    private static void logError(String message, Throwable throwable) {
+        try {
+            Log.e(TAG, message, throwable);
+        } catch (RuntimeException ignored) {
+        }
     }
 }

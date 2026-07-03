@@ -27,6 +27,13 @@ public final class RecallDetector {
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to load MessagesController", throwable);
         }
+        // Hook MessagesStorage to cache loaded messages
+        try {
+            Class<?> messagesStorageClass = classLoader.loadClass("org.telegram.messenger.MessagesStorage");
+            hookStorageMethods(messagesStorageClass, module);
+        } catch (Throwable throwable) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to load MessagesStorage", throwable);
+        }
         ModuleLogger.hook(TAG, "RecallDetector: hooks installation complete");
     }
 
@@ -42,7 +49,130 @@ public final class RecallDetector {
             } else if (name.equals("editMessage")) {
                 ModuleLogger.hook(TAG, "RecallDetector: found editMessage with " + m.getParameterCount() + " params");
                 hookSingleMethod(module, m, "editMessage");
+            } else if (name.contains("processLoadedMessages") || name.contains("LoadedMessages")) {
+                ModuleLogger.hook(TAG, "RecallDetector: found " + name + " with " + m.getParameterCount() + " params");
+                hookSingleMethod(module, m, "processLoadedMessages");
             }
+        }
+    }
+
+    private void hookStorageMethods(Class<?> messagesStorageClass, XposedModule module) {
+        ModuleLogger.hook(TAG, "RecallDetector: scanning MessagesStorage methods...");
+        for (java.lang.reflect.Method m : messagesStorageClass.getDeclaredMethods()) {
+            String name = m.getName();
+            // Log all methods that might be related to storing messages
+            if (name.contains("put") || name.contains("message") || name.contains("Message") || name.contains("save") || name.contains("Save") || name.contains("replace")) {
+                ModuleLogger.hook(TAG, "RecallDetector: storage method: " + name + " params=" + m.getParameterCount());
+            }
+            // Hook methods that store or update messages
+            if (name.equals("putMessages") || name.equals("putMessagesInternal")
+                    || name.equals("replaceMessageIfExists")) {
+                ModuleLogger.hook(TAG, "RecallDetector: found storage." + name + " with " + m.getParameterCount() + " params");
+                hookStoragePutMessages(module, m, name);
+            }
+        }
+    }
+
+    private void hookStoragePutMessages(XposedModule module, java.lang.reflect.Method method, String methodName) {
+        try {
+            hook(module, method, chain -> {
+                try {
+                    // Try to extract messages from args before proceeding
+                    cacheMessagesFromStorageArgs(chain.getArgs());
+                } catch (Throwable t) {
+                    // Ignore
+                }
+                return chain.proceed();
+            });
+            ModuleLogger.hook(TAG, "RecallDetector: hook storage." + methodName + " success");
+        } catch (Throwable throwable) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to hook storage." + methodName, throwable);
+        }
+    }
+
+    private void cacheMessagesFromStorageArgs(java.util.List<Object> args) {
+        if (args == null || messageCache == null || loader == null) return;
+        // Look for ArrayList of MessageObject or TLRPC.Message
+        for (Object arg : args) {
+            if (arg instanceof ArrayList) {
+                ArrayList<?> list = (ArrayList<?>) arg;
+                if (!list.isEmpty()) {
+                    Object first = list.get(0);
+                    if (first != null) {
+                        String className = first.getClass().getSimpleName();
+                        if (className.contains("Message")) {
+                            cacheMessageList(list);
+                            return;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private void cacheMessageList(ArrayList<?> messages) {
+        int cached = 0;
+        for (Object msgObj : messages) {
+            try {
+                if (msgObj == null) continue;
+                // Get dialogId from peer_id
+                Object peerId = Reflect.field(msgObj, "peer_id");
+                long dialogId = 0L;
+                if (peerId != null) {
+                    long channelId = Reflect.asLong(Reflect.field(peerId, "channel_id"), 0L);
+                    long chatId = Reflect.asLong(Reflect.field(peerId, "chat_id"), 0L);
+                    long userId = Reflect.asLong(Reflect.field(peerId, "user_id"), 0L);
+                    if (channelId != 0L) dialogId = -channelId;
+                    else if (chatId != 0L) dialogId = -chatId;
+                    else if (userId != 0L) dialogId = userId;
+                }
+                if (dialogId == 0L || !loader.isChatEnabled(dialogId)) continue;
+
+                int msgId = Reflect.asInt(Reflect.field(msgObj, "id"), 0);
+                if (msgId == 0) continue;
+
+                String text = Reflect.asString(Reflect.field(msgObj, "message"));
+                String caption = "";
+                String mediaType = null;
+                String mediaId = null;
+                Object media = Reflect.field(msgObj, "media");
+                if (media != null) {
+                    String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
+                    if (mediaCaption != null && !mediaCaption.isEmpty()) {
+                        caption = mediaCaption;
+                    }
+                    mediaType = media.getClass().getSimpleName();
+                    Object photo = Reflect.field(media, "photo");
+                    if (photo != null) {
+                        mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
+                    } else {
+                        Object video = Reflect.field(media, "video");
+                        if (video != null) {
+                            mediaId = String.valueOf(Reflect.asLong(Reflect.field(video, "id"), 0L));
+                        } else {
+                            Object document = Reflect.field(media, "document");
+                            if (document != null) {
+                                mediaId = String.valueOf(Reflect.asLong(Reflect.field(document, "id"), 0L));
+                            }
+                        }
+                    }
+                }
+                String fullContent = text != null ? text : "";
+                if (caption != null && !caption.isEmpty()) {
+                    fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+                }
+                MessageCache.CachedMessage existing = messageCache.get(dialogId, msgId);
+                if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
+                    messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
+                    messageCache.putMediaObject(dialogId, msgId, media);
+                    cached++;
+                }
+            } catch (Throwable t) {
+                // Skip individual message errors
+            }
+        }
+        if (cached > 0) {
+            ModuleLogger.hook(TAG, "RecallDetector: cached " + cached + " messages from storage");
         }
     }
 
@@ -50,14 +180,18 @@ public final class RecallDetector {
         try {
             hook(module, method, chain -> {
                 try {
-                    Object result = chain.proceed();
                     java.util.List<Object> args = chain.getArgs();
                     if (methodName.equals("processUpdateArray")) {
                         processUpdatesFromArgs(args);
-                    } else if (methodName.equals("deleteMessages")) {
+                        return chain.proceed();
+                    }
+                    Object result = chain.proceed();
+                    if (methodName.equals("deleteMessages")) {
                         processDeletionsFromArgs(args);
                     } else if (methodName.equals("editMessage")) {
                         processEditFromArgs(args);
+                    } else if (methodName.equals("processLoadedMessages")) {
+                        processLoadedMessagesFromArgs(args);
                     }
                     return result;
                 } catch (Throwable throwable) {
@@ -114,6 +248,80 @@ public final class RecallDetector {
         }
         if (dialogId != 0L && messageId != 0 && newText != null) {
             processEdit(dialogId, messageId, newText);
+        }
+    }
+
+    private void processLoadedMessagesFromArgs(java.util.List<Object> args) {
+        if (args == null || args.isEmpty()) return;
+        // Look for ArrayList of messages and a dialogId
+        ArrayList<?> messages = null;
+        long dialogId = 0L;
+        for (Object arg : args) {
+            if (arg instanceof ArrayList && messages == null) {
+                messages = (ArrayList<?>) arg;
+            } else if (arg instanceof Long && dialogId == 0L) {
+                dialogId = (Long) arg;
+            }
+        }
+        if (messages != null && dialogId != 0L && loader.isChatEnabled(dialogId)) {
+            cacheLoadedMessages(dialogId, messages);
+        }
+    }
+
+    private void cacheLoadedMessages(long dialogId, ArrayList<?> messages) {
+        if (messageCache == null) return;
+        int cached = 0;
+        for (Object msgObj : messages) {
+            try {
+                if (msgObj == null) continue;
+                int msgId = Reflect.asInt(Reflect.field(msgObj, "id"), 0);
+                if (msgId == 0) continue;
+
+                String text = Reflect.asString(Reflect.field(msgObj, "message"));
+                String caption = "";
+                String mediaType = null;
+                String mediaId = null;
+                Object media = Reflect.field(msgObj, "media");
+                if (media != null) {
+                    String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
+                    if (mediaCaption != null && !mediaCaption.isEmpty()) {
+                        caption = mediaCaption;
+                    }
+                    mediaType = media.getClass().getSimpleName();
+                    Object photo = Reflect.field(media, "photo");
+                    if (photo != null) {
+                        mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
+                    } else {
+                        Object video = Reflect.field(media, "video");
+                        if (video != null) {
+                            mediaId = String.valueOf(Reflect.asLong(Reflect.field(video, "id"), 0L));
+                        } else {
+                            Object document = Reflect.field(media, "document");
+                            if (document != null) {
+                                mediaId = String.valueOf(Reflect.asLong(Reflect.field(document, "id"), 0L));
+                            }
+                        }
+                    }
+                }
+                String fullContent = text != null ? text : "";
+                if (caption != null && !caption.isEmpty()) {
+                    fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+                }
+                // Only cache if there's content
+                if (!fullContent.isEmpty() || mediaId != null) {
+                    MessageCache.CachedMessage existing = messageCache.get(dialogId, msgId);
+                    if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
+                        messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
+                        messageCache.putMediaObject(dialogId, msgId, media);
+                        cached++;
+                    }
+                }
+            } catch (Throwable t) {
+                // Skip individual message errors
+            }
+        }
+        if (cached > 0) {
+            ModuleLogger.hook(TAG, "RecallDetector: cached " + cached + " loaded messages for dialogId=" + dialogId);
         }
     }
 
@@ -194,14 +402,15 @@ public final class RecallDetector {
         if (messageCache == null || loader == null || updates == null) {
             return;
         }
+        ModuleLogger.hook(TAG, "RecallDetector: processUpdates count=" + updates.size());
         for (Object update : updates) {
             try {
                 if (update == null) continue;
-                
+
                 String className = update.getClass().getSimpleName();
-                
-                // Check for message field (TLRPC.TL_updateNewMessage, TL_updateEditMessage, TL_updateEditChannelMessage, etc.)
+
                 Object message = Reflect.field(update, "message");
+                ModuleLogger.hook(TAG, "RecallDetector: class=" + className + " hasMessage=" + (message != null));
                 if (message != null) {
                     if (className.contains("Edit")) {
                         // This is an edit update — but Telegram also sends TL_updateEditChannelMessage
@@ -261,30 +470,48 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
 
-            if (!loader.isChatEnabled(dialogId)) {
+            boolean enabled = loader.isChatEnabled(dialogId);
+            ModuleLogger.hook(TAG, "processMessageFromUpdate: msgId=" + msgId + " dialogId=" + dialogId + " enabled=" + enabled);
+            if (!enabled) {
                 return;
             }
 
             String text = Reflect.asString(Reflect.field(message, "message"));
             String caption = "";
+            String mediaType = null;
+            String mediaId = null;
             Object media = Reflect.field(message, "media");
             if (media != null) {
                 String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
                 if (mediaCaption != null && !mediaCaption.isEmpty()) {
                     caption = mediaCaption;
                 }
+                mediaType = media.getClass().getSimpleName();
+                Object photo = Reflect.field(media, "photo");
+                if (photo != null) {
+                    mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
+                } else {
+                    Object video = Reflect.field(media, "video");
+                    if (video != null) {
+                        mediaId = String.valueOf(Reflect.asLong(Reflect.field(video, "id"), 0L));
+                    } else {
+                        Object document = Reflect.field(media, "document");
+                        if (document != null) {
+                            mediaId = String.valueOf(Reflect.asLong(Reflect.field(document, "id"), 0L));
+                        }
+                    }
+                }
             }
 
-            String fullContent = text;
+            String fullContent = text != null ? text : "";
             if (!caption.isEmpty()) {
                 fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
             }
 
-            if (fullContent != null && !fullContent.isEmpty()) {
-                // Fresh update from Telegram — this message is NOT edited/recalled at this point
-                // Reset any stale flags from prior sessions
-                messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L);
-            }
+            // Fresh update from Telegram — this message is NOT edited/recalled at this point
+            // Reset any stale flags from prior sessions
+            messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
+            messageCache.putMediaObject(dialogId, msgId, media);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
         }
@@ -293,7 +520,10 @@ public final class RecallDetector {
     private boolean isRealEdit(Object message) {
         try {
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
-            if (msgId == 0) return false;
+            if (msgId == 0) {
+                ModuleLogger.hook(TAG, "isRealEdit: msgId=0");
+                return false;
+            }
 
             Object peerId = Reflect.field(message, "peer_id");
             long dialogId = 0L;
@@ -305,20 +535,41 @@ public final class RecallDetector {
                 else if (chatId != 0L) dialogId = -chatId;
                 else if (channelId != 0L) dialogId = -channelId;
             }
-            if (dialogId == 0L) return false;
+            if (dialogId == 0L) {
+                ModuleLogger.hook(TAG, "isRealEdit: dialogId=0");
+                return false;
+            }
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, msgId);
             if (cached == null || cached.text == null) {
-                return false;
+                ModuleLogger.hook(TAG, "isRealEdit: no cache msgId=" + msgId + " dialogId=" + dialogId);
+                return true;
             }
 
             String newText = Reflect.asString(Reflect.field(message, "message"));
             String newCaption = "";
+            String newMediaType = null;
+            String newMediaId = null;
             Object media = Reflect.field(message, "media");
             if (media != null) {
                 String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
                 if (mediaCaption != null && !mediaCaption.isEmpty()) {
                     newCaption = mediaCaption;
+                }
+                newMediaType = media.getClass().getSimpleName();
+                Object photo = Reflect.field(media, "photo");
+                if (photo != null) {
+                    newMediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
+                } else {
+                    Object video = Reflect.field(media, "video");
+                    if (video != null) {
+                        newMediaId = String.valueOf(Reflect.asLong(Reflect.field(video, "id"), 0L));
+                    } else {
+                        Object document = Reflect.field(media, "document");
+                        if (document != null) {
+                            newMediaId = String.valueOf(Reflect.asLong(Reflect.field(document, "id"), 0L));
+                        }
+                    }
                 }
             }
             String newContent = newText != null ? newText : "";
@@ -326,7 +577,17 @@ public final class RecallDetector {
                 newContent = newContent.isEmpty() ? newCaption : newContent + "\n" + newCaption;
             }
 
-            return !cached.text.equals(newContent);
+            // Build fingerprints for comparison
+            String cachedFingerprint = (cached.text != null ? cached.text : "") + "|"
+                    + (cached.mediaType != null ? cached.mediaType : "") + "|"
+                    + (cached.mediaId != null ? cached.mediaId : "");
+            String newFingerprint = newContent + "|"
+                    + (newMediaType != null ? newMediaType : "") + "|"
+                    + (newMediaId != null ? newMediaId : "");
+
+            boolean same = cachedFingerprint.equals(newFingerprint);
+            ModuleLogger.hook(TAG, "isRealEdit: msgId=" + msgId + " same=" + same);
+            return !same;
         } catch (Throwable t) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "isRealEdit failed", t);
             return false;

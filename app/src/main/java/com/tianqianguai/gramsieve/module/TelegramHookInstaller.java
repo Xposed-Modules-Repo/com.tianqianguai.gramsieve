@@ -38,6 +38,7 @@ import com.tianqianguai.gramsieve.ui.ConfigDialogActivity;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
+import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -61,8 +62,10 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_MARK_MESSAGE = 0x47530016;
     private static final int MENU_ID_JUMP_TO_MARK = 0x47530017;
     private static final int MENU_ID_ANTI_RECALL = 0x47530018;
+    private static final int MENU_ID_EDIT_HISTORY = 0x47530019;
     private ViewGroup downloadPageFragmentView = null;
     private MessageCache messageCache;
+    private MediaCache mediaCache;
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
     private AntiRecallConfigStore antiRecallConfigStore;
@@ -182,6 +185,7 @@ final class TelegramHookInstaller {
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
         messageCache = new MessageCache(databaseHelper);
+        mediaCache = new MediaCache(context);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
         if (classLoader != null) {
             backgroundMessageLoader.setTelegramClassLoader(classLoader);
@@ -2186,13 +2190,18 @@ final class TelegramHookInstaller {
         }
     }
 
+    private static volatile int bindingCallCount = 0;
+
     private Object handleMessageBinding(XposedInterface.Chain chain) throws Throwable {
-        Object cell = chain.getThisObject();
-        Object messageObject = chain.getArg(0);
-        emitHookEntry("message", cell, messageObject);
+        int count = ++bindingCallCount;
+        if (count <= 3) {
+            info("handleMessageBinding #" + count);
+        }
         Object result = chain.proceed();
         try {
-            if (cell instanceof View) {
+            Object cell = chain.getThisObject();
+            Object messageObject = chain.getArg(0);
+            if (cell instanceof View && messageObject != null) {
                 applyDecision((View) cell, (View) cell, messageObject);
                 cacheAndApplyAntiRecall((View) cell, messageObject);
             }
@@ -2202,50 +2211,178 @@ final class TelegramHookInstaller {
         return result;
     }
 
+    private static volatile int cacheCallCount = 0;
+
     private void cacheAndApplyAntiRecall(View cell, Object messageObject) {
-        if (messageObject == null || messageCache == null || backgroundMessageLoader == null) return;
+        int count = ++cacheCallCount;
+        if (messageObject == null || messageCache == null || backgroundMessageLoader == null || mediaCache == null) return;
         try {
             long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
             long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
             if (dialogId == 0L || messageId == 0L) return;
-            if (!backgroundMessageLoader.isChatEnabled(dialogId)) return;
+            boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
+            if (count <= 10 || count % 200 == 0) {
+                info("cacheAndApply #" + count + " dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + enabled);
+            }
+            if (!enabled) return;
 
-            // Check existing cache BEFORE updating — preserve edit/recall flags
-            MessageCache.CachedMessage existing = messageCache.get(dialogId, messageId);
-            boolean wasEdited = existing != null && existing.isEdited;
-            boolean wasRecalled = existing != null && existing.isRecalled;
-
-            if (!wasEdited && !wasRecalled) {
-                // Only update cache for clean messages
-                Object owner = Reflect.field(messageObject, "messageOwner");
-                String fullContent = "";
-                String caption = "";
-                if (owner != null) {
-                    String text = Reflect.asString(Reflect.field(owner, "message"));
-                    Object media = Reflect.field(owner, "media");
-                    if (media != null) {
-                        caption = Reflect.asString(Reflect.field(media, "caption"));
-                    }
-                    fullContent = text != null ? text : "";
-                    if (caption != null && !caption.isEmpty()) {
-                        fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+            Object owner = Reflect.field(messageObject, "messageOwner");
+            String fullContent = "";
+            String caption = "";
+            String mediaType = null;
+            String mediaId = null;
+            String cachedMediaPath = null;
+            Object mediaAttachment = null;
+            String mediaKind = null;
+            if (owner != null) {
+                String text = Reflect.asString(Reflect.field(owner, "message"));
+                Object media = Reflect.field(owner, "media");
+                if (media != null) {
+                    caption = Reflect.asString(Reflect.field(media, "caption"));
+                    mediaType = media.getClass().getSimpleName();
+                    // Try to get photo ID or video ID
+                    Object photo = Reflect.field(media, "photo");
+                    if (photo != null) {
+                        mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
+                        mediaAttachment = photo;
+                        mediaKind = "photo";
+                    } else {
+                        Object video = Reflect.field(media, "video");
+                        if (video != null) {
+                            mediaId = String.valueOf(Reflect.asLong(Reflect.field(video, "id"), 0L));
+                            mediaAttachment = video;
+                            mediaKind = "video";
+                        } else {
+                            Object document = Reflect.field(media, "document");
+                            if (document != null) {
+                                mediaId = String.valueOf(Reflect.asLong(Reflect.field(document, "id"), 0L));
+                                mediaAttachment = document;
+                                mediaKind = "document";
+                            }
+                        }
                     }
                 }
-                messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L);
+                fullContent = text != null ? text : "";
+                if (caption != null && !caption.isEmpty()) {
+                    fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
+                }
+            }
+
+            MessageCache.CachedMessage existing = messageCache.get(dialogId, messageId);
+
+            // Build a content fingerprint for comparison (text + mediaType + mediaId)
+            String contentFingerprint = fullContent + "|" + (mediaType != null ? mediaType : "") + "|" + (mediaId != null ? mediaId : "");
+
+            // Detect edit: cached content exists, is different from current, and wasn't already marked
+            if (existing != null && !existing.isEdited && !existing.isRecalled) {
+                String existingFingerprint = (existing.text != null ? existing.text : "") + "|"
+                        + (existing.mediaType != null ? existing.mediaType : "") + "|"
+                        + (existing.mediaId != null ? existing.mediaId : "");
+                if (!existingFingerprint.isEmpty() && !existingFingerprint.equals(contentFingerprint)) {
+                    messageCache.markEdited(dialogId, messageId, fullContent);
+                    info("Anti-recall: detected edit msgId=" + messageId);
+                } else if (existingFingerprint.isEmpty() || existingFingerprint.equals(contentFingerprint)) {
+                    cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
+                    messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
+                    messageCache.putMediaObject(dialogId, messageId, Reflect.field(owner, "media"));
+                }
+            } else if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
+                cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
+                messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
+                messageCache.putMediaObject(dialogId, messageId, Reflect.field(owner, "media"));
             }
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
             if (cached != null && cached.isEdited) {
-                final String originalText = cached.text;
-                final String editedText = cached.editedText;
-                cell.setOnClickListener(v -> showEditDialog(v, originalText, editedText));
+                showEditedMark(cell, cached);
             } else if (cached != null && cached.isRecalled) {
-                final String originalText = cached.text;
-                cell.setOnClickListener(v -> showOriginalContentDialog(v, originalText, true));
+                showRecalledMark(cell, cached);
             }
         } catch (Throwable t) {
             error("Anti-recall: cacheAndApply failed", t);
         }
+    }
+
+    private String tryCacheMedia(View cell, long dialogId, long messageId, Object messageOwner, Object mediaObj, String mediaKind) {
+        if (mediaObj == null || mediaKind == null) {
+            return null;
+        }
+        try {
+            // Check if we already cached this media
+            String extension = mediaKind.equals("photo") ? ".jpg" : mediaKind.equals("video") ? ".mp4" : ".bin";
+            if (mediaCache.hasMedia(dialogId, messageId, extension)) {
+                return mediaCache.getMediaFile(dialogId, messageId, extension).getAbsolutePath();
+            }
+
+            // Try to get the file path from Telegram's FileLoader
+            ClassLoader classLoader = savedClassLoader != null ? savedClassLoader : cell.getContext().getClassLoader();
+            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance", new Class<?>[]{int.class}, 0);
+
+            java.io.File srcFile = resolveTelegramMediaPath(fileLoaderClass, fileLoader, messageOwner, mediaObj);
+            if (srcFile != null && srcFile.exists() && srcFile.length() > 0) {
+                try (java.io.FileInputStream fis = new java.io.FileInputStream(srcFile)) {
+                    java.io.File cached = mediaCache.saveMedia(dialogId, messageId, extension, fis);
+                    if (cached != null) {
+                        info("Anti-recall: cached media msgId=" + messageId + " kind=" + mediaKind);
+                        return cached.getAbsolutePath();
+                    }
+                }
+            }
+        } catch (Throwable t) {
+            info("Anti-recall: media cache miss kind=" + mediaKind + " reason=" + t.getClass().getSimpleName());
+        }
+        return null;
+    }
+
+    private java.io.File resolveTelegramMediaPath(Class<?> fileLoaderClass, Object fileLoader, Object messageOwner, Object mediaObj) {
+        java.io.File file = invokePathMethod(fileLoaderClass, null, "getPathToMessage", messageOwner);
+        if (file != null) return file;
+        file = invokePathMethod(fileLoaderClass, fileLoader, "getPathToMessage", messageOwner);
+        if (file != null) return file;
+        file = invokePathMethod(fileLoaderClass, null, "getPathToAttach", mediaObj);
+        if (file != null) return file;
+        return invokePathMethod(fileLoaderClass, fileLoader, "getPathToAttach", mediaObj);
+    }
+
+    private java.io.File invokePathMethod(Class<?> type, Object target, String name, Object payload) {
+        if (payload == null) {
+            return null;
+        }
+        boolean needStatic = target == null;
+        Class<?> current = type;
+        while (current != null) {
+            for (Method method : current.getDeclaredMethods()) {
+                if (!method.getName().equals(name) || Modifier.isStatic(method.getModifiers()) != needStatic) {
+                    continue;
+                }
+                Object[] args = buildFilePathArgs(method.getParameterTypes(), payload);
+                if (args == null) {
+                    continue;
+                }
+                try {
+                    method.setAccessible(true);
+                    Object result = method.invoke(target, args);
+                    if (result instanceof java.io.File) {
+                        return (java.io.File) result;
+                    }
+                } catch (Throwable ignored) {
+                    // Try the next overload.
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return null;
+    }
+
+    static Object[] buildFilePathArgs(Class<?>[] parameterTypes, Object payload) {
+        if (parameterTypes.length == 1) {
+            return new Object[]{payload};
+        }
+        if (parameterTypes.length == 2 && (parameterTypes[1] == boolean.class || parameterTypes[1] == Boolean.class)) {
+            return new Object[]{payload, false};
+        }
+        return null;
     }
 
     private void addColorIndicator(View cell, int color) {
@@ -2293,17 +2430,24 @@ final class TelegramHookInstaller {
     }
 
     private void showEditDialog(View anchor, String originalText, String editedText) {
+        info("Anti-recall: showEditDialog orig=" + (originalText == null ? "NULL" : originalText.length() + "chars") + " edit=" + (editedText == null ? "NULL" : editedText.length() + "chars"));
         Context context = anchor.getContext();
         String title = isChineseLocale(context) ? "消息已编辑" : "Message Edited";
-        StringBuilder body = new StringBuilder();
-        if (originalText != null && !originalText.isEmpty()) {
-            body.append(isChineseLocale(context) ? "原始内容：\n" : "Original:\n");
-            body.append(originalText);
+        String orig = sanitizeDisplayText(originalText);
+        String edit = sanitizeDisplayText(editedText);
+        if (orig == null && edit == null) {
+            Toast.makeText(context, isChineseLocale(context) ? "无编辑历史" : "No edit history", Toast.LENGTH_SHORT).show();
+            return;
         }
-        if (editedText != null && !editedText.isEmpty()) {
+        StringBuilder body = new StringBuilder();
+        if (orig != null) {
+            body.append(isChineseLocale(context) ? "原始内容：\n" : "Original:\n");
+            body.append(orig);
+        }
+        if (edit != null) {
             if (body.length() > 0) body.append("\n\n");
             body.append(isChineseLocale(context) ? "编辑后：\n" : "Edited:\n");
-            body.append(editedText);
+            body.append(edit);
         }
         if (body.length() == 0) return;
         new android.app.AlertDialog.Builder(context)
@@ -2311,6 +2455,21 @@ final class TelegramHookInstaller {
                 .setMessage(body.toString())
                 .setPositiveButton("OK", null)
                 .show();
+    }
+
+    private static String sanitizeDisplayText(String text) {
+        if (text == null || text.isEmpty() || "null".equals(text)) return null;
+        return text;
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        if (first != null && !first.isEmpty()) {
+            return first;
+        }
+        if (second != null && !second.isEmpty()) {
+            return second;
+        }
+        return null;
     }
 
     private void replaceTextInCell(View cell, String originalText) {
@@ -2356,6 +2515,129 @@ final class TelegramHookInstaller {
         return largest;
     }
 
+    private void applyEditedMessageVisuals(View cell, Object messageObject, MessageCache.CachedMessage cachedMessage) {
+        showEditedMark(cell, cachedMessage);
+        applyRestoredContent(cell, messageObject, cachedMessage);
+    }
+
+    private void applyRestoredContent(View cell, Object messageObject, MessageCache.CachedMessage cachedMessage) {
+        interceptAndRestoreContent(messageObject, cachedMessage);
+        replaceTextInCell(cell, firstNonEmpty(cachedMessage.text, cachedMessage.caption));
+        replaceCachedMediaInCell(cell, cachedMessage);
+    }
+
+    private void replaceCachedMediaInCell(View cell, MessageCache.CachedMessage cachedMessage) {
+        if (!(cell instanceof ViewGroup) || cachedMessage.cachedMediaPath == null) {
+            return;
+        }
+        try {
+            java.io.File file = new java.io.File(cachedMessage.cachedMediaPath);
+            if (!file.exists() || file.length() <= 0) {
+                return;
+            }
+            android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath());
+            if (bitmap == null) {
+                return;
+            }
+            ImageView imageView = findLargestImageView((ViewGroup) cell);
+            if (imageView != null && imageView.getWidth() > 0 && imageView.getHeight() > 0) {
+                imageView.setImageBitmap(bitmap);
+                info("Anti-recall: restored cached media via ImageView for msg " + cachedMessage.messageId);
+            }
+            if (applyCachedMediaOverlay(cell, bitmap)) {
+                info("Anti-recall: restored cached media via overlay for msg " + cachedMessage.messageId);
+            }
+        } catch (Throwable throwable) {
+            error("Anti-recall: replaceCachedMediaInCell failed", throwable);
+        }
+    }
+
+    private boolean applyCachedMediaOverlay(View cell, android.graphics.Bitmap bitmap) {
+        if (cell.getWidth() <= 0 || cell.getHeight() <= 0) {
+            return false;
+        }
+        Object old = cell.getTag(R.id.gramsieve_view_state);
+        if (old instanceof android.graphics.drawable.Drawable) {
+            cell.getOverlay().remove((android.graphics.drawable.Drawable) old);
+        }
+        android.graphics.drawable.Drawable drawable = createCenterCropDrawable(bitmap);
+        int inset = dp(cell.getContext(), 6f);
+        drawable.setBounds(inset, inset, Math.max(inset, cell.getWidth() - inset), Math.max(inset, cell.getHeight() - inset));
+        cell.getOverlay().add(drawable);
+        cell.setTag(R.id.gramsieve_view_state, drawable);
+        cell.invalidate();
+        return true;
+    }
+
+    private android.graphics.drawable.Drawable createCenterCropDrawable(android.graphics.Bitmap bitmap) {
+        return new android.graphics.drawable.Drawable() {
+            private final android.graphics.Paint paint = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG | android.graphics.Paint.FILTER_BITMAP_FLAG);
+
+            @Override
+            public void draw(android.graphics.Canvas canvas) {
+                android.graphics.Rect bounds = getBounds();
+                if (bounds.isEmpty()) {
+                    return;
+                }
+                float scale = Math.max(
+                        bounds.width() / (float) bitmap.getWidth(),
+                        bounds.height() / (float) bitmap.getHeight()
+                );
+                float scaledWidth = bitmap.getWidth() * scale;
+                float scaledHeight = bitmap.getHeight() * scale;
+                float left = bounds.left + (bounds.width() - scaledWidth) / 2f;
+                float top = bounds.top + (bounds.height() - scaledHeight) / 2f;
+                android.graphics.RectF dst = new android.graphics.RectF(left, top, left + scaledWidth, top + scaledHeight);
+                canvas.save();
+                canvas.clipRect(bounds);
+                canvas.drawBitmap(bitmap, null, dst, paint);
+                canvas.restore();
+            }
+
+            @Override
+            public void setAlpha(int alpha) {
+                paint.setAlpha(alpha);
+                invalidateSelf();
+            }
+
+            @Override
+            public void setColorFilter(android.graphics.ColorFilter colorFilter) {
+                paint.setColorFilter(colorFilter);
+                invalidateSelf();
+            }
+
+            @Override
+            public int getOpacity() {
+                return android.graphics.PixelFormat.OPAQUE;
+            }
+        };
+    }
+
+    private ImageView findLargestImageView(ViewGroup group) {
+        ImageView largest = null;
+        int maxArea = 0;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof ImageView && child.getVisibility() == View.VISIBLE) {
+                int area = child.getWidth() * child.getHeight();
+                if (area > maxArea) {
+                    maxArea = area;
+                    largest = (ImageView) child;
+                }
+            } else if (child instanceof ViewGroup) {
+                ImageView found = findLargestImageView((ViewGroup) child);
+                if (found != null) {
+                    int area = found.getWidth() * found.getHeight();
+                    if (area > maxArea) {
+                        maxArea = area;
+                        largest = found;
+                    }
+                }
+            }
+        }
+        return largest;
+    }
+
     private void applyAntiRecallMark(View cell, Object messageObject) {
         if (messageObject == null || messageCache == null) {
             return;
@@ -2371,10 +2653,9 @@ final class TelegramHookInstaller {
         }
         if (cachedMessage.isRecalled) {
             showRecalledMark(cell, cachedMessage);
+            replaceCachedMediaInCell(cell, cachedMessage);
         } else if (cachedMessage.isEdited) {
             showEditedMark(cell, cachedMessage);
-            // Intercept and restore original content
-            interceptAndRestoreContent(messageObject, cachedMessage);
         }
     }
 
@@ -2426,9 +2707,7 @@ final class TelegramHookInstaller {
     }
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
-        Context context = cell.getContext();
         cell.setTag(R.id.gramsieve_menu_item_id, "edited_" + cachedMessage.messageId);
-        cell.setBackgroundColor(0x1AFFA500);
     }
 
     private Object handleCellLifecycle(XposedInterface.Chain chain) throws Throwable {
@@ -3130,6 +3409,14 @@ final class TelegramHookInstaller {
                 markSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
             });
         }
+        View editHistoryItem = createEditHistoryMenuItem(((View) contentView).getContext(), chatActivity);
+        if (editHistoryItem != null) {
+            editHistoryItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_EDIT_HISTORY);
+            editHistoryItem.setOnClickListener(v -> {
+                dismissScrimPopup(chatActivity);
+                showSelectedMessageEditHistory(v, chatActivity, selectedMessageObject);
+            });
+        }
 
         MenuInsertionPoint insertionPoint = findReportInsertionPoint((View) contentView);
         if (insertionPoint != null) {
@@ -3143,6 +3430,12 @@ final class TelegramHookInstaller {
                         Math.min(insertionPoint.index + 2, insertionPoint.parent.getChildCount())
                 );
             }
+            if (editHistoryItem != null) {
+                insertionPoint.parent.addView(
+                        editHistoryItem,
+                        Math.min(insertionPoint.index + 3, insertionPoint.parent.getChildCount())
+                );
+            }
         } else {
             ViewGroup fallbackContainer = resolvePopupLinearLayout(contentView);
             if (fallbackContainer == null) {
@@ -3152,9 +3445,11 @@ final class TelegramHookInstaller {
             if (markItem != null) {
                 fallbackContainer.addView(markItem);
             }
+            if (editHistoryItem != null) {
+                fallbackContainer.addView(editHistoryItem);
+            }
         }
         refreshMessagePopup((View) contentView, blockItem, popupWindow);
-        info("Injected block-message and mark-message menu items");
     }
 
     private ViewGroup resolvePopupLinearLayout(Object contentView) {
@@ -3258,6 +3553,178 @@ final class TelegramHookInstaller {
         if (telegramIcon != 0) return telegramIcon;
         telegramIcon = context.getResources().getIdentifier("msg_bookmark", "drawable", "org.telegram.messenger");
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_save;
+    }
+
+    private View createEditHistoryMenuItem(Context context, Object chatActivity) {
+        try {
+            ClassLoader classLoader = chatActivity.getClass().getClassLoader();
+            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
+            View item;
+            if (themeDelegate != null) {
+                Constructor<?> constructor = itemClass.getConstructor(
+                        Context.class,
+                        boolean.class,
+                        boolean.class,
+                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                );
+                item = (View) constructor.newInstance(context, false, true, themeDelegate);
+            } else {
+                Constructor<?> constructor = itemClass.getConstructor(Context.class, boolean.class, boolean.class);
+                item = (View) constructor.newInstance(context, false, true);
+            }
+            CharSequence label = isChineseLocale(context) ? "编辑历史" : "Edit History";
+            int iconRes = context.getResources().getIdentifier("msg_edit", "drawable", "org.telegram.messenger");
+            if (iconRes == 0) iconRes = android.R.drawable.ic_menu_edit;
+            Reflect.invokeIfExists(
+                    item,
+                    "setTextAndIcon",
+                    new Class<?>[]{CharSequence.class, int.class},
+                    label,
+                    iconRes
+            );
+            Reflect.invokeIfExists(item, "setText", new Class<?>[]{CharSequence.class}, label);
+            item.setMinimumWidth(dp(context, 160f));
+            return item;
+        } catch (Throwable throwable) {
+            error("Failed to create edit-history menu item", throwable);
+            return null;
+        }
+    }
+
+    private void showSelectedMessageEditHistory(View anchor, Object chatActivity, Object messageObject) {
+        if (messageCache == null || messageObject == null) {
+            Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
+        if (dialogId == 0L) {
+            dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        }
+        int messageId = resolveMessageId(messageObject);
+        if (dialogId == 0L || messageId <= 0) {
+            Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+        if (cached == null || !cached.isEdited) {
+            Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (showOriginalMediaHistory(anchor, cached)) {
+            return;
+        }
+        showEditDialog(anchor, firstNonEmpty(cached.text, cached.caption), cached.editedText);
+    }
+
+    private boolean showOriginalMediaHistory(View anchor, MessageCache.CachedMessage cachedMessage) {
+        java.io.File file = resolveCachedMediaFile(cachedMessage);
+        if (file == null) {
+            return false;
+        }
+        if (isVideoHistoryFile(cachedMessage, file)) {
+            return showOriginalVideoHistory(anchor, cachedMessage, file);
+        }
+        android.graphics.Bitmap bitmap = android.graphics.BitmapFactory.decodeFile(file.getAbsolutePath());
+        if (bitmap == null) {
+            return false;
+        }
+        Context context = anchor.getContext();
+        android.app.Dialog dialog = new android.app.Dialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        android.widget.FrameLayout root = new android.widget.FrameLayout(context);
+        root.setBackgroundColor(android.graphics.Color.BLACK);
+        ImageView imageView = new ImageView(context);
+        imageView.setImageBitmap(bitmap);
+        imageView.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        imageView.setAdjustViewBounds(true);
+        root.addView(imageView, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        root.setOnClickListener(v -> dialog.dismiss());
+        dialog.setContentView(root);
+        dialog.show();
+        info("Anti-recall: opened original media history msgId=" + cachedMessage.messageId + " file=" + file.getName());
+        return true;
+    }
+
+    private boolean showOriginalVideoHistory(View anchor, MessageCache.CachedMessage cachedMessage, java.io.File file) {
+        Context context = anchor.getContext();
+        android.app.Dialog dialog = new android.app.Dialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        android.widget.FrameLayout root = new android.widget.FrameLayout(context);
+        root.setBackgroundColor(android.graphics.Color.BLACK);
+
+        android.widget.VideoView videoView = new android.widget.VideoView(context);
+        android.widget.MediaController controller = new android.widget.MediaController(context);
+        controller.setAnchorView(videoView);
+        videoView.setMediaController(controller);
+        videoView.setVideoPath(file.getAbsolutePath());
+        root.addView(videoView, new android.widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+
+        ImageButton closeButton = new ImageButton(context);
+        closeButton.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
+        closeButton.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        closeButton.setColorFilter(android.graphics.Color.WHITE);
+        closeButton.setOnClickListener(v -> dialog.dismiss());
+        android.widget.FrameLayout.LayoutParams closeParams = new android.widget.FrameLayout.LayoutParams(
+                dp(context, 48f),
+                dp(context, 48f),
+                android.view.Gravity.TOP | android.view.Gravity.END
+        );
+        closeParams.topMargin = dp(context, 12f);
+        closeParams.rightMargin = dp(context, 12f);
+        root.addView(closeButton, closeParams);
+
+        videoView.setOnPreparedListener(player -> {
+            videoView.start();
+            controller.show(3000);
+        });
+        videoView.setOnErrorListener((player, what, extra) -> {
+            Toast.makeText(context, localizedNoEditHistory(context), Toast.LENGTH_SHORT).show();
+            dialog.dismiss();
+            return true;
+        });
+        dialog.setOnDismissListener(ignored -> videoView.stopPlayback());
+        dialog.setContentView(root);
+        dialog.show();
+        info("Anti-recall: opened original video history msgId=" + cachedMessage.messageId + " file=" + file.getName());
+        return true;
+    }
+
+    private boolean isVideoHistoryFile(MessageCache.CachedMessage cachedMessage, java.io.File file) {
+        String path = file.getName().toLowerCase(Locale.ROOT);
+        String mediaType = cachedMessage.mediaType != null ? cachedMessage.mediaType.toLowerCase(Locale.ROOT) : "";
+        return path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".mov") || mediaType.contains("video");
+    }
+
+    private java.io.File resolveCachedMediaFile(MessageCache.CachedMessage cachedMessage) {
+        if (cachedMessage.cachedMediaPath != null) {
+            java.io.File file = new java.io.File(cachedMessage.cachedMediaPath);
+            if (file.exists() && file.length() > 0) {
+                return file;
+            }
+        }
+        if (mediaCache == null) {
+            return null;
+        }
+        java.io.File file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".jpg");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".png");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".webp");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mp4");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".m4v");
+        if (file != null) return file;
+        return mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mov");
+    }
+
+    private String localizedNoEditHistory(Context context) {
+        return isChineseLocale(context) ? "无编辑历史" : "No edit history";
     }
 
     private void markSelectedMessage(Context context, Object chatActivity, Object messageObject) {
@@ -3919,6 +4386,13 @@ final class TelegramHookInstaller {
         }
         Context context = contextFromMenuItem(headerItem);
         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+
+        // Debug: check all possible ID fields
+        Object currentChat = Reflect.field(chatActivity, "currentChat");
+        long chatId = currentChat != null ? Reflect.asLong(Reflect.field(currentChat, "id"), 0L) : 0L;
+        long channelId = currentChat != null ? Reflect.asLong(Reflect.field(currentChat, "channel_id"), 0L) : 0L;
+        info("Anti-recall: dialogId=" + dialogId + " chatId=" + chatId + " channelId=" + channelId);
+
         info("Anti-recall: injecting menu for dialogId=" + dialogId);
         int iconRes = resolveAntiRecallIcon(context);
         CharSequence label = antiRecallStatusLabel(context, dialogId);
@@ -3961,10 +4435,11 @@ final class TelegramHookInstaller {
 
     private CharSequence antiRecallStatusLabel(Context context, long dialogId) {
         boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
+        String idStr = " [" + dialogId + "]";
         if (isChineseLocale(context)) {
-            return enabled ? "主动加载已打开" : "主动加载未打开";
+            return enabled ? "主动加载已打开" + idStr : "主动加载未打开" + idStr;
         }
-        return enabled ? "Proactive Loading: ON" : "Proactive Loading: OFF";
+        return enabled ? "Proactive Loading: ON" + idStr : "Proactive Loading: OFF" + idStr;
     }
 
     private void jumpToMarkedPosition(Object chatActivity, Context context) {

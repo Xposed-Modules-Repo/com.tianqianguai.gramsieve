@@ -11,7 +11,7 @@ import java.util.List;
 
 public final class MessageDatabaseHelper extends SQLiteOpenHelper implements MessageStore {
     private static final String DATABASE_NAME = "gramsieve_messages.db";
-    private static final int DATABASE_VERSION = 3;
+    private static final int DATABASE_VERSION = 5;
     private static final String TABLE_NAME = "cached_messages";
 
     public MessageDatabaseHelper(Context context) {
@@ -27,6 +27,9 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
                 + "text TEXT, "
                 + "caption TEXT, "
                 + "timestamp INTEGER, "
+                + "media_type TEXT, "
+                + "media_id TEXT, "
+                + "cached_media_path TEXT, "
                 + "is_recalled INTEGER DEFAULT 0, "
                 + "is_edited INTEGER DEFAULT 0, "
                 + "edited_text TEXT, "
@@ -49,6 +52,15 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
             values.putNull("edited_text");
             db.update(TABLE_NAME, values, "is_edited = 1 OR is_recalled = 1", null);
         }
+        if (oldVersion < 4) {
+            // Add media_type and media_id columns
+            db.execSQL("ALTER TABLE " + TABLE_NAME + " ADD COLUMN media_type TEXT");
+            db.execSQL("ALTER TABLE " + TABLE_NAME + " ADD COLUMN media_id TEXT");
+        }
+        if (oldVersion < 5) {
+            // Add cached_media_path column
+            db.execSQL("ALTER TABLE " + TABLE_NAME + " ADD COLUMN cached_media_path TEXT");
+        }
     }
 
     public void insertMessage(MessageCache.CachedMessage message) {
@@ -60,6 +72,9 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
         values.put("text", message.text);
         values.put("caption", message.caption);
         values.put("timestamp", message.timestamp);
+        values.put("media_type", message.mediaType);
+        values.put("media_id", message.mediaId);
+        values.put("cached_media_path", message.cachedMediaPath);
         values.put("is_recalled", message.isRecalled ? 1 : 0);
         values.put("is_edited", message.isEdited ? 1 : 0);
         values.put("edited_text", message.editedText);
@@ -79,6 +94,9 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
         values.put("text", message.text);
         values.put("caption", message.caption);
         values.put("timestamp", message.timestamp);
+        values.put("media_type", message.mediaType);
+        values.put("media_id", message.mediaId);
+        values.put("cached_media_path", message.cachedMediaPath);
         values.put("is_recalled", 0);
         values.put("is_edited", 0);
         values.put("edited_text", (String) null);
@@ -149,6 +167,9 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
     }
 
     private MessageCache.CachedMessage cursorToMessage(Cursor cursor) {
+        int mediaTypeIdx = cursor.getColumnIndex("media_type");
+        int mediaIdIdx = cursor.getColumnIndex("media_id");
+        int cachedMediaPathIdx = cursor.getColumnIndex("cached_media_path");
         return new MessageCache.CachedMessage(
                 cursor.getLong(cursor.getColumnIndexOrThrow("dialog_id")),
                 cursor.getLong(cursor.getColumnIndexOrThrow("message_id")),
@@ -156,6 +177,9 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
                 cursor.getString(cursor.getColumnIndexOrThrow("text")),
                 cursor.getString(cursor.getColumnIndexOrThrow("caption")),
                 cursor.getLong(cursor.getColumnIndexOrThrow("timestamp")),
+                mediaTypeIdx >= 0 ? cursor.getString(mediaTypeIdx) : null,
+                mediaIdIdx >= 0 ? cursor.getString(mediaIdIdx) : null,
+                cachedMediaPathIdx >= 0 ? cursor.getString(cachedMediaPathIdx) : null,
                 cursor.getInt(cursor.getColumnIndexOrThrow("is_recalled")) != 0,
                 cursor.getInt(cursor.getColumnIndexOrThrow("is_edited")) != 0,
                 cursor.getString(cursor.getColumnIndexOrThrow("edited_text"))
