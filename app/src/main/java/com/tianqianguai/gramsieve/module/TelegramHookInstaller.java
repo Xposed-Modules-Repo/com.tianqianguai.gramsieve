@@ -3409,7 +3409,9 @@ final class TelegramHookInstaller {
                 markSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
             });
         }
-        View editHistoryItem = createEditHistoryMenuItem(((View) contentView).getContext(), chatActivity);
+        View editHistoryItem = resolveSelectedEditHistory(chatActivity, selectedMessageObject) != null
+                ? createEditHistoryMenuItem(((View) contentView).getContext(), chatActivity)
+                : null;
         if (editHistoryItem != null) {
             editHistoryItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_EDIT_HISTORY);
             editHistoryItem.setOnClickListener(v -> {
@@ -3593,21 +3595,8 @@ final class TelegramHookInstaller {
     }
 
     private void showSelectedMessageEditHistory(View anchor, Object chatActivity, Object messageObject) {
-        if (messageCache == null || messageObject == null) {
-            Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
-        if (dialogId == 0L) {
-            dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
-        }
-        int messageId = resolveMessageId(messageObject);
-        if (dialogId == 0L || messageId <= 0) {
-            Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
-            return;
-        }
-        MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-        if (cached == null || !cached.isEdited) {
+        MessageCache.CachedMessage cached = resolveSelectedEditHistory(chatActivity, messageObject);
+        if (cached == null) {
             Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
             return;
         }
@@ -3615,6 +3604,22 @@ final class TelegramHookInstaller {
             return;
         }
         showEditDialog(anchor, firstNonEmpty(cached.text, cached.caption), cached.editedText);
+    }
+
+    private MessageCache.CachedMessage resolveSelectedEditHistory(Object chatActivity, Object messageObject) {
+        if (messageCache == null || messageObject == null) {
+            return null;
+        }
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
+        if (dialogId == 0L) {
+            dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        }
+        int messageId = resolveMessageId(messageObject);
+        if (dialogId == 0L || messageId <= 0) {
+            return null;
+        }
+        MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+        return cached != null && cached.isEdited ? cached : null;
     }
 
     private boolean showOriginalMediaHistory(View anchor, Object chatActivity, Object selectedMessageObject,
