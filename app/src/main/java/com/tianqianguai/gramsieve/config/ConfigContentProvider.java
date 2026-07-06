@@ -156,7 +156,9 @@ public final class ConfigContentProvider extends ContentProvider {
             return bundle;
         }
         String entryJson = extras == null ? null : extras.getString(KEY_LOG_ENTRY_JSON, null);
-        PersistentLogStore.append(getContext(), PersistentLogStore.entryFromJson(entryJson));
+        PersistentLogStore.LogEntry entry = PersistentLogStore.entryFromJson(entryJson);
+        PersistentLogStore.append(getContext(), entry);
+        ModuleLogger.appendPersistedEntryToFile(getContext(), entry);
         PersistentLogStore.LogSnapshot snapshot = PersistentLogStore.load(getContext());
         bundle.putInt(KEY_LOG_COUNT, snapshot.entries.size());
         return bundle;

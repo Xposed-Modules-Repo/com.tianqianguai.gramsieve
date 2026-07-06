@@ -14,7 +14,9 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
-- **主动加载与防撤回防修改** — 后台主动加载消息，保留被撤回或修改的原始内容
+- **主动加载与防撤回防修改** — 后台和推送到达时主动加载消息，保留被撤回或修改的原始内容
+- **编辑历史媒体查看** — 点击消息弹窗可查看编辑前内容，原始图片优先使用 Telegram 官方 PhotoViewer 并支持官方保存入口
+- **持久化诊断日志** — 运行日志写入 app-specific 外部目录，避免依赖容易溢出的 logcat 缓冲区
 - **双语界面** — 英文和简体中文，支持跟随系统
 
 - **Local-only filtering** — all filtering happens on-device; no network requests, no data leaves your phone
@@ -25,7 +27,9 @@ An LSPosed module for Telegram message filtering, browsing position redirection,
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
-- **Anti-recall & anti-edit** — proactively loads messages in background, preserves original content when recalled or edited
+- **Anti-recall & anti-edit** — proactively loads messages in the background and when push updates arrive, preserving original content when recalled or edited
+- **Edit-history media viewer** — open original pre-edit content from the message popup; original images prefer Telegram's official PhotoViewer and official save flow
+- **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
 
 ## 规则写法 How Rules Work
@@ -71,22 +75,32 @@ In the current UI, each input box is already target-specific, so prefixes are us
 ## 入口 Entry Points
 
 - **Telegram 设置菜单** → `GramSieve 过滤规则`
-- **单击某条消息** → `屏蔽此消息` · `标记此消息`
-- **右上角三点菜单** → `跳转到上次浏览` · `跳转到标记位置`
+- **单击某条消息** → `屏蔽此消息` · `标记此消息` · `编辑历史`
+- **右上角三点菜单** → `主动加载` · `跳转到上次浏览` · `跳转到标记位置`
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）
 
 - **Telegram settings menu** → `GramSieve filters`
-- **Click a message** → `Block this message` · `Mark this message`
-- **Top-right overflow menu** → `Jump to last viewed` · `Jump to marked position`
+- **Click a message** → `Block this message` · `Mark this message` · `Edit history`
+- **Top-right overflow menu** → `Proactive loading` · `Jump to last viewed` · `Jump to marked position`
 - **Download page action mode** → `Select All` button (select all loaded download items at once)
 
 规则存储在模块应用内，通过 LSPosed service bridge 同步给 Telegram 读取。
 
 Rules are stored in the module app and synced to the LSPosed service bridge so Telegram can read them.
 
+## 持久化日志 Persistent Logs
+
+调试防撤回、主动加载或媒体缓存时，优先读取持久化日志。公共 `/sdcard/GramSieve` 路径已放弃，日志写入 app-specific 外部目录：
+
+When debugging anti-recall, proactive loading, or media caching, read persistent logs first. The public `/sdcard/GramSieve` path is no longer used; logs are written to app-specific external storage:
+
+```
+adb -s <device> shell tail -n 300 /sdcard/Android/data/org.telegram.messenger/files/GramSieve/gramsieve.log
+adb -s <device> shell tail -n 300 /sdcard/Android/data/com.tianqianguai.gramsieve/files/GramSieve/gramsieve.log
+```
+
 ## 示例规则 Sample Rules
 
 - [sample-global-rules.txt](examples/sample-global-rules.txt)
 - [sample-chat-rules.txt](examples/sample-chat-rules.txt)
 - [sample-config.json](examples/sample-config.json)
-

@@ -17,6 +17,7 @@ import java.util.concurrent.TimeUnit;
 public final class BackgroundMessageLoader {
     private static final String TAG = "GramSieve";
     private static final int DEFAULT_HISTORY_LOAD_COUNT = 50;
+    private static final long MIN_IMMEDIATE_LOAD_INTERVAL_MS = 1500L;
     private final MessageCache messageCache;
     private final AntiRecallConfigStore configStore;
     private final ScheduledExecutorService scheduler;
@@ -24,6 +25,7 @@ public final class BackgroundMessageLoader {
     private final Set<Long> enabledChats = ConcurrentHashMap.newKeySet();
     private volatile boolean running;
     private volatile ClassLoader telegramClassLoader;
+    private volatile long lastImmediateLoadAtMs;
 
     public BackgroundMessageLoader(MessageCache messageCache, AntiRecallConfigStore configStore) {
         this.messageCache = messageCache;
@@ -97,6 +99,26 @@ public final class BackgroundMessageLoader {
 
     public boolean isChatEnabled(long dialogId) {
         return enabledChats.contains(dialogId);
+    }
+
+    public void triggerImmediateLoad(String reason) {
+        if (enabledChats.isEmpty()) {
+            info("BackgroundMessageLoader: immediate load skipped, no enabled chats reason=" + reason);
+            return;
+        }
+        if (telegramClassLoader == null) {
+            info("BackgroundMessageLoader: immediate load skipped, classLoader missing reason=" + reason);
+            return;
+        }
+        long now = System.currentTimeMillis();
+        long last = lastImmediateLoadAtMs;
+        if (last != 0L && now - last < MIN_IMMEDIATE_LOAD_INTERVAL_MS) {
+            info("BackgroundMessageLoader: immediate load debounced reason=" + reason);
+            return;
+        }
+        lastImmediateLoadAtMs = now;
+        info("BackgroundMessageLoader: immediate load reason=" + reason + " chats=" + enabledChats.size());
+        loadMessages();
     }
 
     private void loadMessages() {
