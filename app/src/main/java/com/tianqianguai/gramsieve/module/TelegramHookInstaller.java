@@ -66,6 +66,7 @@ final class TelegramHookInstaller {
     private ViewGroup downloadPageFragmentView = null;
     private MessageCache messageCache;
     private MediaCache mediaCache;
+    private MediaPrefetcher mediaPrefetcher;
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
     private AntiRecallConfigStore antiRecallConfigStore;
@@ -116,6 +117,7 @@ final class TelegramHookInstaller {
         initAntiRecall(classLoader);
         logRemoteCapabilities();
         logTelegramVersion(classLoader, applicationInfo);
+        hookPushNotificationTriggers(classLoader);
         hookTaggedViewMeasure();
         hookChatMessageCell(classLoader);
         hookRecyclerViewBinding(classLoader);
@@ -182,19 +184,116 @@ final class TelegramHookInstaller {
     }
 
     private void doInitAntiRecall(Context context, ClassLoader classLoader) {
+        ModuleLogger.init(context);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
         messageCache = new MessageCache(databaseHelper);
         mediaCache = new MediaCache(context);
+        mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
         if (classLoader != null) {
             backgroundMessageLoader.setTelegramClassLoader(classLoader);
+            mediaPrefetcher.setTelegramClassLoader(classLoader);
         }
-        recallDetector = new RecallDetector(messageCache, backgroundMessageLoader);
+        recallDetector = new RecallDetector(messageCache, backgroundMessageLoader, mediaPrefetcher);
         if (classLoader != null) {
             recallDetector.install(classLoader, module);
         }
         info("Anti-recall components initialized");
+    }
+
+    private void hookPushNotificationTriggers(ClassLoader classLoader) {
+        hookPushListenerController(classLoader);
+        hookConnectionsManagerPushFallback(classLoader);
+    }
+
+    private void hookPushListenerController(ClassLoader classLoader) {
+        try {
+            Class<?> pushControllerClass = classLoader.loadClass("org.telegram.messenger.PushListenerController");
+            boolean hooked = false;
+            for (Method method : pushControllerClass.getDeclaredMethods()) {
+                if (!"processRemoteMessage".equals(method.getName())) {
+                    continue;
+                }
+                hook(method, chain -> {
+                    triggerImmediateBackgroundLoad(
+                            "PushListenerController.processRemoteMessage" + describeHookArgs(chain.getArgs())
+                    );
+                    return chain.proceed();
+                });
+                hooked = true;
+            }
+            if (hooked) {
+                info("Anti-recall: hooked PushListenerController.processRemoteMessage for push-triggered loading");
+            } else {
+                info("Anti-recall: PushListenerController.processRemoteMessage not found");
+            }
+        } catch (ClassNotFoundException throwable) {
+            info("Anti-recall: PushListenerController unavailable");
+        } catch (Throwable throwable) {
+            error("Anti-recall: failed to hook PushListenerController", throwable);
+        }
+    }
+
+    private void hookConnectionsManagerPushFallback(ClassLoader classLoader) {
+        try {
+            Class<?> connectionsManagerClass = classLoader.loadClass("org.telegram.tgnet.ConnectionsManager");
+            boolean hooked = false;
+            for (Method method : connectionsManagerClass.getDeclaredMethods()) {
+                if (!"onInternalPushReceived".equals(method.getName())) {
+                    continue;
+                }
+                hook(method, chain -> {
+                    triggerImmediateBackgroundLoad(
+                            "ConnectionsManager.onInternalPushReceived" + describeHookArgs(chain.getArgs())
+                    );
+                    return chain.proceed();
+                });
+                hooked = true;
+            }
+            if (hooked) {
+                info("Anti-recall: hooked ConnectionsManager.onInternalPushReceived fallback");
+            } else {
+                info("Anti-recall: ConnectionsManager.onInternalPushReceived not found");
+            }
+        } catch (ClassNotFoundException throwable) {
+            info("Anti-recall: ConnectionsManager unavailable for push fallback");
+        } catch (Throwable throwable) {
+            error("Anti-recall: failed to hook ConnectionsManager push fallback", throwable);
+        }
+    }
+
+    private void triggerImmediateBackgroundLoad(String reason) {
+        try {
+            initAntiRecallDeferred();
+            BackgroundMessageLoader loader = backgroundMessageLoader;
+            if (loader == null) {
+                info("Anti-recall: push-triggered load skipped, loader unavailable reason=" + reason);
+                return;
+            }
+            loader.triggerImmediateLoad(reason);
+        } catch (Throwable throwable) {
+            error("Anti-recall: push-triggered load failed reason=" + reason, throwable);
+        }
+    }
+
+    private String describeHookArgs(List<Object> args) {
+        if (args == null || args.isEmpty()) {
+            return "";
+        }
+        StringBuilder builder = new StringBuilder(" args=[");
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            Object arg = args.get(i);
+            if (arg instanceof CharSequence) {
+                builder.append("strLen=").append(((CharSequence) arg).length());
+            } else {
+                builder.append(String.valueOf(arg));
+            }
+        }
+        return builder.append(']').toString();
     }
 
     private Context resolveHostApplication() {
@@ -2202,8 +2301,10 @@ final class TelegramHookInstaller {
             Object cell = chain.getThisObject();
             Object messageObject = chain.getArg(0);
             if (cell instanceof View && messageObject != null) {
-                applyDecision((View) cell, (View) cell, messageObject);
-                cacheAndApplyAntiRecall((View) cell, messageObject);
+                View cellView = (View) cell;
+                clearAntiRecallCellVisualState(cellView);
+                applyDecision(cellView, cellView, messageObject);
+                cacheAndApplyAntiRecall(cellView, messageObject);
             }
         } catch (Throwable throwable) {
             error("Message filtering failed", throwable);
@@ -2234,9 +2335,10 @@ final class TelegramHookInstaller {
             String cachedMediaPath = null;
             Object mediaAttachment = null;
             String mediaKind = null;
+            Object media = null;
             if (owner != null) {
                 String text = Reflect.asString(Reflect.field(owner, "message"));
-                Object media = Reflect.field(owner, "media");
+                media = Reflect.field(owner, "media");
                 if (media != null) {
                     caption = Reflect.asString(Reflect.field(media, "caption"));
                     mediaType = media.getClass().getSimpleName();
@@ -2284,12 +2386,14 @@ final class TelegramHookInstaller {
                 } else if (existingFingerprint.isEmpty() || existingFingerprint.equals(contentFingerprint)) {
                     cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
                     messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
-                    messageCache.putMediaObject(dialogId, messageId, Reflect.field(owner, "media"));
+                    messageCache.putMediaObject(dialogId, messageId, media);
+                    prefetchMediaIfNeeded(dialogId, messageId, messageObject, media, cachedMediaPath);
                 }
             } else if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
                 cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
                 messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
-                messageCache.putMediaObject(dialogId, messageId, Reflect.field(owner, "media"));
+                messageCache.putMediaObject(dialogId, messageId, media);
+                prefetchMediaIfNeeded(dialogId, messageId, messageObject, media, cachedMediaPath);
             }
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
@@ -2301,6 +2405,14 @@ final class TelegramHookInstaller {
         } catch (Throwable t) {
             error("Anti-recall: cacheAndApply failed", t);
         }
+    }
+
+    private void prefetchMediaIfNeeded(long dialogId, long messageId, Object messageLike,
+                                       Object media, String cachedMediaPath) {
+        if (cachedMediaPath != null || mediaPrefetcher == null || messageLike == null || media == null) {
+            return;
+        }
+        mediaPrefetcher.prefetchFromMessage(dialogId, messageId, messageLike, media);
     }
 
     private String tryCacheMedia(View cell, long dialogId, long messageId, Object messageOwner, Object mediaObj, String mediaKind) {
@@ -2317,7 +2429,8 @@ final class TelegramHookInstaller {
             // Try to get the file path from Telegram's FileLoader
             ClassLoader classLoader = savedClassLoader != null ? savedClassLoader : cell.getContext().getClassLoader();
             Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
-            Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance", new Class<?>[]{int.class}, 0);
+            Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance",
+                    new Class<?>[]{int.class}, resolveSelectedTelegramAccount(classLoader));
 
             java.io.File srcFile = resolveTelegramMediaPath(fileLoaderClass, fileLoader, messageOwner, mediaObj);
             if (srcFile != null && srcFile.exists() && srcFile.length() > 0) {
@@ -2688,6 +2801,21 @@ final class TelegramHookInstaller {
         }
     }
 
+    private void clearAntiRecallCellVisualState(View cell) {
+        Object mark = cell.getTag(R.id.gramsieve_menu_item_id);
+        if (!(mark instanceof String)) {
+            return;
+        }
+        String value = (String) mark;
+        if (!value.startsWith("recalled_") && !value.startsWith("edited_")) {
+            return;
+        }
+        cell.setTag(R.id.gramsieve_menu_item_id, null);
+        if (value.startsWith("recalled_")) {
+            cell.setBackground(null);
+        }
+    }
+
     private void showRecalledMark(View cell, MessageCache.CachedMessage cachedMessage) {
         Context context = cell.getContext();
         String originalContent = cachedMessage.text != null && !cachedMessage.text.isEmpty() 
@@ -2702,7 +2830,6 @@ final class TelegramHookInstaller {
         }
         
         cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
-        cell.setBackgroundColor(0x33FF0000);
         cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
     }
 
@@ -3619,18 +3746,39 @@ final class TelegramHookInstaller {
             return null;
         }
         MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-        return cached != null && cached.isEdited ? cached : null;
+        return hasRenderableEditHistory(cached) ? cached : null;
     }
 
     private boolean showOriginalMediaHistory(View anchor, Object chatActivity, Object selectedMessageObject,
                                              MessageCache.CachedMessage cachedMessage) {
-        java.io.File file = resolveCachedMediaFile(cachedMessage);
-        if (file == null) {
-            return false;
-        }
         Object mediaObject = messageCache != null
                 ? messageCache.getMediaObject(cachedMessage.dialogId, cachedMessage.messageId)
                 : null;
+        java.io.File file = resolveCachedMediaFile(cachedMessage);
+        if (file == null) {
+            info("Anti-recall: original media history file missing msgId=" + cachedMessage.messageId
+                    + " mediaType=" + cachedMessage.mediaType
+                    + " mediaId=" + cachedMessage.mediaId
+                    + " cachedPath=" + cachedMessage.cachedMediaPath
+                    + " hasTelegramMedia=" + (mediaObject != null));
+            if (mediaObject != null && mediaPrefetcher != null && selectedMessageObject != null) {
+                mediaPrefetcher.prefetchFromMessage(
+                        cachedMessage.dialogId,
+                        cachedMessage.messageId,
+                        selectedMessageObject,
+                        mediaObject
+                );
+                Toast.makeText(anchor.getContext(), localizedMediaHistoryPreparing(anchor.getContext()), Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            if (!hasDisplayText(cachedMessage.text)
+                    && !hasDisplayText(cachedMessage.caption)
+                    && !hasDisplayText(cachedMessage.editedText)) {
+                Toast.makeText(anchor.getContext(), localizedOriginalMediaUnavailable(anchor.getContext()), Toast.LENGTH_SHORT).show();
+                return true;
+            }
+            return false;
+        }
         if (mediaObject != null
                 && showOriginalMediaMessageInPhotoViewer(anchor, chatActivity, selectedMessageObject, cachedMessage, file, mediaObject, false)) {
             return true;
@@ -3642,6 +3790,26 @@ final class TelegramHookInstaller {
         info("Anti-recall: using local media history preview msgId=" + cachedMessage.messageId
                 + " hasTelegramMedia=" + (mediaObject != null));
         return showOriginalMediaDialog(anchor, cachedMessage, file);
+    }
+
+    private boolean hasRenderableEditHistory(MessageCache.CachedMessage cachedMessage) {
+        if (cachedMessage == null || !cachedMessage.isEdited) {
+            return false;
+        }
+        if (hasDisplayText(cachedMessage.text)
+                || hasDisplayText(cachedMessage.caption)
+                || hasDisplayText(cachedMessage.editedText)) {
+            return true;
+        }
+        if (resolveCachedMediaFile(cachedMessage) != null) {
+            return true;
+        }
+        return messageCache != null
+                && messageCache.getMediaObject(cachedMessage.dialogId, cachedMessage.messageId) != null;
+    }
+
+    private static boolean hasDisplayText(String value) {
+        return sanitizeDisplayText(value) != null;
     }
 
     private boolean showOriginalSyntheticPhotoInPhotoViewer(View anchor, Object chatActivity, Object selectedMessageObject,
@@ -4028,7 +4196,8 @@ final class TelegramHookInstaller {
     private boolean isVideoHistoryFile(MessageCache.CachedMessage cachedMessage, java.io.File file) {
         String path = file.getName().toLowerCase(Locale.ROOT);
         String mediaType = cachedMessage.mediaType != null ? cachedMessage.mediaType.toLowerCase(Locale.ROOT) : "";
-        return path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".mov") || mediaType.contains("video");
+        return path.endsWith(".mp4") || path.endsWith(".m4v") || path.endsWith(".mov")
+                || path.endsWith(".webm") || path.endsWith(".mkv") || mediaType.contains("video");
     }
 
     private java.io.File resolveCachedMediaFile(MessageCache.CachedMessage cachedMessage) {
@@ -4047,15 +4216,35 @@ final class TelegramHookInstaller {
         if (file != null) return file;
         file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".webp");
         if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".gif");
+        if (file != null) return file;
         file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mp4");
         if (file != null) return file;
         file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".m4v");
         if (file != null) return file;
-        return mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mov");
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mov");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".webm");
+        if (file != null) return file;
+        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mkv");
+        if (file != null) return file;
+        return mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".bin");
     }
 
     private String localizedNoEditHistory(Context context) {
         return isChineseLocale(context) ? "无编辑历史" : "No edit history";
+    }
+
+    private String localizedMediaHistoryPreparing(Context context) {
+        return isChineseLocale(context)
+                ? "原始媒体仍在准备，请稍后再试"
+                : "Original media is still being prepared. Try again shortly.";
+    }
+
+    private String localizedOriginalMediaUnavailable(Context context) {
+        return isChineseLocale(context)
+                ? "原始媒体未缓存"
+                : "Original media was not cached";
     }
 
     private void markSelectedMessage(Context context, Object chatActivity, Object messageObject) {

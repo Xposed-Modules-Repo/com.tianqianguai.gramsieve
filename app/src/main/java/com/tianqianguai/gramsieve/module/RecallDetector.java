@@ -13,10 +13,17 @@ public final class RecallDetector {
 
     private final MessageCache messageCache;
     private final BackgroundMessageLoader loader;
+    private final MediaPrefetcher mediaPrefetcher;
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader) {
+        this(messageCache, loader, null);
+    }
+
+    public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                          MediaPrefetcher mediaPrefetcher) {
         this.messageCache = messageCache;
         this.loader = loader;
+        this.mediaPrefetcher = mediaPrefetcher;
     }
 
     public void install(ClassLoader classLoader, XposedModule module) {
@@ -115,8 +122,9 @@ public final class RecallDetector {
         for (Object msgObj : messages) {
             try {
                 if (msgObj == null) continue;
+                Object messageOwner = messageOwner(msgObj);
                 // Get dialogId from peer_id
-                Object peerId = Reflect.field(msgObj, "peer_id");
+                Object peerId = Reflect.field(messageOwner, "peer_id");
                 long dialogId = 0L;
                 if (peerId != null) {
                     long channelId = Reflect.asLong(Reflect.field(peerId, "channel_id"), 0L);
@@ -128,14 +136,14 @@ public final class RecallDetector {
                 }
                 if (dialogId == 0L || !loader.isChatEnabled(dialogId)) continue;
 
-                int msgId = Reflect.asInt(Reflect.field(msgObj, "id"), 0);
+                int msgId = Reflect.asInt(Reflect.field(messageOwner, "id"), 0);
                 if (msgId == 0) continue;
 
-                String text = Reflect.asString(Reflect.field(msgObj, "message"));
+                String text = Reflect.asString(Reflect.field(messageOwner, "message"));
                 String caption = "";
                 String mediaType = null;
                 String mediaId = null;
-                Object media = Reflect.field(msgObj, "media");
+                Object media = Reflect.field(messageOwner, "media");
                 if (media != null) {
                     String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
                     if (mediaCaption != null && !mediaCaption.isEmpty()) {
@@ -165,6 +173,7 @@ public final class RecallDetector {
                 if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
                     messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
                     messageCache.putMediaObject(dialogId, msgId, media);
+                    prefetchMedia(dialogId, msgId, msgObj, media);
                     cached++;
                 }
             } catch (Throwable t) {
@@ -185,10 +194,12 @@ public final class RecallDetector {
                         processUpdatesFromArgs(args);
                         return chain.proceed();
                     }
-                    Object result = chain.proceed();
                     if (methodName.equals("deleteMessages")) {
                         processDeletionsFromArgs(args);
-                    } else if (methodName.equals("editMessage")) {
+                        return chain.proceed();
+                    }
+                    Object result = chain.proceed();
+                    if (methodName.equals("editMessage")) {
                         processEditFromArgs(args);
                     } else if (methodName.equals("processLoadedMessages")) {
                         processLoadedMessagesFromArgs(args);
@@ -215,8 +226,8 @@ public final class RecallDetector {
         }
     }
 
-    private void processDeletionsFromArgs(java.util.List<Object> args) {
-        if (args == null || args.size() < 4) return;
+    private boolean processDeletionsFromArgs(java.util.List<Object> args) {
+        if (args == null || args.size() < 4) return false;
         ArrayList<?> messageIds = null;
         long dialogId = 0L;
         for (Object arg : args) {
@@ -228,7 +239,15 @@ public final class RecallDetector {
         }
         if (messageIds != null && dialogId != 0L) {
             processDeletions(dialogId, messageIds);
+            if (loader != null && loader.isChatEnabled(dialogId) && !messageIds.isEmpty()) {
+                int count = messageIds.size();
+                messageIds.clear();
+                ModuleLogger.hook(TAG, "RecallDetector: cleared deleteMessages ids before Telegram dialogId="
+                        + dialogId + " count=" + count);
+                return true;
+            }
         }
+        return false;
     }
 
     private void processEditFromArgs(java.util.List<Object> args) {
@@ -274,14 +293,15 @@ public final class RecallDetector {
         for (Object msgObj : messages) {
             try {
                 if (msgObj == null) continue;
-                int msgId = Reflect.asInt(Reflect.field(msgObj, "id"), 0);
+                Object messageOwner = messageOwner(msgObj);
+                int msgId = Reflect.asInt(Reflect.field(messageOwner, "id"), 0);
                 if (msgId == 0) continue;
 
-                String text = Reflect.asString(Reflect.field(msgObj, "message"));
+                String text = Reflect.asString(Reflect.field(messageOwner, "message"));
                 String caption = "";
                 String mediaType = null;
                 String mediaId = null;
-                Object media = Reflect.field(msgObj, "media");
+                Object media = Reflect.field(messageOwner, "media");
                 if (media != null) {
                     String mediaCaption = Reflect.asString(Reflect.field(media, "caption"));
                     if (mediaCaption != null && !mediaCaption.isEmpty()) {
@@ -313,6 +333,7 @@ public final class RecallDetector {
                     if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
                         messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
                         messageCache.putMediaObject(dialogId, msgId, media);
+                        prefetchMedia(dialogId, msgId, msgObj, media);
                         cached++;
                     }
                 }
@@ -432,19 +453,20 @@ public final class RecallDetector {
                 // Check for delete_messages field (TLRPC.TL_updateDeleteMessages, TL_updateDeleteChannelMessages)
                 Object deleteMessages = Reflect.field(update, "messages");
                 Object channelId = Reflect.field(update, "channel_id");
-                if (deleteMessages instanceof ArrayList) {
+                if (className.contains("Delete") && deleteMessages instanceof ArrayList) {
                     long dialogId = 0L;
-                    if (channelId instanceof Long) {
-                        dialogId = -(Long) channelId;
+                    long channelIdValue = Reflect.asLong(channelId, 0L);
+                    if (channelIdValue != 0L) {
+                        dialogId = -channelIdValue;
                     }
                     if (loader.isChatEnabled(dialogId)) {
                         ArrayList<?> msgIds = (ArrayList<?>) deleteMessages;
-                        for (Object msgIdObj : msgIds) {
-                            int msgId = Reflect.asInt(msgIdObj, 0);
-                            if (msgId > 0) {
-                                messageCache.markRecalled(dialogId, msgId);
-                                ModuleLogger.hook(TAG, "RecallDetector: marked recalled dialogId=" + dialogId + " msgId=" + msgId);
-                            }
+                        int count = msgIds.size();
+                        processDeletions(dialogId, msgIds);
+                        if (count > 0) {
+                            msgIds.clear();
+                            ModuleLogger.hook(TAG, "RecallDetector: cleared delete update ids before Telegram dialogId="
+                                    + dialogId + " count=" + count);
                         }
                     }
                 }
@@ -512,9 +534,22 @@ public final class RecallDetector {
             // Reset any stale flags from prior sessions
             messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
             messageCache.putMediaObject(dialogId, msgId, media);
+            prefetchMedia(dialogId, msgId, message, media);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
         }
+    }
+
+    private Object messageOwner(Object messageLike) {
+        Object owner = Reflect.field(messageLike, "messageOwner");
+        return owner != null ? owner : messageLike;
+    }
+
+    private void prefetchMedia(long dialogId, long messageId, Object messageOwner, Object media) {
+        if (mediaPrefetcher == null || media == null) {
+            return;
+        }
+        mediaPrefetcher.prefetchFromMessage(dialogId, messageId, messageOwner, media);
     }
 
     private boolean isRealEdit(Object message) {

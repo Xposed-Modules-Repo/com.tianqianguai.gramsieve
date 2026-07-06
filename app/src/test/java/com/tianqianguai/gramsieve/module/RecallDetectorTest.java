@@ -100,6 +100,33 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void testProcessDeleteUpdateClearsEnabledChannelIdsBeforeTelegramHandlesIt() {
+        cache.put(-123, 7, "kept", null, 1);
+        loader.enableChat(-123);
+        FakeDeleteChannelUpdate update = new FakeDeleteChannelUpdate(123, 7);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(update);
+
+        detector.processUpdates(updates);
+
+        assertTrue(cache.get(-123, 7).isRecalled);
+        assertTrue(update.messages.isEmpty());
+    }
+
+    @Test
+    public void testProcessDeleteUpdateKeepsDisabledChannelIds() {
+        cache.put(-123, 7, "kept", null, 1);
+        FakeDeleteChannelUpdate update = new FakeDeleteChannelUpdate(123, 7);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(update);
+
+        detector.processUpdates(updates);
+
+        assertFalse(cache.get(-123, 7).isRecalled);
+        assertEquals(1, update.messages.size());
+    }
+
+    @Test
     public void testProcessEditMarksEdited() {
         cache.put(100, 1, "original", null, 42);
         loader.enableChat(100);
@@ -208,6 +235,16 @@ public class RecallDetectorTest {
 
         FakeEditUpdate(Object message) {
             this.message = message;
+        }
+    }
+
+    private static class FakeDeleteChannelUpdate {
+        final ArrayList<Integer> messages = new ArrayList<>();
+        final long channel_id;
+
+        FakeDeleteChannelUpdate(long channelId, int messageId) {
+            this.channel_id = channelId;
+            this.messages.add(messageId);
         }
     }
 

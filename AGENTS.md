@@ -36,14 +36,16 @@ adb connect <ip>:5555               # WiFi ADB
 adb -s <ip>:5555 install -r app/build/outputs/apk/debug/app-debug.apk
 
 # Persistent log capture is the source of truth.
-# Always read this file first when diagnosing behavior after a repro; logcat buffers overflow easily.
-# 日志文件自动写入 /sdcard/GramSieve/gramsieve.log
-adb -s <ip>:5555 shell cat /sdcard/GramSieve/gramsieve.log
-adb -s <ip>:5555 shell tail -n 300 /sdcard/GramSieve/gramsieve.log
-adb -s <ip>:5555 shell grep -E "Anti-recall|RecallDetector|BackgroundMessage|MediaCache" /sdcard/GramSieve/gramsieve.log
+# Always read persistent files first when diagnosing behavior after a repro; logcat buffers overflow easily.
+# 日志写入 app-specific 外部目录，不再使用 /sdcard/GramSieve 公共路径，避免 scoped-storage 权限问题。
+adb -s <ip>:5555 shell cat /sdcard/Android/data/org.telegram.messenger/files/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell tail -n 300 /sdcard/Android/data/org.telegram.messenger/files/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell grep -E "Anti-recall|RecallDetector|BackgroundMessage|MediaCache" /sdcard/Android/data/org.telegram.messenger/files/GramSieve/gramsieve.log
+adb -s <ip>:5555 shell cat /sdcard/Android/data/com.tianqianguai.gramsieve/files/GramSieve/gramsieve.log
 
 # Pull only when you need to archive/share the whole log locally.
-adb -s <ip>:5555 pull /sdcard/GramSieve/gramsieve.log ./gramsieve.log
+adb -s <ip>:5555 pull /sdcard/Android/data/org.telegram.messenger/files/GramSieve/gramsieve.log ./gramsieve-telegram.log
+adb -s <ip>:5555 pull /sdcard/Android/data/com.tianqianguai.gramsieve/files/GramSieve/gramsieve.log ./gramsieve-module.log
 
 # 实时查看日志 only for live observation; do not rely on buffered logcat for historical diagnosis.
 adb -s <ip>:5555 logcat -s GramSieve:I
