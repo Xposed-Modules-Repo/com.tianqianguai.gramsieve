@@ -123,6 +123,7 @@ public final class MessageCache {
     public void markEdited(long dialogId, long messageId, String newText) {
         CachedMessage message = get(dialogId, messageId);
         if (message != null) {
+            store.insertEditHistory(editHistoryFrom(message, newText));
             synchronized (memoryCache) {
                 message.isEdited = true;
                 message.editedText = newText;
@@ -138,7 +139,40 @@ public final class MessageCache {
                 memoryCache.put(key, newMsg);
             }
             store.insertMessage(newMsg);
+            store.insertEditHistory(newMsg);
         }
+    }
+
+    public void recordEditedVersion(long dialogId, long messageId, long senderId,
+                                    String originalText, String originalCaption,
+                                    String editedText, String mediaType, String mediaId,
+                                    String cachedMediaPath) {
+        String key = dialogId + ":" + messageId;
+        CachedMessage existing = get(dialogId, messageId);
+        String effectiveText = firstNonEmpty(existing != null ? existing.text : null, originalText);
+        String effectiveCaption = firstNonEmpty(existing != null ? existing.caption : null, originalCaption);
+        long effectiveSender = existing != null && existing.senderId != 0L ? existing.senderId : senderId;
+        long effectiveTimestamp = existing != null && existing.timestamp != 0L ? existing.timestamp : System.currentTimeMillis();
+        String effectiveMediaType = firstNonEmptyOrNull(existing != null ? existing.mediaType : null, mediaType);
+        String effectiveMediaId = firstNonEmptyOrNull(existing != null ? existing.mediaId : null, mediaId);
+        String effectiveMediaPath = firstNonEmptyOrNull(existing != null ? existing.cachedMediaPath : null, cachedMediaPath);
+
+        CachedMessage message = new CachedMessage(dialogId, messageId, effectiveSender,
+                effectiveText, effectiveCaption, effectiveTimestamp,
+                effectiveMediaType, effectiveMediaId, effectiveMediaPath,
+                existing != null && existing.isRecalled,
+                true,
+                editedText);
+        synchronized (memoryCache) {
+            memoryCache.put(key, message);
+        }
+        store.insertMessage(message);
+        store.insertEditHistory(new CachedMessage(dialogId, messageId, effectiveSender,
+                effectiveText, effectiveCaption, System.currentTimeMillis(),
+                effectiveMediaType, effectiveMediaId, effectiveMediaPath,
+                existing != null && existing.isRecalled,
+                true,
+                editedText));
     }
 
     public List<CachedMessage> getRecalledMessages(long dialogId) {
@@ -147,6 +181,44 @@ public final class MessageCache {
 
     public List<CachedMessage> getEditedMessages(long dialogId) {
         return store.getEditedMessages(dialogId);
+    }
+
+    public List<CachedMessage> getEditHistory(long dialogId, long messageId) {
+        return store.getEditHistory(dialogId, messageId);
+    }
+
+    private static String firstNonEmpty(String first, String second) {
+        if (first != null && !first.isEmpty()) {
+            return first;
+        }
+        return second != null ? second : "";
+    }
+
+    private static String firstNonEmptyOrNull(String first, String second) {
+        if (first != null && !first.isEmpty()) {
+            return first;
+        }
+        return second != null && !second.isEmpty() ? second : null;
+    }
+
+    private static CachedMessage editHistoryFrom(CachedMessage message, String editedText) {
+        boolean hasPreviousEditedText = message.editedText != null && !message.editedText.isEmpty();
+        String previousText = hasPreviousEditedText ? message.editedText : message.text;
+        String previousCaption = hasPreviousEditedText ? "" : message.caption;
+        return new CachedMessage(
+                message.dialogId,
+                message.messageId,
+                message.senderId,
+                previousText,
+                previousCaption,
+                System.currentTimeMillis(),
+                message.mediaType,
+                message.mediaId,
+                message.cachedMediaPath,
+                message.isRecalled,
+                true,
+                editedText
+        );
     }
 
     static final class LruCacheMemoryCache implements MemoryCache {

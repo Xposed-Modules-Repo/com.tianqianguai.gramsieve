@@ -101,6 +101,10 @@ public final class BackgroundMessageLoader {
         return enabledChats.contains(dialogId);
     }
 
+    Set<Long> enabledChatIdsSnapshot() {
+        return new java.util.HashSet<>(enabledChats);
+    }
+
     public void triggerImmediateLoad(String reason) {
         if (enabledChats.isEmpty()) {
             info("BackgroundMessageLoader: immediate load skipped, no enabled chats reason=" + reason);

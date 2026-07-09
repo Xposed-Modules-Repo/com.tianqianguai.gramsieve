@@ -114,6 +114,20 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void testProcessGlobalDeleteUpdateMarksEnabledPrivateChat() {
+        cache.put(123, 7, "kept", null, 1);
+        loader.enableChat(123);
+        FakeDeleteMessagesUpdate update = new FakeDeleteMessagesUpdate(7);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(update);
+
+        detector.processUpdates(updates);
+
+        assertTrue(cache.get(123, 7).isRecalled);
+        assertTrue(update.messages.isEmpty());
+    }
+
+    @Test
     public void testProcessDeleteUpdateKeepsDisabledChannelIds() {
         cache.put(-123, 7, "kept", null, 1);
         FakeDeleteChannelUpdate update = new FakeDeleteChannelUpdate(123, 7);
@@ -248,6 +262,14 @@ public class RecallDetectorTest {
         }
     }
 
+    private static class FakeDeleteMessagesUpdate {
+        final ArrayList<Integer> messages = new ArrayList<>();
+
+        FakeDeleteMessagesUpdate(int messageId) {
+            this.messages.add(messageId);
+        }
+    }
+
     private static class FakeTelegramMessage {
         int id;
         Object peer_id;
@@ -317,6 +339,7 @@ public class RecallDetectorTest {
 
     private static class InMemoryMessageStore implements MessageStore {
         private final Map<String, MessageCache.CachedMessage> db = new HashMap<>();
+        private final List<MessageCache.CachedMessage> editHistory = new ArrayList<>();
         private MessageCache.CachedMessage lastUpdated;
 
         @Override
@@ -327,6 +350,11 @@ public class RecallDetectorTest {
         @Override
         public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
             db.put(message.dialogId + ":" + message.messageId, message);
+        }
+
+        @Override
+        public void insertEditHistory(MessageCache.CachedMessage message) {
+            editHistory.add(0, message);
         }
 
         @Override
@@ -353,8 +381,19 @@ public class RecallDetectorTest {
         @Override
         public List<MessageCache.CachedMessage> getEditedMessages(long dialogId) {
             List<MessageCache.CachedMessage> result = new ArrayList<>();
-            for (MessageCache.CachedMessage msg : db.values()) {
-                if (msg.dialogId == dialogId && msg.isEdited) {
+            for (MessageCache.CachedMessage msg : editHistory) {
+                if (msg.dialogId == dialogId) {
+                    result.add(msg);
+                }
+            }
+            return result;
+        }
+
+        @Override
+        public List<MessageCache.CachedMessage> getEditHistory(long dialogId, long messageId) {
+            List<MessageCache.CachedMessage> result = new ArrayList<>();
+            for (MessageCache.CachedMessage msg : editHistory) {
+                if (msg.dialogId == dialogId && msg.messageId == messageId) {
                     result.add(msg);
                 }
             }

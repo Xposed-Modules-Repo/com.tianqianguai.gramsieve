@@ -117,6 +117,42 @@ public class MessageCacheTest {
     }
 
     @Test
+    public void testRecordEditedVersionPreservesOriginalText() {
+        cache.recordEditedVersion(1, 10, 100,
+                "old text", "old caption", "new text", "TL_messageMediaPhoto", "photo_1", null);
+
+        MessageCache.CachedMessage msg = cache.get(1, 10);
+
+        assertNotNull(msg);
+        assertEquals("old text", msg.text);
+        assertEquals("old caption", msg.caption);
+        assertTrue(msg.isEdited);
+        assertEquals("new text", msg.editedText);
+        assertEquals("TL_messageMediaPhoto", msg.mediaType);
+        assertEquals("photo_1", msg.mediaId);
+        assertNull(msg.cachedMediaPath);
+        List<MessageCache.CachedMessage> history = cache.getEditHistory(1, 10);
+        assertEquals(1, history.size());
+        assertEquals("old text", history.get(0).text);
+        assertEquals("new text", history.get(0).editedText);
+    }
+
+    @Test
+    public void testMarkEditedStoresMultipleVersions() {
+        cache.put(1, 10, "original", null, 100);
+
+        cache.markEdited(1, 10, "first edit");
+        cache.markEdited(1, 10, "second edit");
+
+        List<MessageCache.CachedMessage> history = cache.getEditHistory(1, 10);
+        assertEquals(2, history.size());
+        assertEquals("first edit", history.get(0).text);
+        assertEquals("second edit", history.get(0).editedText);
+        assertEquals("original", history.get(1).text);
+        assertEquals("first edit", history.get(1).editedText);
+    }
+
+    @Test
     public void testMarkRecalledOnNonexistentMessage() {
         cache.markRecalled(999, 999);
         assertNull(store.getLastUpdated());
@@ -217,6 +253,7 @@ public class MessageCacheTest {
 
     private static class InMemoryMessageStore implements MessageStore {
         private final Map<String, MessageCache.CachedMessage> db = new HashMap<>();
+        private final List<MessageCache.CachedMessage> editHistory = new ArrayList<>();
         int getCallCount;
         private MessageCache.CachedMessage lastUpdated;
 
@@ -235,6 +272,11 @@ public class MessageCacheTest {
         public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
             String key = message.dialogId + ":" + message.messageId;
             db.put(key, message);
+        }
+
+        @Override
+        public void insertEditHistory(MessageCache.CachedMessage message) {
+            editHistory.add(0, message);
         }
 
         @Override
@@ -262,8 +304,19 @@ public class MessageCacheTest {
         @Override
         public List<MessageCache.CachedMessage> getEditedMessages(long dialogId) {
             List<MessageCache.CachedMessage> result = new ArrayList<>();
-            for (MessageCache.CachedMessage msg : db.values()) {
-                if (msg.dialogId == dialogId && msg.isEdited) {
+            for (MessageCache.CachedMessage msg : editHistory) {
+                if (msg.dialogId == dialogId) {
+                    result.add(msg);
+                }
+            }
+            return result;
+        }
+
+        @Override
+        public List<MessageCache.CachedMessage> getEditHistory(long dialogId, long messageId) {
+            List<MessageCache.CachedMessage> result = new ArrayList<>();
+            for (MessageCache.CachedMessage msg : editHistory) {
+                if (msg.dialogId == dialogId && msg.messageId == messageId) {
                     result.add(msg);
                 }
             }
