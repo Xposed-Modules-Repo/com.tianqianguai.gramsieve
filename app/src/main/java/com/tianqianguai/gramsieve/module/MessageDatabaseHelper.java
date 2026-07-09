@@ -11,8 +11,9 @@ import java.util.List;
 
 public final class MessageDatabaseHelper extends SQLiteOpenHelper implements MessageStore {
     private static final String DATABASE_NAME = "gramsieve_messages.db";
-    private static final int DATABASE_VERSION = 5;
+    private static final int DATABASE_VERSION = 6;
     private static final String TABLE_NAME = "cached_messages";
+    private static final String EDIT_HISTORY_TABLE_NAME = "edit_history";
 
     public MessageDatabaseHelper(Context context) {
         super(context, DATABASE_NAME, null, DATABASE_VERSION);
@@ -36,6 +37,7 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
                 + "PRIMARY KEY (dialog_id, message_id))");
         db.execSQL("CREATE INDEX idx_recalled ON " + TABLE_NAME + " (dialog_id, is_recalled)");
         db.execSQL("CREATE INDEX idx_edited ON " + TABLE_NAME + " (dialog_id, is_edited)");
+        createEditHistoryTable(db);
     }
 
     @Override
@@ -60,6 +62,10 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
         if (oldVersion < 5) {
             // Add cached_media_path column
             db.execSQL("ALTER TABLE " + TABLE_NAME + " ADD COLUMN cached_media_path TEXT");
+        }
+        if (oldVersion < 6) {
+            createEditHistoryTable(db);
+            migrateExistingEditedRows(db);
         }
     }
 
@@ -101,6 +107,11 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
         values.put("is_edited", 0);
         values.put("edited_text", (String) null);
         db.insertWithOnConflict(TABLE_NAME, null, values, SQLiteDatabase.CONFLICT_REPLACE);
+    }
+
+    public void insertEditHistory(MessageCache.CachedMessage message) {
+        SQLiteDatabase db = getWritableDatabase();
+        db.insert(EDIT_HISTORY_TABLE_NAME, null, messageValues(message));
     }
 
     public void updateMessage(MessageCache.CachedMessage message) {
@@ -151,8 +162,8 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
     public List<MessageCache.CachedMessage> getEditedMessages(long dialogId) {
         List<MessageCache.CachedMessage> messages = new ArrayList<>();
         SQLiteDatabase db = getReadableDatabase();
-        Cursor cursor = db.query(TABLE_NAME, null, "dialog_id = ? AND is_edited = 1",
-                new String[]{String.valueOf(dialogId)}, null, null, "timestamp DESC");
+        Cursor cursor = db.query(EDIT_HISTORY_TABLE_NAME, null, "dialog_id = ?",
+                new String[]{String.valueOf(dialogId)}, null, null, "timestamp DESC, _id DESC");
         if (cursor == null) {
             return messages;
         }
@@ -164,6 +175,72 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
             cursor.close();
         }
         return messages;
+    }
+
+    public List<MessageCache.CachedMessage> getEditHistory(long dialogId, long messageId) {
+        List<MessageCache.CachedMessage> messages = new ArrayList<>();
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor cursor = db.query(EDIT_HISTORY_TABLE_NAME, null, "dialog_id = ? AND message_id = ?",
+                new String[]{String.valueOf(dialogId), String.valueOf(messageId)},
+                null, null, "timestamp DESC, _id DESC");
+        if (cursor == null) {
+            return messages;
+        }
+        try {
+            while (cursor.moveToNext()) {
+                messages.add(cursorToMessage(cursor));
+            }
+        } finally {
+            cursor.close();
+        }
+        return messages;
+    }
+
+    private void createEditHistoryTable(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS " + EDIT_HISTORY_TABLE_NAME + " ("
+                + "_id INTEGER PRIMARY KEY AUTOINCREMENT, "
+                + "dialog_id INTEGER, "
+                + "message_id INTEGER, "
+                + "sender_id INTEGER, "
+                + "text TEXT, "
+                + "caption TEXT, "
+                + "timestamp INTEGER, "
+                + "media_type TEXT, "
+                + "media_id TEXT, "
+                + "cached_media_path TEXT, "
+                + "is_recalled INTEGER DEFAULT 0, "
+                + "is_edited INTEGER DEFAULT 1, "
+                + "edited_text TEXT)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_edit_history_message ON "
+                + EDIT_HISTORY_TABLE_NAME + " (dialog_id, message_id, timestamp)");
+        db.execSQL("CREATE INDEX IF NOT EXISTS idx_edit_history_dialog ON "
+                + EDIT_HISTORY_TABLE_NAME + " (dialog_id, timestamp)");
+    }
+
+    private void migrateExistingEditedRows(SQLiteDatabase db) {
+        db.execSQL("INSERT INTO " + EDIT_HISTORY_TABLE_NAME + " ("
+                + "dialog_id, message_id, sender_id, text, caption, timestamp, "
+                + "media_type, media_id, cached_media_path, is_recalled, is_edited, edited_text) "
+                + "SELECT dialog_id, message_id, sender_id, text, caption, timestamp, "
+                + "media_type, media_id, cached_media_path, is_recalled, is_edited, edited_text "
+                + "FROM " + TABLE_NAME + " WHERE is_edited = 1");
+    }
+
+    private ContentValues messageValues(MessageCache.CachedMessage message) {
+        ContentValues values = new ContentValues();
+        values.put("dialog_id", message.dialogId);
+        values.put("message_id", message.messageId);
+        values.put("sender_id", message.senderId);
+        values.put("text", message.text);
+        values.put("caption", message.caption);
+        values.put("timestamp", message.timestamp);
+        values.put("media_type", message.mediaType);
+        values.put("media_id", message.mediaId);
+        values.put("cached_media_path", message.cachedMediaPath);
+        values.put("is_recalled", message.isRecalled ? 1 : 0);
+        values.put("is_edited", message.isEdited ? 1 : 0);
+        values.put("edited_text", message.editedText);
+        return values;
     }
 
     private MessageCache.CachedMessage cursorToMessage(Cursor cursor) {

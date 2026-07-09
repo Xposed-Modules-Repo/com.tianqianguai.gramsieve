@@ -1,8 +1,10 @@
 package com.tianqianguai.gramsieve.module;
 
+import android.app.Activity;
 import android.content.pm.ApplicationInfo;
 import android.content.ComponentName;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
@@ -63,6 +65,9 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_JUMP_TO_MARK = 0x47530017;
     private static final int MENU_ID_ANTI_RECALL = 0x47530018;
     private static final int MENU_ID_EDIT_HISTORY = 0x47530019;
+    private static final int SETTINGS_ROW_GRAMSIEVE = 0x4753001A;
+    private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
+    private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
     private ViewGroup downloadPageFragmentView = null;
     private MessageCache messageCache;
     private MediaCache mediaCache;
@@ -99,6 +104,7 @@ final class TelegramHookInstaller {
     private volatile int lastTopmostMessageId;
     private volatile boolean readPositionDirty;
     private volatile boolean jumpDetected;
+    private volatile boolean settingsListRowLogged;
 
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
@@ -187,7 +193,7 @@ final class TelegramHookInstaller {
         ModuleLogger.init(context);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
-        messageCache = new MessageCache(databaseHelper);
+        messageCache = new MessageCache(new SerializedMessageStore(databaseHelper));
         mediaCache = new MediaCache(context);
         mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
@@ -2273,19 +2279,81 @@ final class TelegramHookInstaller {
     private void hookSettingsActivityMenu(ClassLoader classLoader) {
         try {
             Class<?> settingsActivityClass = classLoader.loadClass("org.telegram.ui.SettingsActivity");
-            Method createView = Reflect.method(settingsActivityClass, "createView", Context.class);
-            hook(createView, chain -> {
+            hookSettingsActivityListRow(classLoader, settingsActivityClass);
+            hookSettingsActivityBack(settingsActivityClass);
+            info("Hooked SettingsActivity host entry");
+        } catch (Throwable throwable) {
+            error("Failed to hook SettingsActivity host entry", throwable);
+        }
+    }
+
+    private void hookSettingsActivityListRow(ClassLoader classLoader, Class<?> settingsActivityClass) {
+        try {
+            Class<?> universalAdapterClass = classLoader.loadClass("org.telegram.ui.Components.UniversalAdapter");
+            Class<?> uItemClass = classLoader.loadClass("org.telegram.ui.Components.UItem");
+            Class<?> settingCellFactoryClass = classLoader.loadClass("org.telegram.ui.SettingsActivity$SettingCell$Factory");
+            Method factoryOf = Reflect.method(
+                    settingCellFactoryClass,
+                    "of",
+                    int.class,
+                    int.class,
+                    int.class,
+                    int.class,
+                    CharSequence.class,
+                    CharSequence.class
+            );
+            Method fillItems = Reflect.method(settingsActivityClass, "fillItems", ArrayList.class, universalAdapterClass);
+            hook(fillItems, chain -> {
                 Object result = chain.proceed();
                 try {
-                    injectGlobalSettingsMenu(chain.getThisObject(), false);
+                    Object arg = chain.getArg(0);
+                    if (arg instanceof ArrayList<?>) {
+                        @SuppressWarnings("unchecked")
+                        ArrayList<Object> items = (ArrayList<Object>) arg;
+                        injectSettingsListRow(chain.getThisObject(), items, factoryOf);
+                    }
                 } catch (Throwable throwable) {
-                    error("SettingsActivity menu injection failed", throwable);
+                    error("SettingsActivity row injection failed", throwable);
                 }
                 return result;
             });
-            info("Hooked SettingsActivity menu");
+
+            Method onClick = Reflect.method(settingsActivityClass, "onClick", uItemClass, View.class, int.class, float.class, float.class);
+            hook(onClick, chain -> {
+                Object item = chain.getArg(0);
+                if (!isGramSieveSettingsItem(item)) {
+                    return chain.proceed();
+                }
+                Context context = contextFromSettingsClick(chain.getThisObject(), chain.getArg(1));
+                if (context == null) {
+                    info("SettingsActivity row click ignored: context unavailable");
+                    return null;
+                }
+                openConfigFromHost(chain.getThisObject(), context, ConfigDialogActivity.MODE_GLOBAL, 0L, "");
+                return null;
+            });
+            info("Hooked SettingsActivity list row");
         } catch (Throwable throwable) {
-            error("Failed to hook SettingsActivity menu", throwable);
+            error("Failed to hook SettingsActivity list row", throwable);
+        }
+    }
+
+    private void hookSettingsActivityBack(Class<?> settingsActivityClass) {
+        try {
+            Method onBackPressed = Reflect.method(settingsActivityClass, "onBackPressed", boolean.class);
+            hook(onBackPressed, chain -> {
+                try {
+                    if (closeHostConfigPanel(chain.getThisObject())) {
+                        return false;
+                    }
+                } catch (Throwable throwable) {
+                    error("SettingsActivity host panel back handling failed", throwable);
+                }
+                return chain.proceed();
+            });
+            info("Hooked SettingsActivity back for host panel");
+        } catch (Throwable throwable) {
+            error("Failed to hook SettingsActivity back", throwable);
         }
     }
 
@@ -2565,6 +2633,56 @@ final class TelegramHookInstaller {
         if (body.length() == 0) return;
         new android.app.AlertDialog.Builder(context)
                 .setTitle(title)
+                .setMessage(body.toString())
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private void showEditHistoryDialog(View anchor, List<MessageCache.CachedMessage> history,
+                                       MessageCache.CachedMessage fallback) {
+        if (history == null || history.isEmpty()) {
+            showEditDialog(anchor, firstNonEmpty(fallback.text, fallback.caption), fallback.editedText);
+            return;
+        }
+        if (history.size() == 1) {
+            MessageCache.CachedMessage only = history.get(0);
+            showEditDialog(anchor, firstNonEmpty(only.text, only.caption), only.editedText);
+            return;
+        }
+        Context context = anchor.getContext();
+        StringBuilder body = new StringBuilder();
+        int version = 1;
+        for (int i = history.size() - 1; i >= 0; i--) {
+            MessageCache.CachedMessage item = history.get(i);
+            String before = sanitizeDisplayText(firstNonEmpty(item.text, item.caption));
+            String after = sanitizeDisplayText(item.editedText);
+            if (before == null && after == null) {
+                continue;
+            }
+            if (body.length() > 0) {
+                body.append("\n\n");
+            }
+            body.append(isChineseLocale(context) ? "版本 " : "Version ")
+                    .append(version++)
+                    .append(":\n");
+            if (before != null) {
+                body.append(isChineseLocale(context) ? "编辑前：\n" : "Before:\n")
+                        .append(before);
+            }
+            if (after != null) {
+                if (before != null) {
+                    body.append("\n\n");
+                }
+                body.append(isChineseLocale(context) ? "编辑后：\n" : "After:\n")
+                        .append(after);
+            }
+        }
+        if (body.length() == 0) {
+            showEditDialog(anchor, firstNonEmpty(fallback.text, fallback.caption), fallback.editedText);
+            return;
+        }
+        new android.app.AlertDialog.Builder(context)
+                .setTitle(isChineseLocale(context) ? "编辑历史" : "Edit History")
                 .setMessage(body.toString())
                 .setPositiveButton("OK", null)
                 .show();
@@ -3727,10 +3845,17 @@ final class TelegramHookInstaller {
             Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
             return;
         }
+        List<MessageCache.CachedMessage> history = messageCache != null
+                ? messageCache.getEditHistory(cached.dialogId, cached.messageId)
+                : java.util.Collections.emptyList();
+        if (history.size() > 1) {
+            showEditHistoryDialog(anchor, history, cached);
+            return;
+        }
         if (showOriginalMediaHistory(anchor, chatActivity, messageObject, cached)) {
             return;
         }
-        showEditDialog(anchor, firstNonEmpty(cached.text, cached.caption), cached.editedText);
+        showEditHistoryDialog(anchor, history, cached);
     }
 
     private MessageCache.CachedMessage resolveSelectedEditHistory(Object chatActivity, Object messageObject) {
@@ -3746,7 +3871,11 @@ final class TelegramHookInstaller {
             return null;
         }
         MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
-        return hasRenderableEditHistory(cached) ? cached : null;
+        if (hasRenderableEditHistory(cached)) {
+            return cached;
+        }
+        List<MessageCache.CachedMessage> history = messageCache.getEditHistory(dialogId, messageId);
+        return history.isEmpty() ? null : history.get(0);
     }
 
     private boolean showOriginalMediaHistory(View anchor, Object chatActivity, Object selectedMessageObject,
@@ -4733,7 +4862,7 @@ final class TelegramHookInstaller {
                     try {
                         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
                         String title = resolveChatTitle(chatActivity);
-                        launchConfig(v.getContext(), ConfigDialogActivity.MODE_CHAT, dialogId, title);
+                        openConfigFromHost(chatActivity, v.getContext(), ConfigDialogActivity.MODE_CHAT, dialogId, title);
                     } finally {
                         Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
                     }
@@ -5121,11 +5250,113 @@ final class TelegramHookInstaller {
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_GLOBAL);
         subItemView.setOnClickListener(v -> {
             try {
-                launchConfig(v.getContext(), ConfigDialogActivity.MODE_GLOBAL, 0L, "");
+                openConfigFromHost(host, v.getContext(), ConfigDialogActivity.MODE_GLOBAL, 0L, "");
             } finally {
                 Reflect.invokeIfExists(otherItem, "toggleSubMenu", new Class<?>[0]);
             }
         });
+    }
+
+    private void injectSettingsListRow(Object host, ArrayList<Object> items, Method factoryOf) {
+        if (items == null || containsGramSieveSettingsItem(items)) {
+            return;
+        }
+        Context context = contextFromSettingsHost(host);
+        Object item = Reflect.invoke(
+                factoryOf,
+                null,
+                SETTINGS_ROW_GRAMSIEVE,
+                SETTINGS_ROW_COLOR_START,
+                SETTINGS_ROW_COLOR_END,
+                resolveIcon(context),
+                localizedSettingsRowLabel(context),
+                localizedSettingsRowSubtitle(context)
+        );
+        if (item == null) {
+            return;
+        }
+        int index = settingsRowInsertIndex(items);
+        items.add(index, item);
+        if (!settingsListRowLogged) {
+            settingsListRowLogged = true;
+            info("Injected GramSieve settings row at index=" + index);
+        }
+    }
+
+    private boolean containsGramSieveSettingsItem(List<?> items) {
+        for (Object item : items) {
+            if (isGramSieveSettingsItem(item)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isGramSieveSettingsItem(Object item) {
+        if (settingsItemId(item) == SETTINGS_ROW_GRAMSIEVE) {
+            return true;
+        }
+        String text = settingsItemText(item, "text");
+        return "GramSieve".contentEquals(text);
+    }
+
+    private int settingsRowInsertIndex(List<?> items) {
+        for (int i = 0; i < items.size(); i++) {
+            Object item = items.get(i);
+            String text = settingsItemText(item, "text");
+            String subtext = settingsItemText(item, "subtext");
+            if (!text.isBlank() && !subtext.isBlank()) {
+                return i;
+            }
+        }
+        return items.size();
+    }
+
+    private int settingsItemId(Object item) {
+        if (item == null) {
+            return Integer.MIN_VALUE;
+        }
+        return Reflect.asInt(Reflect.field(item, "id"), Integer.MIN_VALUE);
+    }
+
+    private String settingsItemText(Object item, String fieldName) {
+        return Reflect.asString(Reflect.field(item, fieldName)).trim();
+    }
+
+    private Context contextFromSettingsClick(Object host, Object clickedView) {
+        if (clickedView instanceof View) {
+            Context context = ((View) clickedView).getContext();
+            if (context != null) {
+                return context;
+            }
+        }
+        return contextFromSettingsHost(host);
+    }
+
+    private Context contextFromSettingsHost(Object host) {
+        View view = resolveHostFragmentView(host);
+        if (view != null && view.getContext() != null) {
+            return view.getContext();
+        }
+        Object context = Reflect.invokeIfExists(host, "getContext", new Class<?>[0]);
+        if (context instanceof Context) {
+            return (Context) context;
+        }
+        Object activity = Reflect.invokeIfExists(host, "getParentActivity", new Class<?>[0]);
+        if (activity instanceof Context) {
+            return (Context) activity;
+        }
+        return resolveHostApplication();
+    }
+
+    private boolean closeHostConfigPanel(Object host) {
+        Context context = contextFromSettingsHost(host);
+        ViewGroup root = resolveHostConfigRoot(host, context);
+        boolean closed = HostConfigPanel.closeExisting(root);
+        if (closed) {
+            info("Closed host config panel from SettingsActivity back");
+        }
+        return closed;
     }
 
     private Object resolveOverflowMenuItem(Object host) {
@@ -5225,6 +5456,9 @@ final class TelegramHookInstaller {
     }
 
     private int resolveIcon(Context context) {
+        if (context == null) {
+            return android.R.drawable.ic_menu_manage;
+        }
         int telegramIcon = context.getResources().getIdentifier("msg_settings", "drawable", "org.telegram.messenger");
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_manage;
     }
@@ -5272,6 +5506,14 @@ final class TelegramHookInstaller {
         return isChineseLocale(context) ? "过滤规则" : "Filters";
     }
 
+    private CharSequence localizedSettingsRowLabel(Context context) {
+        return "GramSieve";
+    }
+
+    private CharSequence localizedSettingsRowSubtitle(Context context) {
+        return isChineseLocale(context) ? "过滤、反撤回、编辑历史" : "Filters, anti-recall, edit history";
+    }
+
     private CharSequence localizedSavedToast(Context context) {
         return isChineseLocale(context) ? "已把这条消息加入屏蔽规则" : "Added a rule for this message";
     }
@@ -5307,6 +5549,130 @@ final class TelegramHookInstaller {
             return full;
         }
         return Reflect.asString(Reflect.field(currentUser, "username")).trim();
+    }
+
+    private void openConfigFromHost(Object host, Context context, String mode, long dialogId, String title) {
+        try {
+            if (showHostConfigPanel(host, context, mode, dialogId, title)) {
+                return;
+            }
+        } catch (Throwable throwable) {
+            error("Host config panel failed; falling back to module activity", throwable);
+        }
+        launchConfig(context, mode, dialogId, title);
+    }
+
+    private boolean showHostConfigPanel(Object host, Context context, String mode, long dialogId, String title) {
+        if (context == null || configProvider == null) {
+            return false;
+        }
+        boolean chatMode = ConfigDialogActivity.MODE_CHAT.equals(mode);
+        if (chatMode && backgroundMessageLoader == null) {
+            initAntiRecallFromChat(host);
+        } else if (!chatMode && antiRecallConfigStore == null) {
+            initAntiRecallDeferred();
+        }
+
+        ViewGroup root = resolveHostConfigRoot(host, context);
+        if (root == null) {
+            info("Host config panel root unavailable for " + (host == null ? "null" : host.getClass().getName()));
+            return false;
+        }
+
+        Context hostContext = context.getApplicationContext() != null ? context.getApplicationContext() : context;
+        AntiRecallConfigStore antiStore = antiRecallConfigStore != null
+                ? antiRecallConfigStore
+                : new AntiRecallConfigStore(hostContext);
+        FilterConfig config = configProvider.getConfig(hostContext).deepCopy();
+        boolean shown = HostConfigPanel.show(
+                context,
+                root,
+                config,
+                chatMode,
+                dialogId,
+                title,
+                antiStore,
+                backgroundMessageLoader,
+                updated -> {
+                    FilterConfig saved = saveUpdatedConfig(hostContext, updated);
+                    decisionCache.clear();
+                    return saved;
+                },
+                () -> launchConfig(context, mode, dialogId, title),
+                () -> {
+                    decisionCache.clear();
+                    if (chatMode) {
+                        refreshChatActivityFiltering(host);
+                    }
+                }
+        );
+        if (shown) {
+            info("Opened host config panel mode=" + mode + " dialogId=" + dialogId);
+        }
+        return shown;
+    }
+
+    private ViewGroup resolveHostConfigRoot(Object host, Context context) {
+        View anchor = resolveHostFragmentView(host);
+        if (anchor != null) {
+            View rootView = anchor.getRootView();
+            if (rootView instanceof ViewGroup) {
+                return (ViewGroup) rootView;
+            }
+            if (anchor instanceof ViewGroup) {
+                return (ViewGroup) anchor;
+            }
+        }
+
+        Activity activity = activityFromContext(context);
+        if (activity != null && activity.getWindow() != null) {
+            View decorView = activity.getWindow().getDecorView();
+            if (decorView instanceof ViewGroup) {
+                return (ViewGroup) decorView;
+            }
+        }
+        return null;
+    }
+
+    private View resolveHostFragmentView(Object host) {
+        if (host instanceof View) {
+            return (View) host;
+        }
+        Object direct = Reflect.field(host, "fragmentView");
+        if (direct instanceof View) {
+            return (View) direct;
+        }
+        Object getter = Reflect.invokeIfExists(host, "getFragmentView", new Class<?>[0]);
+        if (getter instanceof View) {
+            return (View) getter;
+        }
+        Object contentView = Reflect.field(host, "contentView");
+        if (contentView instanceof View) {
+            return (View) contentView;
+        }
+        Object listView = Reflect.field(host, "listView");
+        if (listView instanceof View) {
+            return (View) listView;
+        }
+        return null;
+    }
+
+    private Activity activityFromContext(Context context) {
+        Context current = context;
+        for (int i = 0; i < 8 && current != null; i++) {
+            if (current instanceof Activity) {
+                return (Activity) current;
+            }
+            if (!(current instanceof ContextWrapper)) {
+                break;
+            }
+            Context next = ((ContextWrapper) current).getBaseContext();
+            if (next == current) {
+                break;
+            }
+            current = next;
+        }
+        return null;
     }
 
     private void launchConfig(Context context, String mode, long dialogId, String title) {

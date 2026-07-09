@@ -3,4 +3,5 @@
     <item name="gramsieve_last_message_key" type="id" />
     <item name="gramsieve_last_decision_action" type="id" />
     <item name="gramsieve_menu_item_id" type="id" />
+    <item name="gramsieve_host_config_panel_id" type="id" />
 </resources>
