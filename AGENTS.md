@@ -54,6 +54,16 @@ adb -s <ip>:5555 logcat -s GramSieve:I
 adb -s <ip>:5555 logcat -d | findstr "GramSieve" | findstr "Anti-recall\|RecallDetector\|BackgroundMessage"
 ```
 
+## Telegram APK Reverse-Engineering Archive
+```powershell
+./scripts/archive-telegram-apk.ps1 -Device 192.168.6.17:5555
+```
+
+- Use this script before decompiling Telegram from a device. It pulls `org.telegram.messenger`, reads `versionCode`/`versionName`, archives all split APKs, decompiles `base.apk`, and extracts message notification sounds.
+- Versioned archive path: `local/telegram-apk-archive/org.telegram.messenger/<versionCode>-<versionName>/`.
+- The archive is intentionally git-ignored. Do not commit APKs, apktool output, or extracted Telegram assets.
+- Do not delete an existing version archive after decompilation. Reuse it on later investigations; only pass `-ForceDecompile` when you intentionally want to rebuild that local cache.
+
 ## Telegram Hook Architecture
 
 ### Xposed Module Lifecycle
