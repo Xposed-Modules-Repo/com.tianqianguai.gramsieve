@@ -2,19 +2,24 @@ package com.tianqianguai.gramsieve.module;
 
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 
+import java.io.File;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
 
 public final class RecallDetector {
     private static final String TAG = "GramSieve";
+    private static final long LOCAL_DIALOG_DELETE_CLEANUP_MS = 2 * 60_000L;
 
     private final MessageCache messageCache;
     private final BackgroundMessageLoader loader;
     private final MediaPrefetcher mediaPrefetcher;
     private final TelegramMessageDatabaseBridge telegramDbBridge;
+    private final SelfDeleteTracker selfDeleteTracker;
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader) {
         this(messageCache, loader, null);
@@ -22,10 +27,24 @@ public final class RecallDetector {
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                           MediaPrefetcher mediaPrefetcher) {
+        this(messageCache, loader, mediaPrefetcher, new SelfDeleteTracker());
+    }
+
+    RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                   MediaPrefetcher mediaPrefetcher, SelfDeleteTracker selfDeleteTracker) {
         this.messageCache = messageCache;
         this.loader = loader;
         this.mediaPrefetcher = mediaPrefetcher;
         this.telegramDbBridge = new TelegramMessageDatabaseBridge();
+        this.selfDeleteTracker = selfDeleteTracker;
+    }
+
+    boolean toggleCleanupMode(long dialogId, long durationMs) {
+        return selfDeleteTracker != null && selfDeleteTracker.toggleCleanupMode(dialogId, durationMs);
+    }
+
+    boolean isCleanupModeActive(long dialogId) {
+        return selfDeleteTracker != null && selfDeleteTracker.isCleanupModeActive(dialogId);
     }
 
     public void install(ClassLoader classLoader, XposedModule module) {
@@ -65,6 +84,16 @@ public final class RecallDetector {
             } else if (name.equals("deleteMessages")) {
                 ModuleLogger.hook(TAG, "RecallDetector: found deleteMessages with " + m.getParameterCount() + " params");
                 hookSingleMethod(module, m, "deleteMessages");
+            } else if (name.equals("deleteDialog")) {
+                ModuleLogger.hook(TAG, "RecallDetector: found deleteDialog with " + m.getParameterCount() + " params");
+                hookSingleMethod(module, m, "deleteDialog");
+            } else if (name.equals("deleteParticipantFromChat")) {
+                ModuleLogger.hook(TAG, "RecallDetector: found deleteParticipantFromChat with "
+                        + m.getParameterCount() + " params");
+                hookSingleMethod(module, m, "deleteParticipantFromChat");
+            } else if (name.equals("blockPeer")) {
+                ModuleLogger.hook(TAG, "RecallDetector: found blockPeer with " + m.getParameterCount() + " params");
+                hookSingleMethod(module, m, "blockPeer");
             } else if (name.equals("editMessage")) {
                 ModuleLogger.hook(TAG, "RecallDetector: found editMessage with " + m.getParameterCount() + " params");
                 hookSingleMethod(module, m, "editMessage");
@@ -123,6 +152,13 @@ public final class RecallDetector {
             hook(module, method, chain -> {
                 try {
                     DeletionRequest deletion = deletionFromStorageArgs(chain.getArgs());
+                    if (shouldAllowUserDeletion(deletion)) {
+                        purgeDeletedMessages(deletion.dialogId, deletion.messageIds);
+                        ModuleLogger.hook(TAG, "RecallDetector: allowed storage." + methodName
+                                + " for user delete dialogId=" + deletion.dialogId
+                                + " count=" + deletion.messageIds.size());
+                        return chain.proceed();
+                    }
                     if (shouldBlockDeletion(deletion)) {
                         processDeletions(deletion.dialogId, deletion.messageIds);
                         telegramDbBridge.markMessagesDeletedAsync(chain.getThisObject(),
@@ -197,10 +233,29 @@ public final class RecallDetector {
             long key = Reflect.asLong(Reflect.invokeIfExists(sparse, "keyAt",
                     new Class<?>[]{int.class}, i), 0L);
             if (key != 0L && loader.isChatEnabled(key)) {
+                List<?> messageIds = deletionIdsFromSparseValue(Reflect.invokeIfExists(sparse, "valueAt",
+                        new Class<?>[]{int.class}, i));
+                if (!messageIds.isEmpty() && shouldAllowUserDeletion(key, messageIds)) {
+                    purgeDeletedMessages(key, messageIds);
+                    continue;
+                }
+                if (selfDeleteTracker != null && selfDeleteTracker.isCleanupModeActive(key)) {
+                    continue;
+                }
                 return true;
             }
         }
         return false;
+    }
+
+    private List<?> deletionIdsFromSparseValue(Object value) {
+        if (value instanceof List<?>) {
+            return (List<?>) value;
+        }
+        if (value instanceof Integer) {
+            return Collections.singletonList(value);
+        }
+        return Collections.emptyList();
     }
 
     private void hookNotificationCenterDeletion(ClassLoader classLoader, XposedModule module) throws ClassNotFoundException {
@@ -239,7 +294,7 @@ public final class RecallDetector {
         ModuleLogger.hook(TAG, "RecallDetector: NotificationCenter messagesDeleted hook count=" + hooked);
     }
 
-    private boolean shouldSuppressMessagesDeletedEvent(java.util.List<Object> hookArgs) {
+    boolean shouldSuppressMessagesDeletedEvent(java.util.List<Object> hookArgs) {
         if (hookArgs == null) {
             return false;
         }
@@ -261,6 +316,14 @@ public final class RecallDetector {
             } else if (eventArg instanceof Long && dialogId == 0L) {
                 dialogId = (Long) eventArg;
             }
+        }
+        long selfDeleteDialogId = dialogId;
+        if (dialogId == 0L && selfDeleteTracker != null) {
+            selfDeleteDialogId = selfDeleteTracker.inferUniqueDialog(messageIds);
+        }
+        if (selfDeleteDialogId != 0L && shouldAllowUserDeletion(selfDeleteDialogId, messageIds)) {
+            purgeDeletedMessages(selfDeleteDialogId, messageIds);
+            return false;
         }
         return messageIds != null && isDeletionEnabled(dialogId, messageIds);
     }
@@ -295,10 +358,47 @@ public final class RecallDetector {
         return new DeletionRequest(dialogId, messageIds);
     }
 
+    private DeletionRequest deletionFromControllerArgs(java.util.List<Object> args) {
+        if (args == null) {
+            return DeletionRequest.EMPTY;
+        }
+        long dialogId = 0L;
+        ArrayList<Integer> messageIds = new ArrayList<>();
+        boolean sawMessageIds = false;
+        boolean sawDialogId = false;
+        for (Object arg : args) {
+            if (arg instanceof ArrayList<?> && !sawMessageIds) {
+                sawMessageIds = true;
+                for (Object id : (ArrayList<?>) arg) {
+                    if (id instanceof Integer && (Integer) id > 0) {
+                        messageIds.add((Integer) id);
+                    }
+                }
+            } else if (arg instanceof Long && !sawDialogId) {
+                dialogId = (Long) arg;
+                sawDialogId = true;
+            }
+        }
+        return new DeletionRequest(dialogId, messageIds);
+    }
+
     private boolean shouldBlockDeletion(DeletionRequest deletion) {
         return deletion != null
                 && !deletion.messageIds.isEmpty()
+                && !shouldAllowUserDeletion(deletion)
                 && isDeletionEnabled(deletion.dialogId, deletion.messageIds);
+    }
+
+    private boolean shouldAllowUserDeletion(DeletionRequest deletion) {
+        return deletion != null && shouldAllowUserDeletion(deletion.dialogId, deletion.messageIds);
+    }
+
+    private boolean shouldAllowUserDeletion(long dialogId, List<?> messageIds) {
+        return selfDeleteTracker != null && selfDeleteTracker.allowsAll(dialogId, messageIds);
+    }
+
+    private boolean hasUserDeletionIntent(long dialogId, List<?> messageIds) {
+        return selfDeleteTracker != null && selfDeleteTracker.allowsAny(dialogId, messageIds);
     }
 
     private Object skipResult(Class<?> returnType) {
@@ -421,6 +521,15 @@ public final class RecallDetector {
                         processDeletionsFromArgs(chain.getThisObject(), args);
                         return chain.proceed();
                     }
+                    if (methodName.equals("deleteDialog") || methodName.equals("blockPeer")) {
+                        handleControllerDialogAction(methodName, args);
+                        return chain.proceed();
+                    }
+                    if (methodName.equals("deleteParticipantFromChat")) {
+                        ModuleLogger.hook(TAG, "RecallDetector: controller deleteParticipantFromChat "
+                                + summarizeArgs(args));
+                        return chain.proceed();
+                    }
                     Object result = chain.proceed();
                     if (methodName.equals("editMessage")) {
                         processEditFromArgs(args);
@@ -449,30 +558,104 @@ public final class RecallDetector {
         }
     }
 
-    private boolean processDeletionsFromArgs(Object messagesController, java.util.List<Object> args) {
-        if (args == null || args.size() < 4) return false;
-        ArrayList<?> messageIds = null;
-        long dialogId = 0L;
-        for (Object arg : args) {
-            if (arg instanceof ArrayList && messageIds == null) {
-                messageIds = (ArrayList<?>) arg;
-            } else if (arg instanceof Long && dialogId == 0L) {
-                dialogId = (Long) arg;
+    boolean processDeletionsFromArgs(Object messagesController, java.util.List<Object> args) {
+        DeletionRequest deletion = deletionFromControllerArgs(args);
+        if (deletion.dialogId != 0L && !deletion.messageIds.isEmpty()) {
+            if (selfDeleteTracker != null) {
+                selfDeleteTracker.recordUserDelete(deletion.dialogId, deletion.messageIds);
             }
-        }
-        if (messageIds != null && dialogId != 0L) {
-            processDeletions(dialogId, messageIds);
-            if (loader != null && loader.isChatEnabled(dialogId) && !messageIds.isEmpty()) {
-                int count = messageIds.size();
-                Object storage = resolveMessagesStorage(messagesController);
-                telegramDbBridge.markMessagesDeletedAsync(storage, dialogId, messageIds);
-                messageIds.clear();
-                ModuleLogger.hook(TAG, "RecallDetector: cleared deleteMessages ids before Telegram dialogId="
-                        + dialogId + " count=" + count);
-                return true;
-            }
+            int removed = purgeDeletedMessages(deletion.dialogId, deletion.messageIds);
+            ModuleLogger.hook(TAG, "RecallDetector: allowing local deleteMessages dialogId="
+                    + deletion.dialogId + " count=" + deletion.messageIds.size()
+                    + " purged=" + removed);
+            return true;
         }
         return false;
+    }
+
+    private String summarizeArgs(java.util.List<Object> args) {
+        if (args == null || args.isEmpty()) {
+            return "args=[]";
+        }
+        StringBuilder builder = new StringBuilder("args=[");
+        for (int i = 0; i < args.size(); i++) {
+            if (i > 0) {
+                builder.append(',');
+            }
+            Object arg = args.get(i);
+            if (arg == null) {
+                builder.append("null");
+            } else if (arg instanceof Number || arg instanceof Boolean) {
+                builder.append(arg.getClass().getSimpleName()).append('=').append(arg);
+            } else if (arg instanceof CharSequence) {
+                builder.append("String(len=").append(((CharSequence) arg).length()).append(')');
+            } else if (arg instanceof List<?>) {
+                builder.append(arg.getClass().getSimpleName())
+                        .append("(size=").append(((List<?>) arg).size()).append(')');
+            } else {
+                builder.append(arg.getClass().getName());
+            }
+        }
+        return builder.append(']').toString();
+    }
+
+    boolean processDialogDeletionFromArgs(java.util.List<Object> args) {
+        DialogDeletionRequest deletion = dialogDeletionFromArgs(args);
+        return processDialogDeletion(deletion.dialogId, deletion.mode, deletion.revoke, "deleteDialog");
+    }
+
+    boolean handleControllerDialogAction(String methodName, java.util.List<Object> args) {
+        if ("deleteDialog".equals(methodName)) {
+            boolean handled = processDialogDeletionFromArgs(args);
+            if (!handled) {
+                ModuleLogger.hook(TAG, "RecallDetector: deleteDialog args ignored " + summarizeArgs(args));
+            }
+            return handled;
+        }
+        if ("blockPeer".equals(methodName)) {
+            ModuleLogger.hook(TAG, "RecallDetector: controller blockPeer " + summarizeArgs(args));
+        }
+        return false;
+    }
+
+    boolean processDialogDeletion(long dialogId, int mode, boolean revoke, String source) {
+        if (dialogId == 0L) {
+            return false;
+        }
+        if (selfDeleteTracker != null) {
+            selfDeleteTracker.enableCleanupMode(dialogId, LOCAL_DIALOG_DELETE_CLEANUP_MS);
+        }
+        if (loader != null) {
+            loader.disableChat(dialogId);
+        }
+        if (messageCache != null) {
+            messageCache.removeDialog(dialogId);
+        }
+        String sourceName = source == null ? "deleteDialog" : source;
+        ModuleLogger.hook(TAG, "RecallDetector: allowing local " + sourceName + " dialogId="
+                + dialogId + " mode=" + mode + " revoke=" + revoke);
+        return true;
+    }
+
+    private DialogDeletionRequest dialogDeletionFromArgs(java.util.List<Object> args) {
+        if (args == null) {
+            return DialogDeletionRequest.EMPTY;
+        }
+        long dialogId = 0L;
+        int mode = 0;
+        boolean sawMode = false;
+        boolean revoke = false;
+        for (Object arg : args) {
+            if (arg instanceof Long && dialogId == 0L) {
+                dialogId = (Long) arg;
+            } else if (arg instanceof Integer && !sawMode) {
+                mode = (Integer) arg;
+                sawMode = true;
+            } else if (arg instanceof Boolean) {
+                revoke = (Boolean) arg;
+            }
+        }
+        return new DialogDeletionRequest(dialogId, mode, revoke);
     }
 
     private void processEditFromArgs(java.util.List<Object> args) {
@@ -606,12 +789,9 @@ public final class RecallDetector {
                     ArrayList.class, ArrayList.class, ArrayList.class, long.class, int.class, boolean.class);
             hook(module, deleteMessages, chain -> {
                 try {
-                    ArrayList<?> messagesIds = (ArrayList<?>) chain.getArg(0);
-                    long dialogId = (long) chain.getArg(3);
-                    ModuleLogger.hook(TAG, "RecallDetector: deleteMessages called dialogId=" + dialogId + " count=" + messagesIds.size());
-                    processDeletions(dialogId, messagesIds);
+                    processDeletionsFromArgs(chain.getThisObject(), chain.getArgs());
                 } catch (Throwable throwable) {
-                    ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "processDeletions failed", throwable);
+                    ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "processDeletionsFromArgs failed", throwable);
                 }
                 return chain.proceed();
             });
@@ -688,8 +868,12 @@ public final class RecallDetector {
                     if (channelIdValue != 0L) {
                         dialogId = -channelIdValue;
                     }
-                    if (isDeletionEnabled(dialogId, (ArrayList<?>) deleteMessages)) {
-                        ArrayList<?> msgIds = (ArrayList<?>) deleteMessages;
+                    ArrayList<?> msgIds = (ArrayList<?>) deleteMessages;
+                    if (shouldAllowUserDeletion(dialogId, msgIds)) {
+                        int removed = purgeDeletedMessages(dialogId, msgIds);
+                        ModuleLogger.hook(TAG, "RecallDetector: allowed delete update for user delete dialogId="
+                                + dialogId + " count=" + msgIds.size() + " purged=" + removed);
+                    } else if (isDeletionEnabled(dialogId, msgIds)) {
                         int count = msgIds.size();
                         processDeletions(dialogId, msgIds);
                         Object storage = resolveMessagesStorage(messagesController);
@@ -921,6 +1105,12 @@ public final class RecallDetector {
         if (!enabled) {
             return;
         }
+        if (shouldAllowUserDeletion(dialogId, messageIds)) {
+            int removed = purgeDeletedMessages(dialogId, messageIds);
+            ModuleLogger.hook(TAG, "RecallDetector: purged user-deleted messages dialogId="
+                    + dialogId + " count=" + messageIds.size() + " purged=" + removed);
+            return;
+        }
         if (dialogId != 0L) {
             for (Object messageIdObj : messageIds) {
                 int messageId = Reflect.asInt(messageIdObj, 0);
@@ -940,6 +1130,53 @@ public final class RecallDetector {
                             + enabledDialogId + " msgId=" + messageId + " via global delete update");
                 }
             }
+        }
+    }
+
+    private int purgeDeletedMessages(long dialogId, List<?> messageIds) {
+        if (messageCache == null || messageIds == null || messageIds.isEmpty()) {
+            return 0;
+        }
+        int removed = 0;
+        if (dialogId != 0L) {
+            for (Object messageIdObj : messageIds) {
+                int messageId = Reflect.asInt(messageIdObj, 0);
+                if (messageId > 0 && purgeDeletedMessage(dialogId, messageId)) {
+                    removed++;
+                }
+            }
+            return removed;
+        }
+        for (long enabledDialogId : loader.enabledChatIdsSnapshot()) {
+            for (Object messageIdObj : messageIds) {
+                int messageId = Reflect.asInt(messageIdObj, 0);
+                if (messageId > 0
+                        && hasUserDeletionIntent(enabledDialogId, Collections.singletonList(messageId))
+                        && purgeDeletedMessage(enabledDialogId, messageId)) {
+                    removed++;
+                }
+            }
+        }
+        return removed;
+    }
+
+    private boolean purgeDeletedMessage(long dialogId, int messageId) {
+        MessageCache.CachedMessage removed = messageCache.remove(dialogId, messageId);
+        deleteCachedMediaFile(removed);
+        return removed != null;
+    }
+
+    private void deleteCachedMediaFile(MessageCache.CachedMessage message) {
+        if (message == null || message.cachedMediaPath == null || message.cachedMediaPath.isEmpty()) {
+            return;
+        }
+        try {
+            File file = new File(message.cachedMediaPath);
+            if (file.exists() && !file.delete()) {
+                ModuleLogger.hook(TAG, "RecallDetector: cached media delete failed path=" + message.cachedMediaPath);
+            }
+        } catch (Throwable throwable) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to delete cached media file", throwable);
         }
     }
 
@@ -1023,6 +1260,20 @@ public final class RecallDetector {
         DeletionRequest(long dialogId, ArrayList<Integer> messageIds) {
             this.dialogId = dialogId;
             this.messageIds = messageIds;
+        }
+    }
+
+    private static final class DialogDeletionRequest {
+        static final DialogDeletionRequest EMPTY = new DialogDeletionRequest(0L, 0, false);
+
+        final long dialogId;
+        final int mode;
+        final boolean revoke;
+
+        DialogDeletionRequest(long dialogId, int mode, boolean revoke) {
+            this.dialogId = dialogId;
+            this.mode = mode;
+            this.revoke = revoke;
         }
     }
 }

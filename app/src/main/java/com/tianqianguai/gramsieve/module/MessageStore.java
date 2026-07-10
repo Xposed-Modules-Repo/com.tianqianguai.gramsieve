@@ -7,6 +7,8 @@ public interface MessageStore {
     void insertOrReplaceFresh(MessageCache.CachedMessage message);
     void insertEditHistory(MessageCache.CachedMessage message);
     void updateMessage(MessageCache.CachedMessage message);
+    void deleteMessage(long dialogId, long messageId);
+    void deleteDialog(long dialogId);
     MessageCache.CachedMessage getMessage(long dialogId, long messageId);
     List<MessageCache.CachedMessage> getRecalledMessages(long dialogId);
     List<MessageCache.CachedMessage> getEditedMessages(long dialogId);
