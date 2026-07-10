@@ -141,6 +141,188 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void testLocalDeleteMessagesBypassesRecallAndPurgesCache() {
+        cache.put(100, 7, "trash", null, 1);
+        loader.enableChat(100);
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(ids);
+        args.add(100L);
+
+        assertTrue(detector.processDeletionsFromArgs(null, args));
+
+        assertNull(cache.get(100, 7));
+        assertEquals(1, ids.size());
+        assertTrue(store.deletedKeys.contains("100:7"));
+    }
+
+    @Test
+    public void testLocalDeleteMessagesUsesOnlyFirstTelegram1283MessageIdList() {
+        cache.put(100, 7, "message id", null, 1);
+        cache.put(100, 8, "random id collision", null, 1);
+        cache.put(100, 9, "other list collision", null, 1);
+        loader.enableChat(100);
+
+        ArrayList<Integer> messageIds = new ArrayList<>();
+        messageIds.add(7);
+        ArrayList<Long> randomIds = new ArrayList<>();
+        randomIds.add(8L);
+        ArrayList<Integer> otherIds = new ArrayList<>();
+        otherIds.add(9);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(messageIds);
+        args.add(randomIds);
+        args.add(otherIds);
+        args.add(100L);
+
+        assertTrue(detector.processDeletionsFromArgs(null, args));
+
+        assertNull(cache.get(100, 7));
+        assertNotNull(cache.get(100, 8));
+        assertNotNull(cache.get(100, 9));
+        assertEquals(1, store.deletedKeys.size());
+        assertEquals("100:7", store.deletedKeys.get(0));
+    }
+
+    @Test
+    public void testSelfDeleteUpdateIsNotClearedBeforeTelegramHandlesIt() {
+        cache.put(-123, 7, "trash", null, 1);
+        loader.enableChat(-123);
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(ids);
+        args.add(-123L);
+        detector.processDeletionsFromArgs(null, args);
+
+        FakeDeleteChannelUpdate update = new FakeDeleteChannelUpdate(123, 7);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(update);
+
+        detector.processUpdates(updates);
+
+        assertNull(cache.get(-123, 7));
+        assertEquals(1, update.messages.size());
+    }
+
+    @Test
+    public void testCleanupModePurgesInsteadOfMarkingRecalled() {
+        cache.put(100, 7, "trash", null, 1);
+        loader.enableChat(100);
+        assertTrue(detector.toggleCleanupMode(100, 60_000L));
+
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        detector.processDeletions(100, ids);
+
+        assertNull(cache.get(100, 7));
+        assertTrue(store.deletedKeys.contains("100:7"));
+    }
+
+    @Test
+    public void testLocalDeleteDialogDisablesLoaderAndClearsDialogCache() {
+        cache.put(100, 7, "trash", null, 1);
+        cache.put(100, 8, "trash 2", null, 1);
+        cache.put(200, 7, "keep", null, 1);
+        loader.enableChat(100);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(100L);
+        args.add(0);
+        args.add(false);
+
+        assertTrue(detector.handleControllerDialogAction("deleteDialog", args));
+
+        assertFalse(loader.isChatEnabled(100));
+        assertTrue(detector.isCleanupModeActive(100));
+        assertNull(cache.get(100, 7));
+        assertNull(cache.get(100, 8));
+        assertNotNull(cache.get(200, 7));
+        assertTrue(store.deletedDialogs.contains(100L));
+    }
+
+    @Test
+    public void testGlobalNotificationDeleteUsesUniqueSelfDeleteDialog() {
+        SelfDeleteTracker tracker = new SelfDeleteTracker();
+        detector = new RecallDetector(cache, loader, null, tracker);
+        cache.put(100, 7, "delete", null, 1);
+        cache.put(100, 8, "delete too", null, 1);
+        cache.put(200, 7, "keep", null, 1);
+        loader.enableChat(100);
+        loader.enableChat(200);
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        ids.add(8);
+        tracker.recordUserDelete(100, ids);
+        ArrayList<Object> hookArgs = new ArrayList<>();
+        hookArgs.add(new Object[]{ids, 0L});
+
+        assertFalse(detector.shouldSuppressMessagesDeletedEvent(hookArgs));
+
+        assertNull(cache.get(100, 7));
+        assertNull(cache.get(100, 8));
+        assertNotNull(cache.get(200, 7));
+    }
+
+    @Test
+    public void testGlobalNotificationDeleteBlocksAmbiguousSelfDeleteDialog() {
+        SelfDeleteTracker tracker = new SelfDeleteTracker();
+        detector = new RecallDetector(cache, loader, null, tracker);
+        cache.put(100, 7, "keep one", null, 1);
+        cache.put(200, 7, "keep two", null, 1);
+        loader.enableChat(100);
+        loader.enableChat(200);
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        tracker.recordUserDelete(100, ids);
+        tracker.recordUserDelete(200, ids);
+        ArrayList<Object> hookArgs = new ArrayList<>();
+        hookArgs.add(new Object[]{ids, 0L});
+
+        assertTrue(detector.shouldSuppressMessagesDeletedEvent(hookArgs));
+
+        assertNotNull(cache.get(100, 7));
+        assertNotNull(cache.get(200, 7));
+    }
+
+    @Test
+    public void testGlobalNotificationDeleteBlocksWhenAnyIdLacksIntent() {
+        SelfDeleteTracker tracker = new SelfDeleteTracker();
+        detector = new RecallDetector(cache, loader, null, tracker);
+        cache.put(100, 7, "keep one", null, 1);
+        cache.put(100, 8, "keep two", null, 1);
+        loader.enableChat(100);
+        tracker.recordUserDelete(100, java.util.Collections.singletonList(7));
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        ids.add(8);
+        ArrayList<Object> hookArgs = new ArrayList<>();
+        hookArgs.add(new Object[]{ids, 0L});
+
+        assertTrue(detector.shouldSuppressMessagesDeletedEvent(hookArgs));
+
+        assertNotNull(cache.get(100, 7));
+        assertNotNull(cache.get(100, 8));
+    }
+
+    @Test
+    public void testBlockPeerRouteOnlyLogsAndKeepsGramSieveState() {
+        cache.put(100, 7, "keep", null, 1);
+        loader.enableChat(100);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(100L);
+        args.add(0);
+        args.add(false);
+
+        assertFalse(detector.handleControllerDialogAction("blockPeer", args));
+
+        assertTrue(loader.isChatEnabled(100));
+        assertFalse(detector.isCleanupModeActive(100));
+        assertNotNull(cache.get(100, 7));
+        assertFalse(store.deletedDialogs.contains(100L));
+    }
+
+    @Test
     public void testProcessEditMarksEdited() {
         cache.put(100, 1, "original", null, 42);
         loader.enableChat(100);
@@ -335,11 +517,24 @@ public class RecallDetectorTest {
         public void put(String key, MessageCache.CachedMessage value) {
             map.put(key, value);
         }
+
+        @Override
+        public void remove(String key) {
+            map.remove(key);
+        }
+
+        @Override
+        public void removeDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            map.keySet().removeIf(key -> key.startsWith(prefix));
+        }
     }
 
     private static class InMemoryMessageStore implements MessageStore {
         private final Map<String, MessageCache.CachedMessage> db = new HashMap<>();
         private final List<MessageCache.CachedMessage> editHistory = new ArrayList<>();
+        private final List<String> deletedKeys = new ArrayList<>();
+        private final List<Long> deletedDialogs = new ArrayList<>();
         private MessageCache.CachedMessage lastUpdated;
 
         @Override
@@ -360,6 +555,21 @@ public class RecallDetectorTest {
         @Override
         public void updateMessage(MessageCache.CachedMessage message) {
             lastUpdated = message;
+        }
+
+        @Override
+        public void deleteMessage(long dialogId, long messageId) {
+            String key = dialogId + ":" + messageId;
+            db.remove(key);
+            deletedKeys.add(key);
+        }
+
+        @Override
+        public void deleteDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            db.keySet().removeIf(key -> key.startsWith(prefix));
+            editHistory.removeIf(message -> message.dialogId == dialogId);
+            deletedDialogs.add(dialogId);
         }
 
         @Override

@@ -9,6 +9,8 @@ public final class MessageCache {
     public interface MemoryCache {
         CachedMessage get(String key);
         void put(String key, CachedMessage value);
+        void remove(String key);
+        void removeDialog(long dialogId);
     }
 
     private final MemoryCache memoryCache;
@@ -108,6 +110,26 @@ public final class MessageCache {
 
     public Object getMediaObject(long dialogId, long messageId) {
         return mediaObjects.get(dialogId + ":" + messageId);
+    }
+
+    public CachedMessage remove(long dialogId, long messageId) {
+        String key = dialogId + ":" + messageId;
+        CachedMessage existing = get(dialogId, messageId);
+        synchronized (memoryCache) {
+            memoryCache.remove(key);
+        }
+        mediaObjects.remove(key);
+        store.deleteMessage(dialogId, messageId);
+        return existing;
+    }
+
+    public void removeDialog(long dialogId) {
+        synchronized (memoryCache) {
+            memoryCache.removeDialog(dialogId);
+        }
+        String prefix = dialogId + ":";
+        mediaObjects.keySet().removeIf(key -> key.startsWith(prefix));
+        store.deleteDialog(dialogId);
     }
 
     public void markRecalled(long dialogId, long messageId) {
@@ -236,6 +258,21 @@ public final class MessageCache {
         @Override
         public void put(String key, CachedMessage value) {
             delegate.put(key, value);
+        }
+
+        @Override
+        public void remove(String key) {
+            delegate.remove(key);
+        }
+
+        @Override
+        public void removeDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            for (String key : delegate.snapshot().keySet()) {
+                if (key.startsWith(prefix)) {
+                    delegate.remove(key);
+                }
+            }
         }
     }
 

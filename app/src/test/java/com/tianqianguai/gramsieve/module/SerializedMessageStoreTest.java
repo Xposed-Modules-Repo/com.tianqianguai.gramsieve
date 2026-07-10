@@ -55,6 +55,34 @@ public class SerializedMessageStoreTest {
         }
     }
 
+    @Test
+    public void deleteWaitsForEarlierWritesBeforeRead() {
+        RecordingMessageStore delegate = new RecordingMessageStore();
+
+        try (SerializedMessageStore store = new SerializedMessageStore(delegate, "test-message-store")) {
+            store.insertMessage(new MessageCache.CachedMessage(1L, 10L, 100L, "hello", null, 123L));
+            store.deleteMessage(1L, 10L);
+
+            assertNull(store.getMessage(1L, 10L));
+        }
+    }
+
+    @Test
+    public void deleteDialogWaitsForEarlierWritesBeforeRead() {
+        RecordingMessageStore delegate = new RecordingMessageStore();
+
+        try (SerializedMessageStore store = new SerializedMessageStore(delegate, "test-message-store")) {
+            store.insertMessage(new MessageCache.CachedMessage(1L, 10L, 100L, "one", null, 123L));
+            store.insertMessage(new MessageCache.CachedMessage(1L, 11L, 100L, "two", null, 123L));
+            store.insertMessage(new MessageCache.CachedMessage(2L, 10L, 100L, "keep", null, 123L));
+            store.deleteDialog(1L);
+
+            assertNull(store.getMessage(1L, 10L));
+            assertNull(store.getMessage(1L, 11L));
+            assertNotNull(store.getMessage(2L, 10L));
+        }
+    }
+
     private static class RecordingMessageStore implements MessageStore {
         private final Map<String, MessageCache.CachedMessage> messages = new ConcurrentHashMap<>();
         private final List<MessageCache.CachedMessage> editHistory = new ArrayList<>();
@@ -77,6 +105,19 @@ public class SerializedMessageStoreTest {
         @Override
         public void updateMessage(MessageCache.CachedMessage message) {
             messages.put(key(message.dialogId, message.messageId), message);
+        }
+
+        @Override
+        public void deleteMessage(long dialogId, long messageId) {
+            messages.remove(key(dialogId, messageId));
+            editHistory.removeIf(message -> message.dialogId == dialogId && message.messageId == messageId);
+        }
+
+        @Override
+        public void deleteDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            messages.keySet().removeIf(key -> key.startsWith(prefix));
+            editHistory.removeIf(message -> message.dialogId == dialogId);
         }
 
         @Override

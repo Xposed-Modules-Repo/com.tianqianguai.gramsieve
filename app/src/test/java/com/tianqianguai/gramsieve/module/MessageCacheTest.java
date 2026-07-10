@@ -220,6 +220,38 @@ public class MessageCacheTest {
         assertEquals("edited", edited.get(0).editedText);
     }
 
+    @Test
+    public void testRemoveClearsMemoryStoreAndMediaObject() {
+        Object media = new Object();
+        cache.put(1, 1, "a", null, 1);
+        cache.putMediaObject(1, 1, media);
+
+        MessageCache.CachedMessage removed = cache.remove(1, 1);
+
+        assertNotNull(removed);
+        assertEquals("a", removed.text);
+        assertNull(cache.get(1, 1));
+        assertNull(cache.getMediaObject(1, 1));
+        assertTrue(store.deletedKeys.contains("1:1"));
+    }
+
+    @Test
+    public void testRemoveDialogClearsMemoryStoreAndMediaObjects() {
+        Object media = new Object();
+        cache.put(1, 1, "a", null, 1);
+        cache.put(1, 2, "b", null, 1);
+        cache.put(2, 1, "c", null, 1);
+        cache.putMediaObject(1, 1, media);
+
+        cache.removeDialog(1);
+
+        assertNull(cache.get(1, 1));
+        assertNull(cache.get(1, 2));
+        assertNull(cache.getMediaObject(1, 1));
+        assertNotNull(cache.get(2, 1));
+        assertTrue(store.deletedDialogs.contains(1L));
+    }
+
     private static class HashMapMemoryCache implements MessageCache.MemoryCache {
         private final Map<String, MessageCache.CachedMessage> map = new HashMap<>();
         private final int maxSize;
@@ -246,14 +278,23 @@ public class MessageCacheTest {
             map.put(key, value);
         }
 
-        void remove(String key) {
+        @Override
+        public void remove(String key) {
             map.remove(key);
+        }
+
+        @Override
+        public void removeDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            map.keySet().removeIf(key -> key.startsWith(prefix));
         }
     }
 
     private static class InMemoryMessageStore implements MessageStore {
         private final Map<String, MessageCache.CachedMessage> db = new HashMap<>();
         private final List<MessageCache.CachedMessage> editHistory = new ArrayList<>();
+        private final List<String> deletedKeys = new ArrayList<>();
+        private final List<Long> deletedDialogs = new ArrayList<>();
         int getCallCount;
         private MessageCache.CachedMessage lastUpdated;
 
@@ -282,6 +323,21 @@ public class MessageCacheTest {
         @Override
         public void updateMessage(MessageCache.CachedMessage message) {
             lastUpdated = message;
+        }
+
+        @Override
+        public void deleteMessage(long dialogId, long messageId) {
+            String key = dialogId + ":" + messageId;
+            db.remove(key);
+            deletedKeys.add(key);
+        }
+
+        @Override
+        public void deleteDialog(long dialogId) {
+            String prefix = dialogId + ":";
+            db.keySet().removeIf(key -> key.startsWith(prefix));
+            editHistory.removeIf(message -> message.dialogId == dialogId);
+            deletedDialogs.add(dialogId);
         }
 
         @Override

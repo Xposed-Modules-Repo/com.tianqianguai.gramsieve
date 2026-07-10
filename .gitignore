@@ -28,3 +28,6 @@ local.properties
 /*.jpg
 /*.jpeg
 /local/telegram-apk-archive/
+/local/cache4-*/
+/local/dbsnap-*/
+/local/gramsieve-current-screen.png

@@ -124,6 +124,21 @@ public final class MessageDatabaseHelper extends SQLiteOpenHelper implements Mes
                 new String[]{String.valueOf(message.dialogId), String.valueOf(message.messageId)});
     }
 
+    public void deleteMessage(long dialogId, long messageId) {
+        SQLiteDatabase db = getWritableDatabase();
+        String[] args = new String[]{String.valueOf(dialogId), String.valueOf(messageId)};
+        db.delete(TABLE_NAME, "dialog_id = ? AND message_id = ?", args);
+        db.delete(EDIT_HISTORY_TABLE_NAME, "dialog_id = ? AND message_id = ?", args);
+    }
+
+    @Override
+    public void deleteDialog(long dialogId) {
+        SQLiteDatabase db = getWritableDatabase();
+        String[] args = new String[]{String.valueOf(dialogId)};
+        db.delete(TABLE_NAME, "dialog_id = ?", args);
+        db.delete(EDIT_HISTORY_TABLE_NAME, "dialog_id = ?", args);
+    }
+
     public MessageCache.CachedMessage getMessage(long dialogId, long messageId) {
         SQLiteDatabase db = getReadableDatabase();
         Cursor cursor = db.query(TABLE_NAME, null, "dialog_id = ? AND message_id = ?",

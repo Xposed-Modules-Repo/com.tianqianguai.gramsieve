@@ -44,10 +44,13 @@ import java.lang.reflect.Modifier;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedInterface;
@@ -66,6 +69,7 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_ANTI_RECALL = 0x47530018;
     private static final int MENU_ID_EDIT_HISTORY = 0x47530019;
     private static final int SETTINGS_ROW_GRAMSIEVE = 0x4753001A;
+    private static final int MENU_ID_CLEANUP_MODE = 0x4753001B;
     private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
     private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
     private ViewGroup downloadPageFragmentView = null;
@@ -75,7 +79,12 @@ final class TelegramHookInstaller {
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
     private AntiRecallConfigStore antiRecallConfigStore;
+    private LocalDialogDeleteStore localDialogDeleteStore;
+    private TelegramDialogDatabasePruner dialogDatabasePruner;
+    private final Set<LocalDialogDeleteStore.HiddenDialog> locallyHiddenDialogs =
+            Collections.synchronizedSet(new HashSet<>());
     private static final int SCROLL_JUMP_THRESHOLD = 50;
+    private static final long CLEANUP_MODE_DURATION_MS = SelfDeleteTracker.DEFAULT_CLEANUP_MODE_MS;
 
     private final XposedModule module;
     private XposedConfigProvider configProvider;
@@ -136,6 +145,7 @@ final class TelegramHookInstaller {
         hookSettingsActivityMenu(classLoader);
         hookProfileSettingsMenu(classLoader);
         hookDownloadActivityMenu(classLoader);
+        hookDialogDeletionDiagnostics(classLoader);
         hookOnItemClickDiagnostic(classLoader);
         installed = true;
         info("Installed Telegram hooks");
@@ -178,20 +188,47 @@ final class TelegramHookInstaller {
         }
         try {
             Context context = resolveContextFromActivity(chatActivity);
-            if (context == null) {
-                info("Anti-recall: chat context is null");
-                return;
-            }
-            info("Anti-recall: initializing from chat context");
-            doInitAntiRecall(context.getApplicationContext(), savedClassLoader);
+            initAntiRecallFromContext(context, "chat");
         } catch (Throwable throwable) {
             error("Failed to initialize anti-recall from chat", throwable);
         }
     }
 
+    private synchronized void initAntiRecallFromContext(Context context, String source) {
+        if (backgroundMessageLoader != null) {
+            return;
+        }
+        if (context == null) {
+            info("Anti-recall: " + source + " context is null");
+            return;
+        }
+        Context appContext = context.getApplicationContext() != null
+                ? context.getApplicationContext()
+                : context;
+        info("Anti-recall: initializing from " + source + " context");
+        doInitAntiRecall(appContext, savedClassLoader);
+    }
+
     private void doInitAntiRecall(Context context, ClassLoader classLoader) {
         ModuleLogger.init(context);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
+        localDialogDeleteStore = new LocalDialogDeleteStore(context);
+        dialogDatabasePruner = new TelegramDialogDatabasePruner(context, new TelegramDialogDatabasePruner.Logger() {
+            @Override
+            public void info(String message) {
+                TelegramHookInstaller.this.info(message);
+            }
+
+            @Override
+            public void error(String message, Throwable throwable) {
+                TelegramHookInstaller.this.error(message, throwable);
+            }
+        });
+        locallyHiddenDialogs.clear();
+        Set<LocalDialogDeleteStore.HiddenDialog> hiddenDialogs =
+                localDialogDeleteStore.hiddenDialogs(resolveSelectedTelegramAccount(classLoader));
+        locallyHiddenDialogs.addAll(hiddenDialogs);
+        pruneKnownHiddenDialogs(hiddenDialogs);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
         messageCache = new MessageCache(new SerializedMessageStore(databaseHelper));
         mediaCache = new MediaCache(context);
@@ -664,6 +701,14 @@ final class TelegramHookInstaller {
             Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
             Method createView = Reflect.method(dialogsClass, "createView", Context.class);
             hook(createView, chain -> {
+                Object contextArg = chain.getArg(0);
+                if (contextArg instanceof Context) {
+                    try {
+                        initAntiRecallFromContext((Context) contextArg, "dialogs");
+                    } catch (Throwable throwable) {
+                        error("DialogsActivity anti-recall init failed", throwable);
+                    }
+                }
                 Object result = chain.proceed();
                 try {
                     Object activity = chain.getThisObject();
@@ -698,6 +743,252 @@ final class TelegramHookInstaller {
         } catch (Throwable t) {
             error("Failed to hook DialogsActivity.createView", t);
         }
+    }
+
+    private void hookDialogDeletionDiagnostics(ClassLoader classLoader) {
+        try {
+            Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
+            int hooked = 0;
+            for (Method method : dialogsClass.getDeclaredMethods()) {
+                String name = method.getName();
+                if (!"performSelectedDialogsAction".equals(name)
+                        && !"performDeleteOrClearDialogAction".equals(name)
+                        && !name.startsWith("lambda$performSelectedDialogsAction$")) {
+                    continue;
+                }
+                String methodName = name;
+                int paramCount = method.getParameterCount();
+                hook(method, chain -> {
+                    try {
+                        info("DialogDeleteTrace: " + methodName + " params=" + paramCount
+                                + describeHookArgs(chain.getArgs()));
+                    } catch (Throwable throwable) {
+                        error("DialogDeleteTrace: failed before " + methodName, throwable);
+                    }
+                    recordDialogDeletionIntentFromUi(methodName, chain.getThisObject(), chain.getArgs());
+                    return chain.proceed();
+                });
+                hooked++;
+            }
+            info("DialogDeleteTrace: hooked DialogsActivity deletion methods count=" + hooked);
+        } catch (Throwable throwable) {
+            error("DialogDeleteTrace: failed to hook DialogsActivity deletion methods", throwable);
+        }
+    }
+
+    private void recordDialogDeletionIntentFromUi(String methodName, Object host, List<Object> args) {
+        int action = firstIntArg(args, -1);
+        if (action != 0x66) {
+            return;
+        }
+        List<Long> dialogIds = dialogIdsFromArgs(args);
+        if (dialogIds.isEmpty() || !isCommittedDialogDeleteCall(methodName)) {
+            return;
+        }
+        if (recallDetector == null) {
+            initAntiRecallDeferred();
+        }
+        RecallDetector detector = recallDetector;
+        if (detector == null) {
+            info("DialogDeleteTrace: ui delete not marked, anti-recall unavailable count=" + dialogIds.size());
+            return;
+        }
+        boolean revoke = lastBooleanArg(args, false);
+        boolean shouldPruneDatabase = shouldPruneDialogDatabaseForCall(methodName);
+        int account = resolveDialogDeletionAccount(host);
+        int marked = 0;
+        for (Long dialogId : dialogIds) {
+            if (dialogId != null && dialogId != 0L
+                    && detector.processDialogDeletion(dialogId, action, revoke, "uiDeleteDialog")) {
+                markLocalDialogHidden(dialogId, account);
+                if (shouldPruneDatabase) {
+                    pruneTelegramDialogDatabase(dialogId, account, methodName);
+                }
+                marked++;
+            }
+        }
+        if (marked > 0) {
+            info("DialogDeleteTrace: marked local ui delete count=" + marked
+                    + " action=" + action + " source=" + methodName);
+            refreshDialogsUi(host);
+        }
+    }
+
+    private void markLocalDialogHidden(long dialogId, int account) {
+        LocalDialogDeleteStore.HiddenDialog hiddenDialog =
+                new LocalDialogDeleteStore.HiddenDialog(account, dialogId);
+        locallyHiddenDialogs.add(hiddenDialog);
+        LocalDialogDeleteStore store = localDialogDeleteStore;
+        if (store != null) {
+            store.hide(dialogId, hiddenDialog.account);
+        }
+        info("DialogDeleteTrace: local hide dialogId=" + dialogId + " account=" + hiddenDialog.account);
+    }
+
+    private boolean shouldPruneDialogDatabaseForCall(String methodName) {
+        return "performDeleteOrClearDialogAction".equals(methodName);
+    }
+
+    private void pruneTelegramDialogDatabase(long dialogId, int account, String source) {
+        if (dialogId == 0L) {
+            return;
+        }
+        TelegramDialogDatabasePruner pruner = dialogDatabasePruner;
+        if (pruner == null) {
+            initAntiRecallDeferred();
+            pruner = dialogDatabasePruner;
+        }
+        if (pruner == null) {
+            info("DialogDatabasePrune: skipped, pruner unavailable dialogId=" + dialogId
+                    + " account=" + account + " source=" + source);
+            return;
+        }
+        pruner.pruneAsync(dialogId, account, source);
+    }
+
+    private void pruneKnownHiddenDialogs(Set<LocalDialogDeleteStore.HiddenDialog> hiddenDialogs) {
+        if (hiddenDialogs == null || hiddenDialogs.isEmpty()) {
+            return;
+        }
+        TelegramDialogDatabasePruner pruner = dialogDatabasePruner;
+        if (pruner == null) {
+            return;
+        }
+        for (LocalDialogDeleteStore.HiddenDialog hiddenDialog : hiddenDialogs) {
+            if (hiddenDialog == null || hiddenDialog.dialogId == 0L) {
+                continue;
+            }
+            pruner.pruneAsync(hiddenDialog.dialogId, hiddenDialog.account, "startup-hidden");
+        }
+    }
+
+    private int resolveDialogDeletionAccount(Object host) {
+        int account = Reflect.asInt(Reflect.field(host, "currentAccount"), Integer.MIN_VALUE);
+        if (account != Integer.MIN_VALUE) {
+            return Math.max(0, account);
+        }
+        Object getter = Reflect.invokeIfExists(host, "getCurrentAccount", new Class<?>[0]);
+        account = Reflect.asInt(getter, Integer.MIN_VALUE);
+        if (account != Integer.MIN_VALUE) {
+            return Math.max(0, account);
+        }
+        return resolveSelectedTelegramAccount(savedClassLoader);
+    }
+
+    private boolean isLocallyHiddenDialog(long dialogId, int account) {
+        if (dialogId == 0L) {
+            return false;
+        }
+        LocalDialogDeleteStore.HiddenDialog hiddenDialog =
+                new LocalDialogDeleteStore.HiddenDialog(account, dialogId);
+        if (locallyHiddenDialogs.contains(hiddenDialog)) {
+            return true;
+        }
+        LocalDialogDeleteStore store = localDialogDeleteStore;
+        if (store != null && store.isHidden(dialogId, hiddenDialog.account)) {
+            locallyHiddenDialogs.add(hiddenDialog);
+            return true;
+        }
+        return false;
+    }
+
+    private void refreshDialogsUi(Object host) {
+        if (host == null) {
+            return;
+        }
+        try {
+            Object viewPages = Reflect.field(host, "viewPages");
+            if (!(viewPages instanceof Object[])) {
+                return;
+            }
+            for (Object page : (Object[]) viewPages) {
+                Object listView = Reflect.field(page, "listView");
+                Object adapter = listView instanceof View
+                        ? Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0])
+                        : null;
+                if (listView instanceof ViewGroup) {
+                    hideVisibleDialogRows((ViewGroup) listView, adapter);
+                }
+                if (listView instanceof View) {
+                    Reflect.invokeIfExists(adapter, "notifyDataSetChanged", new Class<?>[0]);
+                    ((View) listView).requestLayout();
+                    ((View) listView).invalidate();
+                    ((View) listView).post(() -> {
+                        try {
+                            Object delayedAdapter = Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0]);
+                            if (listView instanceof ViewGroup) {
+                                hideVisibleDialogRows((ViewGroup) listView, delayedAdapter);
+                            }
+                            Reflect.invokeIfExists(delayedAdapter, "notifyDataSetChanged", new Class<?>[0]);
+                            ((View) listView).requestLayout();
+                            ((View) listView).invalidate();
+                        } catch (Throwable throwable) {
+                            error("DialogDeleteTrace: delayed refresh dialogs UI failed", throwable);
+                        }
+                    });
+                }
+            }
+        } catch (Throwable throwable) {
+            error("DialogDeleteTrace: refresh dialogs UI failed", throwable);
+        }
+    }
+
+    private void hideVisibleDialogRows(ViewGroup listView, Object adapter) {
+        int account = resolveDialogDeletionAccount(adapter);
+        for (int i = 0; i < listView.getChildCount(); i++) {
+            View child = listView.getChildAt(i);
+            if (isDialogListRow(null, child)) {
+                applyLocalDialogHideToRow(child, account);
+            }
+        }
+    }
+
+    static boolean isCommittedDialogDeleteCall(String methodName) {
+        return "performDeleteOrClearDialogAction".equals(methodName);
+    }
+
+    private int firstIntArg(List<Object> args, int fallback) {
+        if (args == null) {
+            return fallback;
+        }
+        for (Object arg : args) {
+            if (arg instanceof Integer) {
+                return (Integer) arg;
+            }
+        }
+        return fallback;
+    }
+
+    private boolean lastBooleanArg(List<Object> args, boolean fallback) {
+        if (args == null) {
+            return fallback;
+        }
+        boolean value = fallback;
+        for (Object arg : args) {
+            if (arg instanceof Boolean) {
+                value = (Boolean) arg;
+            }
+        }
+        return value;
+    }
+
+    private List<Long> dialogIdsFromArgs(List<Object> args) {
+        List<Long> dialogIds = new ArrayList<>();
+        if (args == null) {
+            return dialogIds;
+        }
+        for (Object arg : args) {
+            if (arg instanceof Long) {
+                dialogIds.add((Long) arg);
+            } else if (arg instanceof List<?>) {
+                for (Object item : (List<?>) arg) {
+                    if (item instanceof Long) {
+                        dialogIds.add((Long) item);
+                    }
+                }
+            }
+        }
+        return dialogIds;
     }
 
     /**
@@ -3008,8 +3299,12 @@ final class TelegramHookInstaller {
         emitHookEntry("recycler", chain.getThisObject(), chain.getArg(0));
         Object result = chain.proceed();
         try {
+            Object adapter = chain.getThisObject();
             Object holder = chain.getArg(0);
             Object itemView = Reflect.field(holder, "itemView");
+            if (applyLocalDialogHide(adapter, itemView)) {
+                return result;
+            }
             applyDecisionToBoundViews(itemView);
         } catch (Throwable throwable) {
             error("RecyclerView binding filter failed", throwable);
@@ -3021,13 +3316,113 @@ final class TelegramHookInstaller {
         emitHookEntry("attach", chain.getThisObject(), chain.getArg(0));
         Object result = chain.proceed();
         try {
+            Object adapter = chain.getThisObject();
             Object holder = chain.getArg(0);
             Object itemView = Reflect.field(holder, "itemView");
+            if (applyLocalDialogHide(adapter, itemView)) {
+                return result;
+            }
             applyDecisionToBoundViews(itemView);
         } catch (Throwable throwable) {
             error("RecyclerView attachment filter failed", throwable);
         }
         return result;
+    }
+
+    private boolean applyLocalDialogHide(Object adapter, Object itemView) {
+        if (!(itemView instanceof View)) {
+            return false;
+        }
+        View row = (View) itemView;
+        if (!isDialogListRow(adapter, row)) {
+            return false;
+        }
+        return applyLocalDialogHideToRow(row, resolveDialogDeletionAccount(adapter));
+    }
+
+    private boolean applyLocalDialogHideToRow(View row, int account) {
+        long dialogId = resolveDialogIdFromView(row);
+        if (dialogId == 0L) {
+            UiMutation.apply(row, FilterDecision.allow(), "");
+            return false;
+        }
+        if (!isLocallyHiddenDialog(dialogId, account)) {
+            UiMutation.apply(row, FilterDecision.allow(), "dialog:" + dialogId);
+            return false;
+        }
+        UiMutation.apply(row,
+                FilterDecision.matched(FilterConfig.Action.HIDE, "local-dialog-delete", "local dialog delete"),
+                "dialog:" + dialogId);
+        if (shouldLogLocalDialogHide(dialogId)) {
+            info("DialogDeleteTrace: hiding dialog row dialogId=" + dialogId
+                    + " account=" + account
+                    + " row=" + row.getClass().getName());
+        }
+        return true;
+    }
+
+    private boolean isDialogsAdapter(Object adapter) {
+        if (adapter == null) {
+            return false;
+        }
+        String className = adapter.getClass().getName();
+        return "org.telegram.ui.Adapters.DialogsAdapter".equals(className)
+                || className.startsWith("org.telegram.ui.DialogsActivity$");
+    }
+
+    private boolean isDialogListRow(Object adapter, View row) {
+        return isDialogsAdapter(adapter)
+                || containsDialogListCell(row);
+    }
+
+    private boolean containsDialogListCell(View view) {
+        if (isDialogListCellClass(view.getClass().getName())) {
+            return true;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                if (containsDialogListCell(group.getChildAt(i))) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean isDialogListCellClass(String className) {
+        return "org.telegram.ui.Cells.DialogCell".equals(className)
+                || "org.telegram.ui.Cells.ProfileSearchCell".equals(className);
+    }
+
+    private long resolveDialogIdFromView(View view) {
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(view, "getDialogId", new Class<?>[0]), 0L);
+        if (dialogId != 0L) {
+            return dialogId;
+        }
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) {
+                dialogId = resolveDialogIdFromView(group.getChildAt(i));
+                if (dialogId != 0L) {
+                    return dialogId;
+                }
+            }
+        }
+        return 0L;
+    }
+
+    private boolean shouldLogLocalDialogHide(long dialogId) {
+        long now = System.currentTimeMillis();
+        String key = "local-dialog-hide:" + dialogId;
+        synchronized (recentDiagnosticKeys) {
+            Long previous = recentDiagnosticKeys.get(key);
+            if (previous != null && now - previous < 10_000L) {
+                return false;
+            }
+            recentDiagnosticKeys.put(key, now);
+            return true;
+        }
     }
 
     private void applyDecisionToBoundViews(Object rootCandidate) {
@@ -4874,6 +5269,7 @@ final class TelegramHookInstaller {
         injectScrollToTopMenu(chatActivity, headerItem);
         injectJumpToMarkMenu(chatActivity, headerItem);
         injectAntiRecallMenu(chatActivity, headerItem);
+        injectCleanupModeMenu(chatActivity, headerItem);
     }
 
     private void beginReadPositionTracking(Object chatActivity) {
@@ -5089,6 +5485,62 @@ final class TelegramHookInstaller {
             return enabled ? "主动加载已打开" + idStr : "主动加载未打开" + idStr;
         }
         return enabled ? "Proactive Loading: ON" + idStr : "Proactive Loading: OFF" + idStr;
+    }
+
+    private void injectCleanupModeMenu(Object chatActivity, Object headerItem) {
+        if (recallDetector == null) {
+            initAntiRecallFromChat(chatActivity);
+        }
+        if (recallDetector == null || hasMenuItem(headerItem, MENU_ID_CLEANUP_MODE)) {
+            return;
+        }
+        Context context = contextFromMenuItem(headerItem);
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        if (dialogId == 0L) {
+            return;
+        }
+        int iconRes = resolveCleanupModeIcon(context);
+        Object subItem = addMenuSubItem(headerItem, MENU_ID_CLEANUP_MODE, iconRes,
+                cleanupModeStatusLabel(context, dialogId));
+        if (!(subItem instanceof View)) {
+            info("CleanupMode addSubItem unavailable on " + headerItem.getClass().getName());
+            return;
+        }
+        View subItemView = (View) subItem;
+        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CLEANUP_MODE);
+        subItemView.setOnClickListener(v -> {
+            try {
+                boolean enabled = recallDetector.toggleCleanupMode(dialogId, CLEANUP_MODE_DURATION_MS);
+                Reflect.invokeIfExists(v, "setText", new Class<?>[]{CharSequence.class},
+                        cleanupModeStatusLabel(v.getContext(), dialogId));
+                Toast.makeText(v.getContext(), localizedCleanupModeToast(v.getContext(), enabled),
+                        Toast.LENGTH_SHORT).show();
+                info("CleanupMode: toggled dialogId=" + dialogId + " enabled=" + enabled);
+            } catch (Throwable throwable) {
+                error("Cleanup mode click failed", throwable);
+            }
+        });
+    }
+
+    private int resolveCleanupModeIcon(Context context) {
+        int telegramIcon = context.getResources().getIdentifier("msg_delete", "drawable", "org.telegram.messenger");
+        return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_delete;
+    }
+
+    private CharSequence cleanupModeStatusLabel(Context context, long dialogId) {
+        boolean enabled = recallDetector != null && recallDetector.isCleanupModeActive(dialogId);
+        String idStr = " [" + dialogId + "]";
+        if (isChineseLocale(context)) {
+            return enabled ? "清理模式已打开" + idStr : "清理模式未打开" + idStr;
+        }
+        return enabled ? "Cleanup Mode: ON" + idStr : "Cleanup Mode: OFF" + idStr;
+    }
+
+    private CharSequence localizedCleanupModeToast(Context context, boolean enabled) {
+        if (isChineseLocale(context)) {
+            return enabled ? "清理模式已打开，5 分钟内删除会放行" : "清理模式已关闭";
+        }
+        return enabled ? "Cleanup mode is on for 5 minutes" : "Cleanup mode is off";
     }
 
     private void jumpToMarkedPosition(Object chatActivity, Context context) {

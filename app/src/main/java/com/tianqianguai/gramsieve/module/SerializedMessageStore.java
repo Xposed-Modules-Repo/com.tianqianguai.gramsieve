@@ -62,6 +62,16 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
     }
 
     @Override
+    public void deleteMessage(long dialogId, long messageId) {
+        enqueueWrite(() -> delegate.deleteMessage(dialogId, messageId));
+    }
+
+    @Override
+    public void deleteDialog(long dialogId) {
+        enqueueWrite(() -> delegate.deleteDialog(dialogId));
+    }
+
+    @Override
     public MessageCache.CachedMessage getMessage(long dialogId, long messageId) {
         return submitRead(() -> delegate.getMessage(dialogId, messageId), null);
     }
