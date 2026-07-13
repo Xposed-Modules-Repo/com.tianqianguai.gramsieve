@@ -21,6 +21,7 @@ import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
 
 import com.google.android.material.card.MaterialCardView;
+import com.google.android.material.button.MaterialButton;
 import com.google.android.material.chip.Chip;
 import com.google.android.material.chip.ChipGroup;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
@@ -30,9 +31,12 @@ import com.google.android.material.textfield.TextInputLayout;
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.AppLocaleManager;
+import com.tianqianguai.gramsieve.config.InstalledModuleScanner;
+import com.tianqianguai.gramsieve.config.LSPosedModuleStateReader;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.config.PersistentLogStore;
 import com.tianqianguai.gramsieve.core.FilterConfig;
+import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 import com.tianqianguai.gramsieve.core.RuleDraftMatrix;
 
 import java.text.DateFormat;
@@ -41,6 +45,9 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public final class ConfigDialogActivity extends AppCompatActivity {
     public static final String EXTRA_MODE = "mode";
@@ -67,6 +74,7 @@ public final class ConfigDialogActivity extends AppCompatActivity {
 
     private AlertDialog dialog;
     private boolean relaunchAfterDismiss;
+    private final ExecutorService conflictScanExecutor = Executors.newSingleThreadExecutor();
 
     private static final class RuleInputBox {
         final TextInputLayout layout;
@@ -75,6 +83,22 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         RuleInputBox(TextInputLayout layout, TextInputEditText editText) {
             this.layout = layout;
             this.editText = editText;
+        }
+    }
+
+    private static final class ConflictScanSnapshot {
+        final Set<ModuleConflictDetector.KnownModule> installedModules;
+        final LSPosedModuleStateReader.Result lsposedResult;
+        final ModuleConflictDetector.Report report;
+
+        ConflictScanSnapshot(
+                Set<ModuleConflictDetector.KnownModule> installedModules,
+                LSPosedModuleStateReader.Result lsposedResult,
+                ModuleConflictDetector.Report report
+        ) {
+            this.installedModules = installedModules;
+            this.lsposedResult = lsposedResult;
+            this.report = report;
         }
     }
 
@@ -520,6 +544,9 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         if (!chatMode) {
             LinearLayout antiRecallContent = addCard(container);
             addAntiRecallSettings(antiRecallContent, antiRecallConfigStore);
+
+            LinearLayout conflictContent = addCard(container);
+            addConflictDetectionSettings(conflictContent);
         }
 
         // Rules matrix editor in Card 2
@@ -845,6 +872,319 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         container.addView(enabledSwitch, params);
     }
 
+    private void addConflictDetectionSettings(LinearLayout container) {
+        addSectionLabel(container, getString(R.string.conflict_detection_title));
+        addInfo(container, getString(R.string.conflict_detection_intro));
+
+        TextView databaseStatusView = addInfo(container, "");
+        TextView modulesView = addInfo(container, "");
+        TextView summaryView = addInfo(container, "");
+        final ConflictScanSnapshot[] snapshotHolder = new ConflictScanSnapshot[1];
+
+        MaterialButton detailsButton = new MaterialButton(this);
+        detailsButton.setText(R.string.conflict_detection_details);
+        addView(container, detailsButton, 4);
+
+        MaterialButton refreshButton = new MaterialButton(this);
+        refreshButton.setText(R.string.conflict_detection_refresh);
+        addView(container, refreshButton, 0);
+
+        TextView detailsView = addInfo(container, "");
+        detailsView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        detailsView.setTextIsSelectable(true);
+        detailsView.setVisibility(View.GONE);
+
+        detailsButton.setOnClickListener(v -> {
+            if (detailsView.getVisibility() == View.VISIBLE) {
+                detailsView.setVisibility(View.GONE);
+                detailsButton.setText(R.string.conflict_detection_details);
+            } else {
+                detailsView.setText(formatConflictDetails(snapshotHolder[0]));
+                detailsView.setVisibility(View.VISIBLE);
+                detailsButton.setText(R.string.conflict_detection_hide_details);
+            }
+        });
+        refreshButton.setOnClickListener(v -> {
+            detailsView.setVisibility(View.GONE);
+            detailsButton.setText(R.string.conflict_detection_details);
+            refreshConflictReport(
+                    databaseStatusView,
+                    modulesView,
+                    summaryView,
+                    snapshotHolder,
+                    detailsButton,
+                    refreshButton,
+                    true
+            );
+        });
+
+        refreshConflictReport(
+                databaseStatusView,
+                modulesView,
+                summaryView,
+                snapshotHolder,
+                detailsButton,
+                refreshButton,
+                false
+        );
+    }
+
+    private void refreshConflictReport(
+            TextView databaseStatusView,
+            TextView modulesView,
+            TextView summaryView,
+            ConflictScanSnapshot[] snapshotHolder,
+            MaterialButton detailsButton,
+            MaterialButton refreshButton,
+            boolean showCompletionToast
+    ) {
+        databaseStatusView.setText(R.string.conflict_detection_db_reading);
+        modulesView.setText("");
+        summaryView.setText("");
+        detailsButton.setEnabled(false);
+        refreshButton.setEnabled(false);
+
+        conflictScanExecutor.execute(() -> {
+            Set<ModuleConflictDetector.KnownModule> installed = InstalledModuleScanner.scan(this);
+            LSPosedModuleStateReader.Result lsposedResult = LSPosedModuleStateReader.read(this);
+            Set<ModuleConflictDetector.KnownModule> effectiveModules;
+            boolean gramSieveActive;
+            if (lsposedResult.isSuccessful()) {
+                effectiveModules = lsposedResult.activeKnownModules(installed);
+                gramSieveActive = lsposedResult
+                        .stateForPackage(LSPosedModuleStateReader.GRAMSIEVE_PACKAGE)
+                        .activeForTelegram;
+            } else {
+                // Fall back conservatively when read-only root/database access is unavailable.
+                effectiveModules = installed;
+                gramSieveActive = true;
+            }
+            ConflictScanSnapshot snapshot = new ConflictScanSnapshot(
+                    installed,
+                    lsposedResult,
+                    ModuleConflictDetector.detect(effectiveModules, gramSieveActive)
+            );
+            runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+                snapshotHolder[0] = snapshot;
+                renderConflictReport(databaseStatusView, modulesView, summaryView, snapshot);
+                detailsButton.setEnabled(true);
+                refreshButton.setEnabled(true);
+                if (showCompletionToast) {
+                    Toast.makeText(
+                            this,
+                            R.string.conflict_detection_refreshed,
+                            Toast.LENGTH_SHORT
+                    ).show();
+                }
+            });
+        });
+    }
+
+    private void renderConflictReport(
+            TextView databaseStatusView,
+            TextView modulesView,
+            TextView summaryView,
+            ConflictScanSnapshot snapshot
+    ) {
+        databaseStatusView.setText(lsposedStatusText(snapshot.lsposedResult));
+
+        if (snapshot.installedModules.isEmpty()) {
+            modulesView.setText(R.string.conflict_detection_no_modules);
+        } else {
+            modulesView.setText(getString(
+                    R.string.conflict_detection_modules,
+                    installedModuleNames(snapshot)
+            ));
+        }
+
+        if (snapshot.report.findings.isEmpty()) {
+            summaryView.setText(snapshot.lsposedResult.isSuccessful()
+                    ? R.string.conflict_detection_no_conflicts_confirmed
+                    : R.string.conflict_detection_no_conflicts);
+        } else {
+            summaryView.setText(getString(
+                    R.string.conflict_detection_summary,
+                    snapshot.report.findings.size(),
+                    severityLabel(snapshot.report.highestSeverity)
+            ));
+        }
+    }
+
+    private String formatConflictDetails(ConflictScanSnapshot snapshot) {
+        if (snapshot == null) {
+            return "";
+        }
+        ModuleConflictDetector.Report report = snapshot.report;
+        String disclaimer = getString(snapshot.lsposedResult.isSuccessful()
+                ? R.string.conflict_detection_db_disclaimer
+                : R.string.conflict_detection_disclaimer);
+        String message;
+        if (snapshot.installedModules.isEmpty()) {
+            message = getString(R.string.conflict_detection_no_modules) + "\n\n"
+                    + disclaimer;
+        } else if (report.findings.isEmpty()) {
+            message = getString(
+                    R.string.conflict_detection_modules,
+                    installedModuleNames(snapshot)
+            ) + "\n\n" + getString(snapshot.lsposedResult.isSuccessful()
+                    ? R.string.conflict_detection_no_conflicts_confirmed
+                    : R.string.conflict_detection_no_conflicts)
+                    + "\n\n" + disclaimer;
+        } else {
+            StringBuilder details = new StringBuilder();
+            for (ModuleConflictDetector.Finding finding : report.findings) {
+                if (details.length() > 0) {
+                    details.append("\n\n");
+                }
+                details.append("[")
+                        .append(severityLabel(finding.severity))
+                        .append("] ")
+                        .append(conflictTitle(finding.kind))
+                        .append("\n")
+                        .append(getString(
+                                R.string.conflict_detection_involved,
+                                moduleNames(finding.modules, finding.includesGramSieve)
+                        ))
+                        .append("\n")
+                        .append(conflictAdvice(finding.kind));
+            }
+            details.append("\n\n").append(disclaimer);
+            message = details.toString();
+        }
+        return message;
+    }
+
+    private String lsposedStatusText(LSPosedModuleStateReader.Result result) {
+        if (result.isSuccessful()) {
+            return getString(
+                    R.string.conflict_detection_db_success,
+                    moduleStateLabel(result.stateForPackage(
+                            LSPosedModuleStateReader.GRAMSIEVE_PACKAGE
+                    ))
+            );
+        }
+        switch (result.status) {
+            case ROOT_UNAVAILABLE:
+                return getString(R.string.conflict_detection_db_root_unavailable);
+            case DATABASE_UNAVAILABLE:
+                return getString(R.string.conflict_detection_db_unavailable);
+            case TIMED_OUT:
+                return getString(R.string.conflict_detection_db_timeout);
+            case QUERY_FAILED:
+            default:
+                return getString(R.string.conflict_detection_db_failed);
+        }
+    }
+
+    private String installedModuleNames(ConflictScanSnapshot snapshot) {
+        if (!snapshot.lsposedResult.isSuccessful()) {
+            return moduleNames(snapshot.installedModules, false);
+        }
+        StringBuilder names = new StringBuilder();
+        for (ModuleConflictDetector.KnownModule module : snapshot.installedModules) {
+            if (names.length() > 0) {
+                names.append("\n");
+            }
+            names.append(getString(
+                    R.string.conflict_module_state_format,
+                    module.displayName,
+                    moduleStateLabel(snapshot.lsposedResult.stateFor(module))
+            ));
+        }
+        return names.toString();
+    }
+
+    private String moduleStateLabel(LSPosedModuleStateReader.ModuleState state) {
+        if (state.activeForTelegram) {
+            return getString(R.string.conflict_module_state_active);
+        }
+        if (state.enabled) {
+            return getString(R.string.conflict_module_state_enabled_no_scope);
+        }
+        if (state.registered) {
+            return getString(R.string.conflict_module_state_disabled);
+        }
+        return getString(R.string.conflict_module_state_unregistered);
+    }
+
+    private String moduleNames(Set<ModuleConflictDetector.KnownModule> modules, boolean includeGramSieve) {
+        StringBuilder names = new StringBuilder();
+        if (includeGramSieve) {
+            names.append("GramSieve");
+        }
+        for (ModuleConflictDetector.KnownModule module : modules) {
+            if (names.length() > 0) {
+                names.append(", ");
+            }
+            names.append(module.displayName);
+        }
+        return names.toString();
+    }
+
+    private String severityLabel(ModuleConflictDetector.Severity severity) {
+        switch (severity == null ? ModuleConflictDetector.Severity.NONE : severity) {
+            case HIGH:
+                return getString(R.string.conflict_severity_high);
+            case MEDIUM:
+                return getString(R.string.conflict_severity_medium);
+            case LOW:
+                return getString(R.string.conflict_severity_low);
+            default:
+                return getString(R.string.conflict_severity_none);
+        }
+    }
+
+    private String conflictTitle(ModuleConflictDetector.ConflictKind kind) {
+        switch (kind) {
+            case ANTI_RECALL:
+                return getString(R.string.conflict_title_anti_recall);
+            case EDIT_HISTORY:
+                return getString(R.string.conflict_title_edit_history);
+            case DOWNLOAD_ACCELERATION:
+                return getString(R.string.conflict_title_download);
+            case SECRET_MEDIA:
+                return getString(R.string.conflict_title_secret_media);
+            case SAVE_RESTRICTION:
+                return getString(R.string.conflict_title_save_restriction);
+            case ADS:
+                return getString(R.string.conflict_title_ads);
+            case STORIES:
+                return getString(R.string.conflict_title_stories);
+            case PRIVACY:
+                return getString(R.string.conflict_title_privacy);
+            case UI_INJECTION:
+            default:
+                return getString(R.string.conflict_title_ui);
+        }
+    }
+
+    private String conflictAdvice(ModuleConflictDetector.ConflictKind kind) {
+        switch (kind) {
+            case ANTI_RECALL:
+                return getString(R.string.conflict_advice_anti_recall);
+            case EDIT_HISTORY:
+                return getString(R.string.conflict_advice_edit_history);
+            case DOWNLOAD_ACCELERATION:
+                return getString(R.string.conflict_advice_download);
+            case SECRET_MEDIA:
+                return getString(R.string.conflict_advice_secret_media);
+            case SAVE_RESTRICTION:
+                return getString(R.string.conflict_advice_save_restriction);
+            case ADS:
+                return getString(R.string.conflict_advice_ads);
+            case STORIES:
+                return getString(R.string.conflict_advice_stories);
+            case PRIVACY:
+                return getString(R.string.conflict_advice_privacy);
+            case UI_INJECTION:
+            default:
+                return getString(R.string.conflict_advice_ui);
+        }
+    }
+
     private void showLogViewer() {
         PersistentLogStore.LogSnapshot snapshot = PersistentLogStore.load(this);
         DateFormat dateFormat = DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.MEDIUM);
@@ -901,5 +1241,11 @@ public final class ConfigDialogActivity extends AppCompatActivity {
         if (clipboard != null) {
             clipboard.setPrimaryClip(ClipData.newPlainText("GramSieve Logs", sb.toString()));
         }
+    }
+
+    @Override
+    protected void onDestroy() {
+        conflictScanExecutor.shutdownNow();
+        super.onDestroy();
     }
 }
