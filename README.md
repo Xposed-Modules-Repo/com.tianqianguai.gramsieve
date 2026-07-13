@@ -19,6 +19,7 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **多版本编辑历史** — 编辑历史按版本保存，并会从 Telegram 本地历史同步写入中补齐离线期间发生的编辑
 - **编辑历史媒体查看** — 点击消息弹窗可查看编辑前内容，原始图片优先使用 Telegram 官方 PhotoViewer 并支持官方保存入口
 - **持久化诊断日志** — 运行日志写入 app-specific 外部目录，避免依赖容易溢出的 logcat 缓冲区
+- **模块冲突检测** — 识别常见 Telegram 增强模块；获得 root 授权后仅以只读方式核对 LSPosed 模块开关和 Telegram 作用域，再按防撤回、下载加速、Secret Media、去广告、Stories 和 UI 注入等重叠能力给出分级风险提示
 - **双语界面** — 英文和简体中文，支持跟随系统
 
 - **Local-only filtering** — all filtering happens on-device; no network requests, no data leaves your phone
@@ -34,6 +35,7 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **Multi-version edit history** — stores edit history by version and recovers edits that arrive through Telegram local history-sync writes while the device was offline
 - **Edit-history media viewer** — open original pre-edit content from the message popup; original images prefer Telegram's official PhotoViewer and official save flow
 - **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
+- **Module conflict detection** — detects common Telegram enhancement modules; after root authorization, it uses read-only LSPosed database queries to confirm module switches and Telegram scope before reporting potential overlap across anti-recall, download acceleration, Secret Media, ad blocking, Stories, and UI injection
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
 
 ## 规则写法 How Rules Work

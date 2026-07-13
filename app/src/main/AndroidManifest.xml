@@ -2,6 +2,16 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <queries>
+        <package android:name="com.aoya.telegami" />
+        <package android:name="com.my.televip" />
+        <package android:name="com.shatyuka.killergram" />
+        <package android:name="nep.timeline.re_telegram" />
+        <package android:name="Telegram.Speed.Hook" />
+        <package android:name="ru.mike.telegramtweaks" />
+        <package android:name="ru.mike.sidestories" />
+    </queries>
+
     <application
         android:name=".GramSieveApplication"
         android:allowBackup="true"

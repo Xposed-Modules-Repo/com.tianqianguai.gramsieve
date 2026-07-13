@@ -19,3 +19,8 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Invoked from a root app_process helper for LSPosed database read-only queries.
+-keep class com.tianqianguai.gramsieve.config.LSPosedModuleStateReader {
+    public static void main(java.lang.String[]);
+}
