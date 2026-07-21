@@ -754,6 +754,13 @@ public final class RecallDetector {
         }
     }
 
+    void cacheBackgroundMessages(long dialogId, List<?> messages) {
+        if (messages == null || messages.isEmpty() || !loader.isChatEnabled(dialogId)) {
+            return;
+        }
+        cacheLoadedMessages(dialogId, new ArrayList<>(messages));
+    }
+
     private static void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
         module.hook(method)
                 .setPriority(XposedInterface.PRIORITY_LOWEST)
