@@ -76,6 +76,7 @@ final class TelegramHookInstaller {
     private MessageCache messageCache;
     private MediaCache mediaCache;
     private MediaPrefetcher mediaPrefetcher;
+    private ReliableVideoDownloadManager reliableVideoDownloads;
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
     private AntiRecallConfigStore antiRecallConfigStore;
@@ -134,6 +135,7 @@ final class TelegramHookInstaller {
         logTelegramVersion(classLoader, applicationInfo);
         hookPushNotificationTriggers(classLoader);
         hookTaggedViewMeasure();
+        hookReliableVideoDownloads(classLoader);
         hookChatMessageCell(classLoader);
         hookRecyclerViewBinding(classLoader);
         hookChatActivityAdapter(classLoader);
@@ -234,13 +236,12 @@ final class TelegramHookInstaller {
         mediaCache = new MediaCache(context);
         mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
-        if (classLoader != null) {
-            backgroundMessageLoader.setTelegramClassLoader(classLoader);
-            mediaPrefetcher.setTelegramClassLoader(classLoader);
-        }
         recallDetector = new RecallDetector(messageCache, backgroundMessageLoader, mediaPrefetcher);
+        backgroundMessageLoader.setLoadedMessagesConsumer(recallDetector::cacheBackgroundMessages);
         if (classLoader != null) {
+            mediaPrefetcher.setTelegramClassLoader(classLoader);
             recallDetector.install(classLoader, module);
+            backgroundMessageLoader.setTelegramClassLoader(classLoader);
         }
         info("Anti-recall components initialized");
     }
@@ -432,6 +433,82 @@ final class TelegramHookInstaller {
             }
         } catch (Throwable throwable) {
             error("Failed to hook ChatMessageCell", throwable);
+        }
+    }
+
+    private void hookReliableVideoDownloads(ClassLoader classLoader) {
+        reliableVideoDownloads = new ReliableVideoDownloadManager();
+        reliableVideoDownloads.setClassLoader(classLoader);
+        hookReliableDownloadButton(classLoader);
+        hookReliableDownloadTransport(classLoader);
+        hookReliableDownloadNotifications(classLoader);
+    }
+
+    private void hookReliableDownloadButton(ClassLoader classLoader) {
+        try {
+            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
+            Method method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
+            deoptimize(method, "ChatMessageCell.didPressButton(boolean, boolean)");
+            hook(method, chain -> {
+                reliableVideoDownloads.onUserButton(chain.getThisObject());
+                return chain.proceed();
+            });
+            info("ReliableDownload: hooked ChatMessageCell.didPressButton");
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook user download button", throwable);
+        }
+    }
+
+    private void hookReliableDownloadTransport(ClassLoader classLoader) {
+        try {
+            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            boolean hooked = false;
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (!"loadFile".equals(method.getName()) || parameters.length != 4
+                        || parameters[2] != int.class || parameters[3] != int.class) {
+                    continue;
+                }
+                hook(method, chain -> {
+                    reliableVideoDownloads.onLoadFile(
+                            chain.getThisObject(), chain.getArgs().toArray(new Object[0]));
+                    return chain.proceed();
+                });
+                hooked = true;
+            }
+            if (!hooked) {
+                throw new NoSuchMethodException("FileLoader.loadFile(Document,Object,int,int)");
+            }
+            info("ReliableDownload: hooked FileLoader video download transport");
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader", throwable);
+        }
+    }
+
+    private void hookReliableDownloadNotifications(ClassLoader classLoader) {
+        try {
+            Class<?> notificationClass = classLoader.loadClass("org.telegram.messenger.NotificationCenter");
+            int progressId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadProgressChanged"), -1);
+            int loadedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoaded"), -1);
+            int failedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadFailed"), -1);
+            Method method = Reflect.method(notificationClass, "postNotificationName", int.class, Object[].class);
+            hook(method, chain -> {
+                Object result = chain.proceed();
+                java.util.List<Object> hookArgs = chain.getArgs();
+                if (hookArgs != null && hookArgs.size() >= 2 && hookArgs.get(1) instanceof Object[]) {
+                    reliableVideoDownloads.onNotification(
+                            chain.getThisObject(),
+                            Reflect.asInt(hookArgs.get(0), -1),
+                            (Object[]) hookArgs.get(1),
+                            progressId, loadedId, failedId
+                    );
+                }
+                return result;
+            });
+            info("ReliableDownload: hooked progress notifications ids="
+                    + progressId + "/" + loadedId + "/" + failedId);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook progress notifications", throwable);
         }
     }
 
