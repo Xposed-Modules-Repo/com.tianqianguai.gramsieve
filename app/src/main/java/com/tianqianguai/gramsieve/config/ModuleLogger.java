@@ -29,6 +29,7 @@ public final class ModuleLogger {
     private static final String LOG_DIR = "GramSieve";
     private static final String LOG_FILE = "gramsieve.log";
     private static final int MAX_PENDING_FILE_LINES = 200;
+    private static final long MAX_LOG_FILE_BYTES = 8L * 1024L * 1024L;
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
 
     private static volatile Context appContext;
@@ -150,6 +151,9 @@ public final class ModuleLogger {
                 logWarn("Persistent log directory unavailable: " + parent.getAbsolutePath());
                 return;
             }
+            if (file.exists() && file.length() >= MAX_LOG_FILE_BYTES && !rotateOversizedLogFile(file)) {
+                logWarn("Persistent log rotation failed: " + path);
+            }
             if (!file.exists() && !file.createNewFile()) {
                 logWarn("Persistent log file unavailable: " + path);
                 return;
@@ -164,6 +168,20 @@ public final class ModuleLogger {
         } catch (IOException | RuntimeException exception) {
             logWarn("Persistent log unavailable at " + candidate.getAbsolutePath() + ": " + exception.getMessage());
         }
+    }
+
+    private static boolean rotateOversizedLogFile(File file) {
+        File parent = file.getParentFile();
+        if (parent == null) {
+            return false;
+        }
+        String archiveName = file.getName() + "." + System.currentTimeMillis() + ".archive";
+        File archive = new File(parent, archiveName);
+        int suffix = 1;
+        while (archive.exists()) {
+            archive = new File(parent, archiveName + "." + suffix++);
+        }
+        return file.renameTo(archive);
     }
 
     private static String formatLine(String level, String category, String tag, String message, String throwableStr) {

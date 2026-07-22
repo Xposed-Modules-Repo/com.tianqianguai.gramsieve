@@ -72,7 +72,7 @@ public final class RecallDetector {
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to hook NotificationCenter deletion", throwable);
         }
-        ModuleLogger.hook(TAG, "RecallDetector: hooks installation complete");
+        ModuleLogger.hook(TAG, "RecallDetector: hooks installation complete; routine update tracing suppressed");
     }
 
     private void hookMethods(Class<?> messagesControllerClass, XposedModule module, ClassLoader classLoader) {
@@ -108,10 +108,6 @@ public final class RecallDetector {
         ModuleLogger.hook(TAG, "RecallDetector: scanning MessagesStorage methods...");
         for (java.lang.reflect.Method m : messagesStorageClass.getDeclaredMethods()) {
             String name = m.getName();
-            // Log all methods that might be related to storing messages
-            if (name.contains("put") || name.contains("message") || name.contains("Message") || name.contains("save") || name.contains("Save") || name.contains("replace")) {
-                ModuleLogger.hook(TAG, "RecallDetector: storage method: " + name + " params=" + m.getParameterCount());
-            }
             // Hook methods that store or update messages
             if (name.equals("putMessages") || name.equals("putMessagesInternal")
                     || name.equals("replaceMessageIfExists")) {
@@ -503,9 +499,6 @@ public final class RecallDetector {
                 // Skip individual message errors
             }
         }
-        if (cached > 0) {
-            ModuleLogger.hook(TAG, "RecallDetector: cached " + cached + " messages from storage");
-        }
     }
 
     private void hookSingleMethod(XposedModule module, java.lang.reflect.Method method, String methodName) {
@@ -749,9 +742,6 @@ public final class RecallDetector {
                 // Skip individual message errors
             }
         }
-        if (cached > 0) {
-            ModuleLogger.hook(TAG, "RecallDetector: cached " + cached + " loaded messages for dialogId=" + dialogId);
-        }
     }
 
     void cacheBackgroundMessages(long dialogId, List<?> messages) {
@@ -776,7 +766,6 @@ public final class RecallDetector {
                 Object result = chain.proceed();
                 try {
                     ArrayList<?> updates = (ArrayList<?>) chain.getArg(0);
-                    ModuleLogger.hook(TAG, "RecallDetector: processUpdateArray called with " + updates.size() + " updates");
                     processUpdates(updates);
                 } catch (Throwable throwable) {
                     ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "processUpdates failed", throwable);
@@ -839,7 +828,6 @@ public final class RecallDetector {
         if (messageCache == null || loader == null || updates == null) {
             return;
         }
-        ModuleLogger.hook(TAG, "RecallDetector: processUpdates count=" + updates.size());
         for (Object update : updates) {
             try {
                 if (update == null) continue;
@@ -847,7 +835,6 @@ public final class RecallDetector {
                 String className = update.getClass().getSimpleName();
 
                 Object message = Reflect.field(update, "message");
-                ModuleLogger.hook(TAG, "RecallDetector: class=" + className + " hasMessage=" + (message != null));
                 if (message != null) {
                     if (className.contains("Edit")) {
                         // This is an edit update — but Telegram also sends TL_updateEditChannelMessage
@@ -915,7 +902,6 @@ public final class RecallDetector {
             }
 
             boolean enabled = loader.isChatEnabled(dialogId);
-            ModuleLogger.hook(TAG, "processMessageFromUpdate: msgId=" + msgId + " dialogId=" + dialogId + " enabled=" + enabled);
             if (!enabled) {
                 return;
             }
@@ -978,7 +964,6 @@ public final class RecallDetector {
         try {
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
             if (msgId == 0) {
-                ModuleLogger.hook(TAG, "isRealEdit: msgId=0");
                 return false;
             }
 
@@ -993,13 +978,11 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
             if (dialogId == 0L) {
-                ModuleLogger.hook(TAG, "isRealEdit: dialogId=0");
                 return false;
             }
 
             MessageCache.CachedMessage cached = messageCache.get(dialogId, msgId);
             if (cached == null || cached.text == null) {
-                ModuleLogger.hook(TAG, "isRealEdit: no cache msgId=" + msgId + " dialogId=" + dialogId);
                 return true;
             }
 
@@ -1042,9 +1025,7 @@ public final class RecallDetector {
                     + (newMediaType != null ? newMediaType : "") + "|"
                     + (newMediaId != null ? newMediaId : "");
 
-            boolean same = cachedFingerprint.equals(newFingerprint);
-            ModuleLogger.hook(TAG, "isRealEdit: msgId=" + msgId + " same=" + same);
-            return !same;
+            return !cachedFingerprint.equals(newFingerprint);
         } catch (Throwable t) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "isRealEdit failed", t);
             return false;

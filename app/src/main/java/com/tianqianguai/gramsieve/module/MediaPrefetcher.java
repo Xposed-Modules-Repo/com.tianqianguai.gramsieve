@@ -28,19 +28,24 @@ public final class MediaPrefetcher {
 
     private final MessageCache messageCache;
     private final MediaCache mediaCache;
+    private final DownloadCancellationRegistry cancellationRegistry;
     private final ScheduledExecutorService scheduler;
     private final Set<String> pendingKeys;
+    private final Set<String> loggedCancelledKeys;
     private volatile ClassLoader telegramClassLoader;
 
-    public MediaPrefetcher(MessageCache messageCache, MediaCache mediaCache) {
+    public MediaPrefetcher(MessageCache messageCache, MediaCache mediaCache,
+                           DownloadCancellationRegistry cancellationRegistry) {
         this.messageCache = messageCache;
         this.mediaCache = mediaCache;
+        this.cancellationRegistry = cancellationRegistry;
         this.scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread thread = new Thread(r, "GramSieve-MediaPrefetcher");
             thread.setDaemon(true);
             return thread;
         });
         this.pendingKeys = ConcurrentHashMap.newKeySet();
+        this.loggedCancelledKeys = ConcurrentHashMap.newKeySet();
     }
 
     public void setTelegramClassLoader(ClassLoader telegramClassLoader) {
@@ -58,12 +63,24 @@ public final class MediaPrefetcher {
             return;
         }
 
+        int account = resolveAccount(messageLike, messageOwner);
+        String cancellationKey = cancellationRegistry.keyFor(account, telegramClassLoader, target.fileObject);
+        if ("video".equals(target.kind) && cancellationRegistry.isCancelled(cancellationKey)) {
+            if (loggedCancelledKeys.add(cancellationKey)) {
+                ModuleLogger.hook(TAG, "skipped video prefetch after explicit user cancel dialogId="
+                        + dialogId + " msgId=" + messageId + " key=" + cancellationKey);
+            }
+            return;
+        }
+        if (cancellationKey != null) {
+            loggedCancelledKeys.remove(cancellationKey);
+        }
+
         String key = dialogId + ":" + messageId + ":" + target.extension;
         if (cacheAlreadyPresent(dialogId, messageId, target)) {
             return;
         }
 
-        int account = resolveAccount(messageLike, messageOwner);
         Object parentObject = createParentObject(account, messageLike, messageOwner);
         PendingMedia pending = new PendingMedia(key, dialogId, messageId,
                 account, messageOwner, parentObject, target);
@@ -80,8 +97,6 @@ public final class MediaPrefetcher {
                 pendingKeys.remove(key);
                 return;
             }
-            ModuleLogger.hook(TAG, "requested Telegram media download dialogId=" + dialogId
-                    + " msgId=" + messageId + " kind=" + target.kind + " account=" + account);
             schedulePoll(pending, 1);
         } catch (Throwable t) {
             pendingKeys.remove(key);
@@ -108,8 +123,6 @@ public final class MediaPrefetcher {
                 }
                 if (attempt >= MAX_POLL_ATTEMPTS) {
                     pendingKeys.remove(pending.key);
-                    ModuleLogger.hook(TAG, "Telegram media download not ready after polling dialogId="
-                            + pending.dialogId + " msgId=" + pending.messageId);
                     return;
                 }
                 schedulePoll(pending, attempt + 1);
