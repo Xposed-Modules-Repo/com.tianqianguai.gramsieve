@@ -76,6 +76,8 @@ final class TelegramHookInstaller {
     private MessageCache messageCache;
     private MediaCache mediaCache;
     private MediaPrefetcher mediaPrefetcher;
+    private final DownloadCancellationRegistry downloadCancellationRegistry =
+            new DownloadCancellationRegistry();
     private ReliableVideoDownloadManager reliableVideoDownloads;
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
@@ -234,7 +236,7 @@ final class TelegramHookInstaller {
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
         messageCache = new MessageCache(new SerializedMessageStore(databaseHelper));
         mediaCache = new MediaCache(context);
-        mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache);
+        mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache, downloadCancellationRegistry);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
         recallDetector = new RecallDetector(messageCache, backgroundMessageLoader, mediaPrefetcher);
         backgroundMessageLoader.setLoadedMessagesConsumer(recallDetector::cacheBackgroundMessages);
@@ -437,9 +439,10 @@ final class TelegramHookInstaller {
     }
 
     private void hookReliableVideoDownloads(ClassLoader classLoader) {
-        reliableVideoDownloads = new ReliableVideoDownloadManager();
+        reliableVideoDownloads = new ReliableVideoDownloadManager(downloadCancellationRegistry);
         reliableVideoDownloads.setClassLoader(classLoader);
         hookReliableDownloadButton(classLoader);
+        hookReliableDownloadMiniButton(classLoader);
         hookReliableDownloadTransport(classLoader);
         hookReliableDownloadNotifications(classLoader);
     }
@@ -450,12 +453,35 @@ final class TelegramHookInstaller {
             Method method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
             deoptimize(method, "ChatMessageCell.didPressButton(boolean, boolean)");
             hook(method, chain -> {
-                reliableVideoDownloads.onUserButton(chain.getThisObject());
-                return chain.proceed();
+                Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
+                reliableVideoDownloads.onUserButton(chain.getThisObject(), buttonArgs);
+                Object result = chain.proceed();
+                reliableVideoDownloads.onUserButtonComplete(chain.getThisObject(), buttonArgs);
+                return result;
             });
             info("ReliableDownload: hooked ChatMessageCell.didPressButton");
         } catch (Throwable throwable) {
             error("ReliableDownload: failed to hook user download button", throwable);
+        }
+    }
+
+    private void hookReliableDownloadMiniButton(ClassLoader classLoader) {
+        try {
+            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
+            Method method = Reflect.method(cellClass, "didPressMiniButton", boolean.class);
+            deoptimize(method, "ChatMessageCell.didPressMiniButton(boolean)");
+            hook(method, chain -> {
+                Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
+                if (reliableVideoDownloads.onUserMiniButton(chain.getThisObject(), buttonArgs)) {
+                    return null;
+                }
+                Object result = chain.proceed();
+                reliableVideoDownloads.onUserMiniButtonComplete(chain.getThisObject(), buttonArgs);
+                return result;
+            });
+            info("ReliableDownload: hooked ChatMessageCell.didPressMiniButton");
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook user mini download button", throwable);
         }
     }
 
@@ -466,12 +492,16 @@ final class TelegramHookInstaller {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
                 if (!"loadFile".equals(method.getName()) || parameters.length != 4
-                        || parameters[2] != int.class || parameters[3] != int.class) {
+                        || parameters[2] != int.class || parameters[3] != int.class
+                        || method.getReturnType() != void.class) {
                     continue;
                 }
+                deoptimize(method, "FileLoader.loadFile(Document, Object, int, int)");
                 hook(method, chain -> {
-                    reliableVideoDownloads.onLoadFile(
-                            chain.getThisObject(), chain.getArgs().toArray(new Object[0]));
+                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
+                    if (!reliableVideoDownloads.onLoadFile(chain.getThisObject(), loadArgs)) {
+                        return null;
+                    }
                     return chain.proceed();
                 });
                 hooked = true;
@@ -480,8 +510,39 @@ final class TelegramHookInstaller {
                 throw new NoSuchMethodException("FileLoader.loadFile(Document,Object,int,int)");
             }
             info("ReliableDownload: hooked FileLoader video download transport");
+            hookReliableDownloadStreamTransport(fileLoaderClass);
         } catch (Throwable throwable) {
             error("ReliableDownload: failed to hook FileLoader", throwable);
+        }
+    }
+
+    private void hookReliableDownloadStreamTransport(Class<?> fileLoaderClass) {
+        int hooked = 0;
+        try {
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (!"loadStreamFile".equals(method.getName()) || parameters.length < 4
+                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[1].getName())) {
+                    continue;
+                }
+                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                hook(method, chain -> {
+                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
+                    if (!reliableVideoDownloads.onLoadStreamFile(chain.getThisObject(), loadArgs)) {
+                        // AnimatedFileDrawableStream and FileStreamLoadOperation accept a null
+                        // operation here and stop waiting for the canceled stream.
+                        return null;
+                    }
+                    return chain.proceed();
+                });
+                hooked++;
+            }
+            if (hooked == 0) {
+                throw new NoSuchMethodException("FileLoader.loadStreamFile(...,Document,...)");
+            }
+            info("ReliableDownload: hooked FileLoader stream transport overloads=" + hooked);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader stream transport", throwable);
         }
     }
 

@@ -196,7 +196,6 @@ public final class BackgroundMessageLoader {
             if (enabledChats.isEmpty()) {
                 return;
             }
-            info("BackgroundMessageLoader: isolated history load for " + enabledChats.size() + " chats");
             for (long dialogId : enabledChats) {
                 try {
                     requestHistoryForChat(dialogId);
@@ -270,9 +269,6 @@ public final class BackgroundMessageLoader {
         }
 
         pending.setRequestId(requestId);
-        info("BackgroundMessageLoader: isolated getHistory requested dialog=" + dialogId
-                + " peer=" + peerType + " requestId=" + requestId
-                + " limit=" + DEFAULT_HISTORY_LOAD_COUNT);
     }
 
     private Object handleDelegateInvocation(Object proxy, Method method, Object[] args,
@@ -296,7 +292,6 @@ public final class BackgroundMessageLoader {
         pending.finished = true;
         pendingRequests.remove(dialogId, pending);
         if (pending.cancelled) {
-            info("BackgroundMessageLoader: ignored cancelled getHistory response dialog=" + dialogId);
             return null;
         }
         Object response = args != null && args.length > 0 ? args[0] : null;
@@ -324,10 +319,6 @@ public final class BackgroundMessageLoader {
         }
         failureBackoffs.remove(dialogId);
 
-        LoadedRange range = inspectLoadedRange(messages);
-        info("BackgroundMessageLoader: isolated getHistory completed dialog=" + dialogId
-                + " count=" + range.count + " minId=" + range.minId + " maxId=" + range.maxId
-                + " minDate=" + range.minDate + " maxDate=" + range.maxDate);
         LoadedMessagesConsumer consumer = loadedMessagesConsumer;
         if (consumer == null) {
             info("BackgroundMessageLoader: loaded messages consumer unavailable for dialog " + dialogId);
@@ -445,7 +436,6 @@ public final class BackgroundMessageLoader {
         if (!isChatEnabled(dialogId)) {
             return;
         }
-        info("BackgroundMessageLoader: onMessageReceived dialogId=" + dialogId + " msgId=" + messageId);
         messageCache.put(dialogId, messageId, text, caption, senderId);
     }
 

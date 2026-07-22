@@ -3,6 +3,7 @@ package com.tianqianguai.gramsieve.module;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import java.lang.reflect.Method;
+import java.util.Arrays;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -19,7 +20,8 @@ final class ReliableVideoDownloadManager {
 
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     private final Set<String> userStarted = ConcurrentHashMap.newKeySet();
-    private final Set<String> explicitlyCancelled = ConcurrentHashMap.newKeySet();
+    private final Set<String> loggedCancelledTransport = ConcurrentHashMap.newKeySet();
+    private final DownloadCancellationRegistry cancellationRegistry;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "GramSieve-ReliableDownload");
         thread.setDaemon(true);
@@ -27,7 +29,8 @@ final class ReliableVideoDownloadManager {
     });
     private volatile ClassLoader classLoader;
 
-    ReliableVideoDownloadManager() {
+    ReliableVideoDownloadManager(DownloadCancellationRegistry cancellationRegistry) {
+        this.cancellationRegistry = cancellationRegistry;
         scheduler.scheduleWithFixedDelay(this::scanForStalls,
                 WATCHDOG_INTERVAL_MS, WATCHDOG_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
@@ -36,7 +39,42 @@ final class ReliableVideoDownloadManager {
         this.classLoader = classLoader;
     }
 
-    void onUserButton(Object cell) {
+    void onUserButton(Object cell, Object[] buttonArgs) {
+        Object message = Reflect.field(cell, "currentMessageObject");
+        if (!isVideo(message)) {
+            return;
+        }
+        Object document = documentOf(message, Reflect.field(cell, "documentAttach"));
+        int account = Reflect.asInt(Reflect.field(cell, "currentAccount"), 0);
+        String key = key(account, document);
+        int state = Reflect.asInt(Reflect.field(cell, "buttonState"), -1);
+        if (key == null) {
+            ModuleLogger.hook(TAG, "button ignored reason=missing-key state=" + state
+                    + " account=" + account + " message=" + typeOf(message)
+                    + " attachment=" + typeOf(document) + " args=" + Arrays.toString(buttonArgs));
+            return;
+        }
+        boolean hadJob = jobs.containsKey(key);
+        boolean pendingStart = userStarted.contains(key);
+        boolean cancelled = cancellationRegistry.isCancelled(key);
+        ModuleLogger.hook(TAG, "button before state=" + state + " "
+                + targetDescription(account, key, document) + " hadJob=" + hadJob
+                + " pendingStart=" + pendingStart + " cancelled=" + cancelled
+                + " args=" + Arrays.toString(buttonArgs));
+        if (isExplicitCancelState(state)) {
+            hadJob = markExplicitCancel(key);
+            ModuleLogger.hook(TAG, "button explicit-cancel state=" + state + " "
+                    + targetDescription(account, key, document) + " hadJob=" + hadJob);
+        } else if (state == 0) {
+            markExplicitStart(key);
+            ModuleLogger.hook(TAG, "button explicit-start " + targetDescription(account, key, document));
+        } else {
+            ModuleLogger.hook(TAG, "button ignored reason=non-cancel-state state=" + state + " "
+                    + targetDescription(account, key, document));
+        }
+    }
+
+    void onUserButtonComplete(Object cell, Object[] buttonArgs) {
         Object message = Reflect.field(cell, "currentMessageObject");
         if (!isVideo(message)) {
             return;
@@ -48,42 +86,131 @@ final class ReliableVideoDownloadManager {
             return;
         }
         int state = Reflect.asInt(Reflect.field(cell, "buttonState"), -1);
-        if (state == 1) {
-            userStarted.remove(key);
-            explicitlyCancelled.add(key);
-            Job job = jobs.remove(key);
-            if (job != null) {
-                job.state.cancel();
-            }
-            ModuleLogger.hook(TAG, "explicit cancel account=" + account + " file=" + fileName(document));
-        } else if (state == 0) {
-            explicitlyCancelled.remove(key);
-            userStarted.add(key);
-            ModuleLogger.hook(TAG, "explicit start account=" + account + " file=" + fileName(document));
-        }
+        ModuleLogger.hook(TAG, "button after state=" + state + " "
+                + targetDescription(account, key, document) + " tracked=" + jobs.containsKey(key)
+                + " pendingStart=" + userStarted.contains(key)
+                + " cancelled=" + cancellationRegistry.isCancelled(key)
+                + " args=" + Arrays.toString(buttonArgs));
     }
 
-    void onLoadFile(Object fileLoader, Object[] args) {
-        if (args == null || args.length != 4 || !isVideoDocument(args[0])) {
+    /** @return true when the native mini-button action must not be allowed to restart a canceled stream. */
+    boolean onUserMiniButton(Object cell, Object[] buttonArgs) {
+        Object message = Reflect.field(cell, "currentMessageObject");
+        if (!isVideo(message)) {
+            return false;
+        }
+        Object document = documentOf(message, Reflect.field(cell, "documentAttach"));
+        int account = Reflect.asInt(Reflect.field(cell, "currentAccount"), 0);
+        String key = key(account, document);
+        int miniState = Reflect.asInt(Reflect.field(cell, "miniButtonState"), -1);
+        int buttonState = Reflect.asInt(Reflect.field(cell, "buttonState"), -1);
+        if (key == null) {
+            ModuleLogger.hook(TAG, "mini ignored reason=missing-key miniState=" + miniState
+                    + " mainState=" + buttonState + " account=" + account
+                    + " message=" + typeOf(message) + " attachment=" + typeOf(document)
+                    + " args=" + Arrays.toString(buttonArgs));
+            return false;
+        }
+        boolean hadJob = jobs.containsKey(key);
+        boolean pendingStart = userStarted.contains(key);
+        boolean cancelled = cancellationRegistry.isCancelled(key);
+        ModuleLogger.hook(TAG, "mini before state=" + miniState + " mainState=" + buttonState + " "
+                + targetDescription(account, key, document) + " hadJob=" + hadJob
+                + " pendingStart=" + pendingStart + " cancelled=" + cancelled
+                + " args=" + Arrays.toString(buttonArgs));
+        if (isExplicitMiniCancelState(miniState)) {
+            hadJob = markExplicitCancel(key);
+            ModuleLogger.hook(TAG, "mini explicit-cancel state=" + miniState + " mainState=" + buttonState
+                    + " " + targetDescription(account, key, document) + " hadJob=" + hadJob);
+        } else if (miniState == 0) {
+            if (cancellationRegistry.isCancelled(key)) {
+                ModuleLogger.hook(TAG, "mini start blocked after explicit-cancel; requires primary download "
+                        + targetDescription(account, key, document));
+                return true;
+            }
+            markExplicitStart(key);
+            ModuleLogger.hook(TAG, "mini explicit-start " + targetDescription(account, key, document));
+        } else {
+            ModuleLogger.hook(TAG, "mini ignored reason=non-download-state state=" + miniState
+                    + " mainState=" + buttonState + " "
+                    + targetDescription(account, key, document));
+        }
+        return false;
+    }
+
+    void onUserMiniButtonComplete(Object cell, Object[] buttonArgs) {
+        Object message = Reflect.field(cell, "currentMessageObject");
+        if (!isVideo(message)) {
             return;
         }
-        Object message = args[1];
-        int account = resolveAccount(message, fileLoader);
-        String key = key(account, args[0]);
-        if (key == null || explicitlyCancelled.contains(key)) {
+        Object document = documentOf(message, Reflect.field(cell, "documentAttach"));
+        int account = Reflect.asInt(Reflect.field(cell, "currentAccount"), 0);
+        String key = key(account, document);
+        if (key == null) {
             return;
+        }
+        int miniState = Reflect.asInt(Reflect.field(cell, "miniButtonState"), -1);
+        int buttonState = Reflect.asInt(Reflect.field(cell, "buttonState"), -1);
+        ModuleLogger.hook(TAG, "mini after state=" + miniState + " mainState=" + buttonState + " "
+                + targetDescription(account, key, document) + " tracked=" + jobs.containsKey(key)
+                + " pendingStart=" + userStarted.contains(key)
+                + " cancelled=" + cancellationRegistry.isCancelled(key)
+                + " args=" + Arrays.toString(buttonArgs));
+    }
+
+    boolean onLoadFile(Object fileLoader, Object[] args) {
+        if (args == null || args.length != 4) {
+            return true;
+        }
+        return onDocumentTransport(fileLoader, args[0], args[1], args, "download", true);
+    }
+
+    boolean onLoadStreamFile(Object fileLoader, Object[] args) {
+        if (args == null || args.length < 4) {
+            return true;
+        }
+        // FileLoader.loadStreamFile(stream, document, imageLocation, parent, ...) is used
+        // after the user opens a video for playback. It can be re-entered repeatedly by the
+        // player after a cancellation, so it must honor the same explicit-cancel registry.
+        return onDocumentTransport(fileLoader, args[1], args[3], null, "stream", false);
+    }
+
+    private boolean onDocumentTransport(Object fileLoader, Object document, Object message,
+                                        Object[] restartArgs, String route, boolean trackUserStart) {
+        if (!isVideoDocument(document)) {
+            return true;
+        }
+        int account = resolveAccount(message, fileLoader);
+        String key = key(account, document);
+        if (key == null) {
+            ModuleLogger.hook(TAG, "transport observed reason=missing-key route=" + route
+                    + " account=" + account + " attachment=" + typeOf(document));
+            return true;
+        }
+        if (cancellationRegistry.isCancelled(key)) {
+            if (loggedCancelledTransport.add(key)) {
+                ModuleLogger.hook(TAG, "transport suppressed after explicit-cancel "
+                        + "route=" + route + " " + targetDescription(account, key, document)
+                        + " thread=" + Thread.currentThread().getName());
+            }
+            return false;
+        }
+        if (!trackUserStart) {
+            return true;
         }
         Job existing = jobs.get(key);
         if (existing != null) {
-            existing.update(fileLoader, args);
-            return;
+            existing.update(fileLoader, restartArgs);
+            return true;
         }
         if (!userStarted.remove(key)) {
-            return;
+            return true;
         }
-        Job job = new Job(key, account, fileLoader, args.clone());
+        Job job = new Job(key, account, fileLoader, restartArgs.clone());
         jobs.put(key, job);
-        ModuleLogger.hook(TAG, "guarding account=" + account + " file=" + fileName(args[0]));
+        ModuleLogger.hook(TAG, "guarding route=" + route + " "
+                + targetDescription(account, key, document));
+        return true;
     }
 
     void onNotification(Object notificationCenter, int id, Object[] args,
@@ -105,8 +232,13 @@ final class ReliableVideoDownloadManager {
             }
         } else if (id == loadedId) {
             complete(job, "completed");
-        } else if (id == failedId && !explicitlyCancelled.contains(key)) {
-            scheduleRestart(job, "interrupted");
+        } else if (id == failedId) {
+            if (cancellationRegistry.isCancelled(key)) {
+                ModuleLogger.hook(TAG, "failure notification ignored after explicit-cancel "
+                        + targetDescription(account, key, job.args[0]));
+            } else {
+                scheduleRestart(job, "interrupted");
+            }
         }
     }
 
@@ -122,7 +254,12 @@ final class ReliableVideoDownloadManager {
 
     private void scheduleRestart(Job job, String reason) {
         synchronized (job) {
-            if (job.recovering || explicitlyCancelled.contains(job.key)) {
+            if (job.recovering) {
+                return;
+            }
+            if (cancellationRegistry.isCancelled(job.key)) {
+                ModuleLogger.hook(TAG, "recovery skipped after explicit-cancel "
+                        + targetDescription(job.account, job.key, job.args[0]));
                 return;
             }
             job.recovering = true;
@@ -136,8 +273,13 @@ final class ReliableVideoDownloadManager {
     }
 
     private void restart(Job job, long generation) {
-        if (!job.state.isCurrent(generation) || explicitlyCancelled.contains(job.key)
-                || jobs.get(job.key) != job) {
+        if (cancellationRegistry.isCancelled(job.key)) {
+            ModuleLogger.hook(TAG, "restart dropped after explicit-cancel "
+                    + targetDescription(job.account, job.key, job.args[0])
+                    + " generation=" + generation);
+            return;
+        }
+        if (!job.state.isCurrent(generation) || jobs.get(job.key) != job) {
             return;
         }
         try {
@@ -149,7 +291,7 @@ final class ReliableVideoDownloadManager {
             method.invoke(job.fileLoader, job.args);
             job.state.markAttempt(generation, System.currentTimeMillis());
             job.recovering = false;
-            ModuleLogger.hook(TAG, "restarted account=" + job.account + " file=" + fileName(job.args[0]));
+            ModuleLogger.hook(TAG, "restarted " + targetDescription(job.account, job.key, job.args[0]));
         } catch (Throwable t) {
             job.recovering = false;
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG, "restart failed: " + t.getMessage());
@@ -168,6 +310,12 @@ final class ReliableVideoDownloadManager {
             if (method != null) {
                 method.setAccessible(true);
                 method.invoke(job.fileLoader, args);
+                ModuleLogger.hook(TAG, "native cancel invoked "
+                        + targetDescription(job.account, job.key, job.args[0])
+                        + " overloadArgs=" + args.length);
+            } else {
+                ModuleLogger.hook(TAG, "native cancel unavailable "
+                        + targetDescription(job.account, job.key, job.args[0]));
             }
         } catch (Throwable t) {
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG, "stuck operation cancel failed: " + t.getMessage());
@@ -177,9 +325,28 @@ final class ReliableVideoDownloadManager {
     private void complete(Job job, String reason) {
         if (jobs.remove(job.key, job)) {
             job.state.cancel();
-            explicitlyCancelled.remove(job.key);
-            ModuleLogger.hook(TAG, reason + " account=" + job.account + " file=" + fileName(job.args[0]));
+            cancellationRegistry.allow(job.key);
+            loggedCancelledTransport.remove(job.key);
+            ModuleLogger.hook(TAG, reason + " "
+                    + targetDescription(job.account, job.key, job.args[0]));
         }
+    }
+
+    private boolean markExplicitCancel(String key) {
+        userStarted.remove(key);
+        cancellationRegistry.markCancelled(key);
+        loggedCancelledTransport.remove(key);
+        Job job = jobs.remove(key);
+        if (job != null) {
+            job.state.cancel();
+        }
+        return job != null;
+    }
+
+    private void markExplicitStart(String key) {
+        cancellationRegistry.allow(key);
+        loggedCancelledTransport.remove(key);
+        userStarted.add(key);
     }
 
     private int resolveAccount(Object message, Object fileLoader) {
@@ -218,23 +385,30 @@ final class ReliableVideoDownloadManager {
     }
 
     private String key(int account, Object document) {
-        String name = fileName(document);
-        return name == null || name.isEmpty() ? null : account + ":" + name;
+        return cancellationRegistry.keyFor(account, classLoader, document);
     }
 
     private String fileName(Object document) {
-        ClassLoader loader = classLoader;
-        if (document == null || loader == null) return null;
-        try {
-            Class<?> fileLoaderClass = loader.loadClass("org.telegram.messenger.FileLoader");
-            for (Method method : fileLoaderClass.getMethods()) {
-                if ("getAttachFileName".equals(method.getName()) && method.getParameterTypes().length == 1
-                        && method.getParameterTypes()[0].isAssignableFrom(document.getClass())) {
-                    return (String) method.invoke(null, document);
-                }
-            }
-        } catch (Throwable ignored) { }
-        return null;
+        return cancellationRegistry.fileNameFor(classLoader, document);
+    }
+
+    private String targetDescription(int account, String key, Object document) {
+        return "account=" + account + " key=" + key + " file=" + fileName(document)
+                + " attachment=" + typeOf(document);
+    }
+
+    static boolean isExplicitCancelState(int state) {
+        // The primary button's states 1 and 4 reach FileLoader.cancelLoadFile in Telegram 12.9.0.
+        return state == 1 || state == 4;
+    }
+
+    static boolean isExplicitMiniCancelState(int state) {
+        // The visible X for a video with mini progress is miniButtonState == 1.
+        return state == 1;
+    }
+
+    private String typeOf(Object value) {
+        return value == null ? "null" : value.getClass().getSimpleName();
     }
 
     private Method findCompatibleMethod(Class<?> type, String name, Object[] args) {

@@ -41,4 +41,20 @@ public class ReliableDownloadStateTest {
         assertFalse(state.isCurrent(oldGeneration));
         assertTrue(state.isCurrent(newGeneration));
     }
+
+    @Test
+    public void telegramVideoCancelStatesExcludeMainImageStateThree() {
+        assertTrue(ReliableVideoDownloadManager.isExplicitCancelState(1));
+        assertTrue(ReliableVideoDownloadManager.isExplicitCancelState(4));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelState(0));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelState(2));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelState(3));
+    }
+
+    @Test
+    public void telegramVideoMiniButtonStateOneIsTheVisibleCancelAction() {
+        assertFalse(ReliableVideoDownloadManager.isExplicitMiniCancelState(0));
+        assertTrue(ReliableVideoDownloadManager.isExplicitMiniCancelState(1));
+        assertFalse(ReliableVideoDownloadManager.isExplicitMiniCancelState(2));
+    }
 }
