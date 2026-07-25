@@ -511,6 +511,9 @@ final class TelegramHookInstaller {
             }
             info("ReliableDownload: hooked FileLoader video download transport");
             hookReliableDownloadStreamTransport(fileLoaderClass);
+            hookReliableDownloadInternalTransport(fileLoaderClass);
+            hookReliableDownloadLoadingQuery(fileLoaderClass);
+            hookReliableDownloadVideoLoadingState(fileLoaderClass);
         } catch (Throwable throwable) {
             error("ReliableDownload: failed to hook FileLoader", throwable);
         }
@@ -543,6 +546,116 @@ final class TelegramHookInstaller {
             info("ReliableDownload: hooked FileLoader stream transport overloads=" + hooked);
         } catch (Throwable throwable) {
             error("ReliableDownload: failed to hook FileLoader stream transport", throwable);
+        }
+    }
+
+    private void hookReliableDownloadInternalTransport(Class<?> fileLoaderClass) {
+        int hooked = 0;
+        try {
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (!"loadFileInternal".equals(method.getName()) || parameters.length < 6
+                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName())
+                        || !"org.telegram.messenger.FileLoadOperation".equals(method.getReturnType().getName())) {
+                    continue;
+                }
+                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                hook(method, chain -> {
+                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
+                    if (!reliableVideoDownloads.onLoadFileInternal(chain.getThisObject(), loadArgs)) {
+                        // This is the FileLoader queue's operation-creation point. Returning null
+                        // also releases the stream caller's CountDownLatch without reviving the
+                        // canceled download.
+                        return null;
+                    }
+                    return chain.proceed();
+                });
+                hooked++;
+            }
+            if (hooked == 0) {
+                throw new NoSuchMethodException("FileLoader.loadFileInternal(Document,...)");
+            }
+            info("ReliableDownload: hooked FileLoader internal transport overloads=" + hooked);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader internal transport", throwable);
+        }
+    }
+
+    private void hookReliableDownloadLoadingQuery(Class<?> fileLoaderClass) {
+        int hooked = 0;
+        try {
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (!"isLoadingFile".equals(method.getName()) || parameters.length != 1
+                        || parameters[0] != String.class || method.getReturnType() != boolean.class) {
+                    continue;
+                }
+                deoptimize(method, "FileLoader.isLoadingFile(String)");
+                hook(method, chain -> {
+                    Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
+                    if (!reliableVideoDownloads.onIsLoadingFile(chain.getThisObject(), queryArgs)) {
+                        // ChatMessageCell derives the mini X directly from this query. Returning
+                        // false removes a stale operation from the UI and asks the manager to
+                        // cancel it by file name as a final safety net.
+                        return false;
+                    }
+                    return chain.proceed();
+                });
+                hooked++;
+            }
+            if (hooked == 0) {
+                throw new NoSuchMethodException("FileLoader.isLoadingFile(String)");
+            }
+            info("ReliableDownload: hooked FileLoader loading-state query overloads=" + hooked);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader loading-state query", throwable);
+        }
+    }
+
+    private void hookReliableDownloadVideoLoadingState(Class<?> fileLoaderClass) {
+        int queries = 0;
+        int mutations = 0;
+        try {
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                boolean documentFirst = parameters.length > 0
+                        && "org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName());
+                if ("isLoadingVideo".equals(method.getName()) && parameters.length == 2
+                        && documentFirst && parameters[1] == boolean.class
+                        && method.getReturnType() == boolean.class) {
+                    deoptimize(method, "FileLoader.isLoadingVideo(Document, boolean)");
+                    hook(method, chain -> {
+                        Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
+                        if (!reliableVideoDownloads.onIsLoadingVideo(chain.getThisObject(), queryArgs)) {
+                            return false;
+                        }
+                        return chain.proceed();
+                    });
+                    queries++;
+                } else if (("setLoadingVideo".equals(method.getName()) && parameters.length == 3
+                        || "setLoadingVideoForPlayer".equals(method.getName()) && parameters.length == 2)
+                        && documentFirst && parameters[1] == boolean.class
+                        && method.getReturnType() == void.class) {
+                    deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                    hook(method, chain -> {
+                        Object[] stateArgs = chain.getArgs().toArray(new Object[0]);
+                        if (!reliableVideoDownloads.onSetLoadingVideo(
+                                chain.getThisObject(), stateArgs, method.getName())) {
+                            return null;
+                        }
+                        return chain.proceed();
+                    });
+                    mutations++;
+                }
+            }
+            if (queries == 0 || mutations == 0) {
+                throw new NoSuchMethodException("FileLoader video loading-state methods queries="
+                        + queries + " mutations=" + mutations);
+            }
+            info("ReliableDownload: hooked FileLoader player loading-state queries=" + queries
+                    + " mutators=" + mutations);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader player loading-state", throwable);
         }
     }
 
