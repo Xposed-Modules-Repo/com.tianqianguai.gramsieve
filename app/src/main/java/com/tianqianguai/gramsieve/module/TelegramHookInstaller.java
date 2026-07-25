@@ -36,7 +36,6 @@ import com.tianqianguai.gramsieve.core.FilterDecision;
 import com.tianqianguai.gramsieve.core.FilterEngine;
 import com.tianqianguai.gramsieve.core.MessageRuleFactory;
 import com.tianqianguai.gramsieve.core.MessageSnapshot;
-import com.tianqianguai.gramsieve.ui.ConfigDialogActivity;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -59,6 +58,8 @@ import io.github.libxposed.api.XposedModule;
 final class TelegramHookInstaller {
     private static final String TAG = "GramSieve";
     private static final String MODULE_PACKAGE = "com.tianqianguai.gramsieve";
+    private static final String CONFIG_MODE_GLOBAL = "global";
+    private static final String CONFIG_MODE_CHAT = "chat";
     private static final int MENU_ID_CHAT = 0x47530011;
     private static final int MENU_ID_GLOBAL = 0x47530012;
     private static final int MENU_ID_BLOCK_MESSAGE = 0x47530013;
@@ -2871,7 +2872,7 @@ final class TelegramHookInstaller {
                     info("SettingsActivity row click ignored: context unavailable");
                     return null;
                 }
-                openConfigFromHost(chain.getThisObject(), context, ConfigDialogActivity.MODE_GLOBAL, 0L, "");
+                openConfigFromHost(chain.getThisObject(), context, CONFIG_MODE_GLOBAL, 0L, "");
                 return null;
             });
             info("Hooked SettingsActivity list row");
@@ -5508,7 +5509,7 @@ final class TelegramHookInstaller {
                     try {
                         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
                         String title = resolveChatTitle(chatActivity);
-                        openConfigFromHost(chatActivity, v.getContext(), ConfigDialogActivity.MODE_CHAT, dialogId, title);
+                        openConfigFromHost(chatActivity, v.getContext(), CONFIG_MODE_CHAT, dialogId, title);
                     } finally {
                         Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
                     }
@@ -5731,11 +5732,10 @@ final class TelegramHookInstaller {
 
     private CharSequence antiRecallStatusLabel(Context context, long dialogId) {
         boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
-        String idStr = " [" + dialogId + "]";
         if (isChineseLocale(context)) {
-            return enabled ? "主动加载已打开" + idStr : "主动加载未打开" + idStr;
+            return enabled ? "主动加载已打开" : "主动加载未打开";
         }
-        return enabled ? "Proactive Loading: ON" + idStr : "Proactive Loading: OFF" + idStr;
+        return enabled ? "Proactive Loading: ON" : "Proactive Loading: OFF";
     }
 
     private void injectCleanupModeMenu(Object chatActivity, Object headerItem) {
@@ -5780,11 +5780,10 @@ final class TelegramHookInstaller {
 
     private CharSequence cleanupModeStatusLabel(Context context, long dialogId) {
         boolean enabled = recallDetector != null && recallDetector.isCleanupModeActive(dialogId);
-        String idStr = " [" + dialogId + "]";
         if (isChineseLocale(context)) {
-            return enabled ? "清理模式已打开" + idStr : "清理模式未打开" + idStr;
+            return enabled ? "清理模式已打开" : "清理模式未打开";
         }
-        return enabled ? "Cleanup Mode: ON" + idStr : "Cleanup Mode: OFF" + idStr;
+        return enabled ? "Cleanup Mode: ON" : "Cleanup Mode: OFF";
     }
 
     private CharSequence localizedCleanupModeToast(Context context, boolean enabled) {
@@ -5953,7 +5952,7 @@ final class TelegramHookInstaller {
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_GLOBAL);
         subItemView.setOnClickListener(v -> {
             try {
-                openConfigFromHost(host, v.getContext(), ConfigDialogActivity.MODE_GLOBAL, 0L, "");
+                openConfigFromHost(host, v.getContext(), CONFIG_MODE_GLOBAL, 0L, "");
             } finally {
                 Reflect.invokeIfExists(otherItem, "toggleSubMenu", new Class<?>[0]);
             }
@@ -6260,16 +6259,24 @@ final class TelegramHookInstaller {
                 return;
             }
         } catch (Throwable throwable) {
-            error("Host config panel failed; falling back to module activity", throwable);
+            error("Host config panel failed", throwable);
         }
-        launchConfig(context, mode, dialogId, title);
+        if (context != null) {
+            Toast.makeText(
+                    context,
+                    isChineseLocale(context)
+                            ? "无法在 Telegram 内打开 GramSieve 设置"
+                            : "Could not open GramSieve settings in Telegram",
+                    Toast.LENGTH_LONG
+            ).show();
+        }
     }
 
     private boolean showHostConfigPanel(Object host, Context context, String mode, long dialogId, String title) {
         if (context == null || configProvider == null) {
             return false;
         }
-        boolean chatMode = ConfigDialogActivity.MODE_CHAT.equals(mode);
+        boolean chatMode = CONFIG_MODE_CHAT.equals(mode);
         if (chatMode && backgroundMessageLoader == null) {
             initAntiRecallFromChat(host);
         } else if (!chatMode && antiRecallConfigStore == null) {
@@ -6301,7 +6308,6 @@ final class TelegramHookInstaller {
                     decisionCache.clear();
                     return saved;
                 },
-                () -> launchConfig(context, mode, dialogId, title),
                 () -> {
                     decisionCache.clear();
                     if (chatMode) {
@@ -6376,18 +6382,6 @@ final class TelegramHookInstaller {
             current = next;
         }
         return null;
-    }
-
-    private void launchConfig(Context context, String mode, long dialogId, String title) {
-        Intent intent = new Intent();
-        intent.setComponent(new ComponentName(MODULE_PACKAGE, ConfigDialogActivity.class.getName()));
-        intent.putExtra(ConfigDialogActivity.EXTRA_MODE, mode);
-        if (ConfigDialogActivity.MODE_CHAT.equals(mode)) {
-            intent.putExtra(ConfigDialogActivity.EXTRA_DIALOG_ID, dialogId);
-            intent.putExtra(ConfigDialogActivity.EXTRA_DIALOG_TITLE, title);
-        }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-        context.startActivity(intent);
     }
 
     private void logTelegramVersion(ClassLoader classLoader, ApplicationInfo applicationInfo) {

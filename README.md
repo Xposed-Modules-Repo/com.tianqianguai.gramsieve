@@ -11,7 +11,7 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **丰富的匹配目标** — 消息文字、媒体说明、内联按钮文字/链接、发送者名称/ID、聊天名称/ID
 - **白名单优先** — 排除规则始终优先于过滤规则，适合管理员、公告或信任联系人
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
-- **宿主设置集成** — 在 Telegram 设置列表中提供 `GramSieve` 入口，配置页内嵌在宿主界面中，黑色背景并支持正常返回
+- **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，保存后立即生效
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
@@ -19,7 +19,6 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **多版本编辑历史** — 编辑历史按版本保存，并会从 Telegram 本地历史同步写入中补齐离线期间发生的编辑
 - **编辑历史媒体查看** — 点击消息弹窗可查看编辑前内容，原始图片优先使用 Telegram 官方 PhotoViewer 并支持官方保存入口
 - **持久化诊断日志** — 运行日志写入 app-specific 外部目录，避免依赖容易溢出的 logcat 缓冲区
-- **模块冲突检测** — 识别常见 Telegram 增强模块；获得 root 授权后仅以只读方式核对 LSPosed 模块开关和 Telegram 作用域，再按防撤回、下载加速、Secret Media、去广告、Stories 和 UI 注入等重叠能力给出分级风险提示
 - **双语界面** — 英文和简体中文，支持跟随系统
 
 - **Local-only filtering** — all filtering happens on-device; no network requests, no data leaves your phone
@@ -27,7 +26,7 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **Rich match targets** — message text, media captions, inline button labels/URLs, sender names/IDs, chat names/IDs
 - **Whitelist wins first** — exclusion rules always override filter rules; use them for admins, notices, or trusted contacts
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
-- **Host settings integration** — adds a `GramSieve` row to Telegram settings and opens the configuration page inside the host UI with a black background and normal back navigation
+- **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and apply immediately after saving
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
@@ -35,7 +34,6 @@ An LSPosed module for local Telegram enhancements, including message filtering, 
 - **Multi-version edit history** — stores edit history by version and recovers edits that arrive through Telegram local history-sync writes while the device was offline
 - **Edit-history media viewer** — open original pre-edit content from the message popup; original images prefer Telegram's official PhotoViewer and official save flow
 - **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
-- **Module conflict detection** — detects common Telegram enhancement modules; after root authorization, it uses read-only LSPosed database queries to confirm module switches and Telegram scope before reporting potential overlap across anti-recall, download acceleration, Secret Media, ad blocking, Stories, and UI injection
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
 
 ## 规则写法 How Rules Work
@@ -80,19 +78,19 @@ In the current UI, each input box is already target-specific, so prefixes are us
 
 ## 入口 Entry Points
 
-- **Telegram 设置列表** → `GramSieve`（宿主内嵌配置页）
+- **Telegram 设置列表** → `GramSieve`（唯一全局配置入口）
 - **聊天右上角三点菜单** → `聊天过滤规则` · `主动加载` · `跳转到上次浏览` · `跳转到标记位置`
 - **单击某条消息** → `屏蔽此消息` · `标记此消息` · `编辑历史`
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）
 
-- **Telegram settings list** → `GramSieve` (host-embedded configuration page)
+- **Telegram settings list** → `GramSieve` (the only global settings entry)
 - **Chat top-right overflow menu** → `Chat filters` · `Proactive loading` · `Jump to last viewed` · `Jump to marked position`
 - **Click a message** → `Block this message` · `Mark this message` · `Edit history`
 - **Download page action mode** → `Select All` button (select all loaded download items at once)
 
-规则存储在模块应用内，通过 LSPosed service bridge 同步给 Telegram 读取。
+规则直接从 Telegram 内的寄生设置页保存到 LSPosed 远程配置，并同步持久化到模块进程；无需再打开模块应用确认。
 
-Rules are stored in the module app and synced to the LSPosed service bridge so Telegram can read them.
+Rules are saved from the host panel directly to LSPosed remote preferences and mirrored to the module process; opening a separate module app is no longer required.
 
 ## 持久化日志 Persistent Logs
 

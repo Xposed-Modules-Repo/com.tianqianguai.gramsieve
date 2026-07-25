@@ -2,6 +2,7 @@ package com.tianqianguai.gramsieve.module;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -13,6 +14,7 @@ import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -33,6 +35,8 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 @SuppressLint("UseSwitchCompatOrMaterialCode")
 final class HostConfigPanel {
@@ -65,7 +69,6 @@ final class HostConfigPanel {
     private final AntiRecallConfigStore antiRecallConfigStore;
     private final BackgroundMessageLoader backgroundMessageLoader;
     private final ConfigSaver saver;
-    private final Runnable legacyLauncher;
     private final Runnable afterSave;
     private final boolean chinese;
     private final int backgroundColor;
@@ -74,6 +77,8 @@ final class HostConfigPanel {
     private final int secondaryTextColor;
     private final int strokeColor;
     private final int accentColor;
+    private final int toolbarColor;
+    private final int toolbarTextColor;
     private final Map<FilterConfig.RuleTarget, RuleInputs> ruleInputs =
             new EnumMap<>(FilterConfig.RuleTarget.class);
 
@@ -81,7 +86,6 @@ final class HostConfigPanel {
     private Switch enabledSwitch;
     private Switch debugLoggingSwitch;
     private Switch excludeChatSwitch;
-    private Switch antiRecallSwitch;
     private Switch chatAntiRecallSwitch;
     private RadioGroup languageGroup;
     private RadioGroup actionGroup;
@@ -96,7 +100,6 @@ final class HostConfigPanel {
             AntiRecallConfigStore antiRecallConfigStore,
             BackgroundMessageLoader backgroundMessageLoader,
             ConfigSaver saver,
-            Runnable legacyLauncher,
             Runnable afterSave
     ) {
         this.context = context;
@@ -108,15 +111,23 @@ final class HostConfigPanel {
         this.antiRecallConfigStore = antiRecallConfigStore;
         this.backgroundMessageLoader = backgroundMessageLoader;
         this.saver = saver;
-        this.legacyLauncher = legacyLauncher;
         this.afterSave = afterSave;
         this.chinese = isChineseLocale(context);
-        this.backgroundColor = Color.BLACK;
-        this.cardColor = Color.BLACK;
-        this.primaryTextColor = Color.WHITE;
-        this.secondaryTextColor = Color.rgb(176, 176, 176);
-        this.strokeColor = Color.rgb(42, 42, 42);
-        this.accentColor = Color.rgb(42, 171, 238);
+        int androidBackground = resolveThemeColor(android.R.attr.colorBackground, Color.rgb(18, 18, 18));
+        int androidPrimaryText = resolveThemeColor(android.R.attr.textColorPrimary, Color.WHITE);
+        int androidSecondaryText = resolveThemeColor(
+                android.R.attr.textColorSecondary,
+                adjustAlpha(androidPrimaryText, 0.68f)
+        );
+        int androidAccent = resolveThemeColor(android.R.attr.colorAccent, Color.rgb(42, 171, 238));
+        this.backgroundColor = telegramThemeColor("key_windowBackgroundWhite", androidBackground);
+        this.cardColor = backgroundColor;
+        this.primaryTextColor = telegramThemeColor("key_windowBackgroundWhiteBlackText", androidPrimaryText);
+        this.secondaryTextColor = telegramThemeColor("key_windowBackgroundWhiteGrayText2", androidSecondaryText);
+        this.strokeColor = telegramThemeColor("key_divider", adjustAlpha(primaryTextColor, 0.14f));
+        this.toolbarColor = telegramThemeColor("key_actionBarDefault", backgroundColor);
+        this.toolbarTextColor = telegramThemeColor("key_actionBarDefaultTitle", primaryTextColor);
+        this.accentColor = telegramThemeColor("key_actionBarDefaultIcon", androidAccent);
     }
 
     static boolean show(
@@ -129,7 +140,6 @@ final class HostConfigPanel {
             AntiRecallConfigStore antiRecallConfigStore,
             BackgroundMessageLoader backgroundMessageLoader,
             ConfigSaver saver,
-            Runnable legacyLauncher,
             Runnable afterSave
     ) {
         if (context == null || root == null || saver == null) {
@@ -152,7 +162,6 @@ final class HostConfigPanel {
                 antiRecallConfigStore,
                 backgroundMessageLoader,
                 saver,
-                legacyLauncher,
                 afterSave
         );
         panel.attach();
@@ -238,6 +247,11 @@ final class HostConfigPanel {
         overlay.setFocusable(true);
         overlay.setFocusableInTouchMode(true);
         overlay.setBackgroundColor(backgroundColor);
+        overlay.setOnApplyWindowInsetsListener((view, insets) -> {
+            android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+            view.setPadding(0, bars.top, 0, bars.bottom);
+            return insets;
+        });
         overlay.setOnKeyListener((v, keyCode, event) -> {
             if (keyCode == KeyEvent.KEYCODE_BACK) {
                 if (event.getAction() == KeyEvent.ACTION_UP) {
@@ -280,19 +294,17 @@ final class HostConfigPanel {
         ));
 
         buildGeneralCard(container);
-        if (!chatMode) {
-            buildAntiRecallCard(container);
-        } else {
+        if (chatMode) {
             buildChatAntiRecallCard(container);
         }
         buildRulesCard(container);
-        buildFallbackCard(container);
 
         root.addView(overlay, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
         overlay.bringToFront();
+        overlay.requestApplyInsets();
         overlay.requestFocus();
         overlay.requestFocusFromTouch();
     }
@@ -302,15 +314,15 @@ final class HostConfigPanel {
         toolbar.setOrientation(LinearLayout.HORIZONTAL);
         toolbar.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.setPadding(dp(8), 0, dp(8), 0);
-        toolbar.setBackgroundColor(cardColor);
+        toolbar.setBackgroundColor(toolbarColor);
 
         Button backButton = toolbarButton(t("返回", "Back"));
         backButton.setOnClickListener(v -> close());
         toolbar.addView(backButton, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView title = new TextView(context);
-        title.setText(chatMode ? t("GramSieve 聊天过滤", "GramSieve Chat Filters") : t("GramSieve 过滤规则", "GramSieve Filters"));
-        title.setTextColor(primaryTextColor);
+        title.setText(chatMode ? t("GramSieve 聊天设置", "GramSieve Chat Settings") : t("GramSieve 设置", "GramSieve Settings"));
+        title.setTextColor(toolbarTextColor);
         title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18f);
         title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         title.setSingleLine(true);
@@ -348,7 +360,7 @@ final class HostConfigPanel {
         debugLoggingSwitch = addSwitch(card, t("详细调试日志", "Verbose debug logging"));
         debugLoggingSwitch.setChecked(baseConfig.debugLogging);
 
-        addSectionLabel(card, t("应用语言", "App language"));
+        addSectionLabel(card, t("界面语言", "Interface language"));
         languageGroup = new RadioGroup(context);
         languageGroup.setOrientation(RadioGroup.VERTICAL);
         addRadio(languageGroup, t("跟随系统", "Follow system"), FilterConfig.APP_LANGUAGE_SYSTEM);
@@ -365,16 +377,6 @@ final class HostConfigPanel {
         addRadio(actionGroup, t("调试标记", "Debug mark"), FilterConfig.Action.DEBUG_MARK);
         checkTaggedRadio(actionGroup, baseConfig.action == null ? FilterConfig.Action.HIDE : baseConfig.action);
         addView(card, actionGroup, 0);
-    }
-
-    private void buildAntiRecallCard(LinearLayout container) {
-        if (antiRecallConfigStore == null) {
-            return;
-        }
-        LinearLayout card = addCard(container);
-        addTitle(card, t("主动加载与防撤回防修改", "Anti-Recall & Edit Detection"));
-        antiRecallSwitch = addSwitch(card, t("启用主动加载与防撤回防修改", "Enable anti-recall and edit detection"));
-        antiRecallSwitch.setChecked(antiRecallConfigStore.isEnabled());
     }
 
     private void buildChatAntiRecallCard(LinearLayout container) {
@@ -415,21 +417,6 @@ final class HostConfigPanel {
         }
     }
 
-    private void buildFallbackCard(LinearLayout container) {
-        if (legacyLauncher == null) {
-            return;
-        }
-        LinearLayout card = addCard(container);
-        addTitle(card, t("完整配置", "Full Settings"));
-        addInfo(card, t("日志查看和完整 Material 弹窗仍保留在模块配置页。", "Logs and the full Material editor remain available in the module settings page."));
-        Button button = toolbarButton(t("打开完整配置", "Open full settings"));
-        button.setOnClickListener(v -> {
-            close();
-            legacyLauncher.run();
-        });
-        addView(card, button, 0);
-    }
-
     private void save() {
         try {
             RuleDraftMatrix matchMatrix = collectMatrix(0);
@@ -455,15 +442,12 @@ final class HostConfigPanel {
                         matchMatrix,
                         exclusionMatrix
                 );
-                if (antiRecallConfigStore != null && antiRecallSwitch != null) {
-                    antiRecallConfigStore.setEnabled(antiRecallSwitch.isChecked());
-                }
             }
             saver.save(updated);
             if (afterSave != null) {
                 afterSave.run();
             }
-            Toast.makeText(context, t("GramSieve 规则已保存", "GramSieve rules saved"), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, t("已保存并立即生效", "Saved and applied"), Toast.LENGTH_SHORT).show();
             close();
         } catch (Throwable throwable) {
             Toast.makeText(
@@ -744,13 +728,34 @@ final class HostConfigPanel {
             try {
                 return context.getColor(value.resourceId);
             } catch (Resources.NotFoundException ignored) {
-                return fallback;
+                try {
+                    ColorStateList colors = context.getColorStateList(value.resourceId);
+                    return colors == null ? fallback : colors.getDefaultColor();
+                } catch (Resources.NotFoundException ignoredAgain) {
+                    return fallback;
+                }
             }
         }
         if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT && value.type <= TypedValue.TYPE_LAST_COLOR_INT) {
             return value.data;
         }
         return fallback;
+    }
+
+    private int telegramThemeColor(String keyFieldName, int fallback) {
+        try {
+            ClassLoader classLoader = context.getClassLoader();
+            Class<?> themeClass = Class.forName("org.telegram.ui.ActionBar.Theme", false, classLoader);
+            Field keyField = themeClass.getDeclaredField(keyFieldName);
+            keyField.setAccessible(true);
+            int key = keyField.getInt(null);
+            Method getColor = themeClass.getDeclaredMethod("getColor", int.class);
+            getColor.setAccessible(true);
+            Object color = getColor.invoke(null, key);
+            return color instanceof Integer ? (Integer) color : fallback;
+        } catch (Throwable ignored) {
+            return fallback;
+        }
     }
 
     private static GradientDrawable rounded(int color, int radius, int strokeColor) {
