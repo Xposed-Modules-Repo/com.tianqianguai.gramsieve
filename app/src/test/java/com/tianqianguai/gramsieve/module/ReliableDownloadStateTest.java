@@ -57,4 +57,12 @@ public class ReliableDownloadStateTest {
         assertTrue(ReliableVideoDownloadManager.isExplicitMiniCancelState(1));
         assertFalse(ReliableVideoDownloadManager.isExplicitMiniCancelState(2));
     }
+
+    @Test
+    public void playableVideosSentAsFilesAreStillProtectedByTheCancelGate() {
+        assertTrue(ReliableVideoDownloadManager.isVideoMetadata("video/quicktime", "document.bin"));
+        assertTrue(ReliableVideoDownloadManager.isVideoMetadata("application/octet-stream", "clip.MOV"));
+        assertTrue(ReliableVideoDownloadManager.isVideoMetadata("", "clip.webm"));
+        assertFalse(ReliableVideoDownloadManager.isVideoMetadata("image/jpeg", "photo.jpg"));
+    }
 }

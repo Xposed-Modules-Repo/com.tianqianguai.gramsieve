@@ -4,6 +4,7 @@ import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import java.lang.reflect.Method;
 import java.util.Arrays;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,6 +22,10 @@ final class ReliableVideoDownloadManager {
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     private final Set<String> userStarted = ConcurrentHashMap.newKeySet();
     private final Set<String> loggedCancelledTransport = ConcurrentHashMap.newKeySet();
+    private final Set<String> loggedCancelledVideoState = ConcurrentHashMap.newKeySet();
+    private final Set<String> loggedCancelledPlayerCleanup = ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> lastForcedCancelAt = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastVideoStateClearAt = new ConcurrentHashMap<>();
     private final DownloadCancellationRegistry cancellationRegistry;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "GramSieve-ReliableDownload");
@@ -63,6 +68,11 @@ final class ReliableVideoDownloadManager {
                 + " args=" + Arrays.toString(buttonArgs));
         if (isExplicitCancelState(state)) {
             hadJob = markExplicitCancel(key);
+            // Telegram's mini X calls MediaController.cleanupPlayer() itself, but the primary
+            // button path only cancels FileLoader. A still-playing stream then immediately
+            // recreates buttonState=1 during updateButtonState, which is the observed rebound.
+            stopActivePlayerForExplicitCancel(message, account, key, document);
+            hardStopNativeVideoState(account, key, document, "button");
             ModuleLogger.hook(TAG, "button explicit-cancel state=" + state + " "
                     + targetDescription(account, key, document) + " hadJob=" + hadJob);
         } else if (state == 0) {
@@ -120,6 +130,7 @@ final class ReliableVideoDownloadManager {
                 + " args=" + Arrays.toString(buttonArgs));
         if (isExplicitMiniCancelState(miniState)) {
             hadJob = markExplicitCancel(key);
+            hardStopNativeVideoState(account, key, document, "mini");
             ModuleLogger.hook(TAG, "mini explicit-cancel state=" + miniState + " mainState=" + buttonState
                     + " " + targetDescription(account, key, document) + " hadJob=" + hadJob);
         } else if (miniState == 0) {
@@ -173,6 +184,74 @@ final class ReliableVideoDownloadManager {
         // after the user opens a video for playback. It can be re-entered repeatedly by the
         // player after a cancellation, so it must honor the same explicit-cancel registry.
         return onDocumentTransport(fileLoader, args[1], args[3], null, "stream", false);
+    }
+
+    boolean onLoadFileInternal(Object fileLoader, Object[] args) {
+        if (args == null || args.length == 0) {
+            return true;
+        }
+        // loadStreamFile posts work to FileLoader's serial queue before it returns. A user can
+        // press X after that outer call has passed our stream hook but before the queued work
+        // reaches loadFileInternal. Guarding here closes that race at the actual operation-creation
+        // point, shared by ordinary and streaming downloads.
+        Object parent = args.length > 5 ? args[5] : null;
+        return onDocumentTransport(fileLoader, args[0], parent, null, "internal", false);
+    }
+
+    /** @return false to hide a stale loading operation that the user explicitly cancelled. */
+    boolean onIsLoadingFile(Object fileLoader, Object[] args) {
+        if (args == null || args.length != 1 || !(args[0] instanceof String)) {
+            return true;
+        }
+        String fileName = (String) args[0];
+        int account = resolveAccount(null, fileLoader);
+        String key = account + ":" + fileName;
+        if (!cancellationRegistry.isCancelled(key)) {
+            return true;
+        }
+        if (loggedCancelledTransport.add(key)) {
+            ModuleLogger.hook(TAG, "loading-state suppressed after explicit-cancel account=" + account
+                    + " key=" + key + " file=" + fileName
+                    + " thread=" + Thread.currentThread().getName());
+        }
+        reinforceNativeCancel(fileLoader, account, key, fileName);
+        return false;
+    }
+
+    /** @return false when the player-only loading marker must remain cleared after X. */
+    boolean onIsLoadingVideo(Object fileLoader, Object[] args) {
+        if (args == null || args.length != 2) {
+            return true;
+        }
+        Object document = args[0];
+        if (!isVideoDocument(document)) {
+            return true;
+        }
+        int account = resolveAccount(null, fileLoader);
+        String key = key(account, document);
+        if (key == null || !cancellationRegistry.isCancelled(key)) {
+            return true;
+        }
+        clearNativeVideoLoadingState(fileLoader, account, key, document, "query");
+        return false;
+    }
+
+    /** @return false to prevent a player callback from reintroducing the canceled video's X state. */
+    boolean onSetLoadingVideo(Object fileLoader, Object[] args, String route) {
+        if (args == null || args.length == 0) {
+            return true;
+        }
+        Object document = args[0];
+        if (!isVideoDocument(document)) {
+            return true;
+        }
+        int account = resolveAccount(null, fileLoader);
+        String key = key(account, document);
+        if (key == null || !cancellationRegistry.isCancelled(key)) {
+            return true;
+        }
+        clearNativeVideoLoadingState(fileLoader, account, key, document, route);
+        return false;
     }
 
     private boolean onDocumentTransport(Object fileLoader, Object document, Object message,
@@ -327,6 +406,10 @@ final class ReliableVideoDownloadManager {
             job.state.cancel();
             cancellationRegistry.allow(job.key);
             loggedCancelledTransport.remove(job.key);
+            loggedCancelledVideoState.remove(job.key);
+            loggedCancelledPlayerCleanup.remove(job.key);
+            lastForcedCancelAt.remove(job.key);
+            lastVideoStateClearAt.remove(job.key);
             ModuleLogger.hook(TAG, reason + " "
                     + targetDescription(job.account, job.key, job.args[0]));
         }
@@ -336,6 +419,8 @@ final class ReliableVideoDownloadManager {
         userStarted.remove(key);
         cancellationRegistry.markCancelled(key);
         loggedCancelledTransport.remove(key);
+        lastForcedCancelAt.remove(key);
+        lastVideoStateClearAt.remove(key);
         Job job = jobs.remove(key);
         if (job != null) {
             job.state.cancel();
@@ -346,7 +431,152 @@ final class ReliableVideoDownloadManager {
     private void markExplicitStart(String key) {
         cancellationRegistry.allow(key);
         loggedCancelledTransport.remove(key);
+        loggedCancelledVideoState.remove(key);
+        loggedCancelledPlayerCleanup.remove(key);
+        lastForcedCancelAt.remove(key);
+        lastVideoStateClearAt.remove(key);
         userStarted.add(key);
+    }
+
+    private void hardStopNativeVideoState(int account, String key, Object document, String source) {
+        Object fileLoader = fileLoaderFor(account);
+        if (fileLoader == null || document == null) {
+            ModuleLogger.hook(TAG, "player hard-stop unavailable source=" + source
+                    + " account=" + account + " key=" + key);
+            return;
+        }
+        cancelNativeDocument(fileLoader, account, key, document);
+        clearNativeVideoLoadingState(fileLoader, account, key, document, source);
+    }
+
+    private void stopActivePlayerForExplicitCancel(Object message, int account, String key,
+                                                    Object document) {
+        if (message == null || classLoader == null) {
+            return;
+        }
+        try {
+            Class<?> mediaControllerClass = classLoader.loadClass("org.telegram.messenger.MediaController");
+            Object mediaController = mediaControllerClass.getMethod("getInstance").invoke(null);
+            Method isPlaying = findCompatibleMethod(mediaControllerClass, "isPlayingMessage",
+                    new Object[]{message});
+            if (isPlaying == null || !Boolean.TRUE.equals(isPlaying.invoke(mediaController, message))) {
+                return;
+            }
+            Method cleanup = findCompatibleMethod(mediaControllerClass, "cleanupPlayer",
+                    new Object[]{true, true});
+            if (cleanup == null) {
+                ModuleLogger.hook(TAG, "player cleanup unavailable account=" + account + " key=" + key);
+                return;
+            }
+            cleanup.invoke(mediaController, true, true);
+            if (loggedCancelledPlayerCleanup.add(key)) {
+                ModuleLogger.hook(TAG, "player cleanup invoked after explicit-cancel "
+                        + targetDescription(account, key, document));
+            }
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                    "player cleanup after explicit-cancel failed account=" + account
+                            + " key=" + key + ": " + throwable.getMessage());
+        }
+    }
+
+    private Object fileLoaderFor(int account) {
+        ClassLoader loader = classLoader;
+        if (loader == null) {
+            return null;
+        }
+        try {
+            Class<?> fileLoaderClass = loader.loadClass("org.telegram.messenger.FileLoader");
+            Method getInstance = fileLoaderClass.getMethod("getInstance", int.class);
+            return getInstance.invoke(null, account);
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                    "player hard-stop could not resolve FileLoader: " + throwable.getMessage());
+            return null;
+        }
+    }
+
+    private void cancelNativeDocument(Object fileLoader, int account, String key, Object document) {
+        try {
+            Object[] cancelArgs = new Object[]{document, true};
+            Method method = findCompatibleMethod(fileLoader.getClass(), "cancelLoadFile", cancelArgs);
+            if (method == null) {
+                cancelArgs = new Object[]{document};
+                method = findCompatibleMethod(fileLoader.getClass(), "cancelLoadFile", cancelArgs);
+            }
+            if (method != null) {
+                method.setAccessible(true);
+                method.invoke(fileLoader, cancelArgs);
+            }
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                    "player hard-stop transport cancel failed account=" + account
+                            + " key=" + key + ": " + throwable.getMessage());
+        }
+    }
+
+    private void clearNativeVideoLoadingState(Object fileLoader, int account, String key,
+                                               Object document, String source) {
+        if (fileLoader == null || document == null) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long previous = lastVideoStateClearAt.get(key);
+        if (previous != null && now - previous < 250L) {
+            return;
+        }
+        lastVideoStateClearAt.put(key, now);
+        try {
+            Method method = findCompatibleMethod(fileLoader.getClass(), "removeLoadingVideo",
+                    new Object[]{document, false, true});
+            if (method == null) {
+                ModuleLogger.hook(TAG, "player loading-state clear unavailable account=" + account
+                        + " key=" + key + " source=" + source);
+                return;
+            }
+            method.setAccessible(true);
+            // Telegram keeps distinct loadingVideos entries for the normal and playing-player
+            // variants. cancelLoadFile() does not remove either entry, so clear both before the
+            // next UI refresh can turn the mini button back into X.
+            method.invoke(fileLoader, document, false, true);
+            method.invoke(fileLoader, document, true, true);
+            if (loggedCancelledVideoState.add(key)) {
+                ModuleLogger.hook(TAG, "player loading-state cleared after explicit-cancel source="
+                        + source + " " + targetDescription(account, key, document));
+            }
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                    "player loading-state clear failed account=" + account
+                            + " key=" + key + ": " + throwable.getMessage());
+        }
+    }
+
+    private void reinforceNativeCancel(Object fileLoader, int account, String key, String fileName) {
+        if (fileLoader == null || fileName == null || fileName.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        Long previous = lastForcedCancelAt.get(key);
+        if (previous != null && now - previous < 750L) {
+            return;
+        }
+        lastForcedCancelAt.put(key, now);
+        try {
+            Method method = findCompatibleMethod(fileLoader.getClass(), "cancelLoadFile",
+                    new Object[]{fileName});
+            if (method == null) {
+                ModuleLogger.hook(TAG, "loading-state cancel unavailable account=" + account
+                        + " key=" + key + " file=" + fileName);
+                return;
+            }
+            method.setAccessible(true);
+            method.invoke(fileLoader, fileName);
+            ModuleLogger.hook(TAG, "loading-state native cancel reinforced account=" + account
+                    + " key=" + key + " file=" + fileName);
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                    "loading-state cancel reinforcement failed: " + throwable.getMessage());
+        }
     }
 
     private int resolveAccount(Object message, Object fileLoader) {
@@ -365,12 +595,30 @@ final class ReliableVideoDownloadManager {
     }
 
     private boolean isVideoDocument(Object document) {
-        Object attributes = Reflect.field(document, "attributes");
-        if (!(attributes instanceof Iterable<?>)) return false;
-        for (Object attribute : (Iterable<?>) attributes) {
-            if (attribute != null && attribute.getClass().getName().contains("DocumentAttributeVideo")) return true;
+        if (document == null) {
+            return false;
         }
-        return false;
+        Object attributes = Reflect.field(document, "attributes");
+        if (attributes instanceof Iterable<?>) {
+            for (Object attribute : (Iterable<?>) attributes) {
+                if (attribute != null && attribute.getClass().getName().contains("DocumentAttributeVideo")) {
+                    return true;
+                }
+            }
+        }
+        // Videos sent "as a file" can be playable in Telegram without a DocumentAttributeVideo.
+        // The explicit-cancel gate must cover those MOV/MP4 documents as well.
+        return isVideoMetadata(Reflect.asString(Reflect.field(document, "mime_type")), fileName(document));
+    }
+
+    static boolean isVideoMetadata(String mimeType, String fileName) {
+        String mime = mimeType == null ? "" : mimeType.toLowerCase(Locale.ROOT);
+        if (mime.startsWith("video/")) {
+            return true;
+        }
+        String name = fileName == null ? "" : fileName.toLowerCase(Locale.ROOT);
+        return name.endsWith(".mp4") || name.endsWith(".m4v") || name.endsWith(".mov")
+                || name.endsWith(".webm") || name.endsWith(".mkv");
     }
 
     private Object documentOf(Object message, Object fallback) {
