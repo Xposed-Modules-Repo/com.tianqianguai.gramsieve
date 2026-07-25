@@ -1,7 +1,9 @@
 package com.tianqianguai.gramsieve.module;
 
 import android.annotation.SuppressLint;
+import android.app.Activity;
 import android.content.Context;
+import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.graphics.Color;
@@ -15,6 +17,8 @@ import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.window.OnBackInvokedCallback;
+import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
@@ -83,6 +87,8 @@ final class HostConfigPanel {
             new EnumMap<>(FilterConfig.RuleTarget.class);
 
     private FrameLayout overlay;
+    private OnBackInvokedDispatcher backDispatcher;
+    private OnBackInvokedCallback backCallback;
     private Switch enabledSwitch;
     private Switch debugLoggingSwitch;
     private Switch excludeChatSwitch;
@@ -145,13 +151,7 @@ final class HostConfigPanel {
         if (context == null || root == null || saver == null) {
             return false;
         }
-        View existing = root.findViewById(R.id.gramsieve_host_config_panel_id);
-        if (existing != null) {
-            ViewGroup parent = (ViewGroup) existing.getParent();
-            if (parent != null) {
-                parent.removeView(existing);
-            }
-        }
+        closeExisting(root);
         HostConfigPanel panel = new HostConfigPanel(
                 context,
                 root,
@@ -175,6 +175,11 @@ final class HostConfigPanel {
         View existing = root.findViewById(R.id.gramsieve_host_config_panel_id);
         if (existing == null) {
             return false;
+        }
+        Object owner = existing.getTag();
+        if (owner instanceof HostConfigPanel) {
+            ((HostConfigPanel) owner).close();
+            return true;
         }
         ViewGroup parent = (ViewGroup) existing.getParent();
         if (parent != null) {
@@ -243,6 +248,7 @@ final class HostConfigPanel {
     private void attach() {
         overlay = new FrameLayout(context);
         overlay.setId(R.id.gramsieve_host_config_panel_id);
+        overlay.setTag(this);
         overlay.setClickable(true);
         overlay.setFocusable(true);
         overlay.setFocusableInTouchMode(true);
@@ -260,6 +266,16 @@ final class HostConfigPanel {
                 return true;
             }
             return false;
+        });
+        overlay.addOnAttachStateChangeListener(new View.OnAttachStateChangeListener() {
+            @Override
+            public void onViewAttachedToWindow(View view) {
+            }
+
+            @Override
+            public void onViewDetachedFromWindow(View view) {
+                unregisterSystemBackHandler();
+            }
         });
 
         LinearLayout screen = new LinearLayout(context);
@@ -307,6 +323,7 @@ final class HostConfigPanel {
         overlay.requestApplyInsets();
         overlay.requestFocus();
         overlay.requestFocusFromTouch();
+        registerSystemBackHandler();
     }
 
     private View createToolbar() {
@@ -500,11 +517,64 @@ final class HostConfigPanel {
         if (overlay == null) {
             return;
         }
-        ViewGroup parent = (ViewGroup) overlay.getParent();
-        if (parent != null) {
-            parent.removeView(overlay);
-        }
+        FrameLayout panel = overlay;
         overlay = null;
+        unregisterSystemBackHandler();
+        ViewGroup parent = (ViewGroup) panel.getParent();
+        if (parent != null) {
+            parent.removeView(panel);
+        }
+    }
+
+    private void registerSystemBackHandler() {
+        Activity activity = activityFromContext(context);
+        if (activity == null || backCallback != null) {
+            return;
+        }
+        try {
+            backDispatcher = activity.getOnBackInvokedDispatcher();
+            backCallback = this::close;
+            backDispatcher.registerOnBackInvokedCallback(
+                    OnBackInvokedDispatcher.PRIORITY_OVERLAY,
+                    backCallback
+            );
+        } catch (RuntimeException ignored) {
+            backDispatcher = null;
+            backCallback = null;
+        }
+    }
+
+    private void unregisterSystemBackHandler() {
+        OnBackInvokedDispatcher dispatcher = backDispatcher;
+        OnBackInvokedCallback callback = backCallback;
+        backDispatcher = null;
+        backCallback = null;
+        if (dispatcher == null || callback == null) {
+            return;
+        }
+        try {
+            dispatcher.unregisterOnBackInvokedCallback(callback);
+        } catch (RuntimeException ignored) {
+            // The host may already be tearing down its window.
+        }
+    }
+
+    private static Activity activityFromContext(Context context) {
+        Context current = context;
+        for (int i = 0; i < 8 && current != null; i++) {
+            if (current instanceof Activity) {
+                return (Activity) current;
+            }
+            if (!(current instanceof ContextWrapper)) {
+                break;
+            }
+            Context next = ((ContextWrapper) current).getBaseContext();
+            if (next == current) {
+                break;
+            }
+            current = next;
+        }
+        return null;
     }
 
     private LinearLayout addCard(LinearLayout parent) {
