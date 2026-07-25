@@ -18,6 +18,10 @@ public final class ConfigPersistActivity extends Activity {
     private void persistAndFinish() {
         try {
             String json = ConfigUpdateReceiver.configJsonFromIntent(getIntent());
+            if (json == null || json.isBlank()) {
+                ModuleLogger.warn(ModuleLogger.CAT_CONFIG, TAG, "ConfigPersistActivity: ignored empty config");
+                return;
+            }
             FilterConfig incoming = ModuleConfigStore.fromJson(json);
             FilterConfig local = ModuleConfigStore.load(getSharedPreferences(
                     ModuleConfigStore.PREFS_NAME,
