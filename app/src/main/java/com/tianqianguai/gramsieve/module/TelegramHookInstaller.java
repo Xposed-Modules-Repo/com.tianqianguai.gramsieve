@@ -32,6 +32,7 @@ import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.config.XposedConfigProvider;
 import com.tianqianguai.gramsieve.core.FilterConfig;
+import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterDecision;
 import com.tianqianguai.gramsieve.core.FilterEngine;
 import com.tianqianguai.gramsieve.core.MessageRuleFactory;
@@ -71,6 +72,7 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_EDIT_HISTORY = 0x47530019;
     private static final int SETTINGS_ROW_GRAMSIEVE = 0x4753001A;
     private static final int MENU_ID_CLEANUP_MODE = 0x4753001B;
+    private static final int MENU_ID_RELOAD_MESSAGE = 0x4753001C;
     private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
     private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
     private ViewGroup downloadPageFragmentView = null;
@@ -85,6 +87,7 @@ final class TelegramHookInstaller {
     private AntiRecallConfigStore antiRecallConfigStore;
     private EditHistoryPolicyStore editHistoryPolicyStore;
     private LocalDialogDeleteStore localDialogDeleteStore;
+    private MessageMarkStore messageMarkStore;
     private TelegramDialogDatabasePruner dialogDatabasePruner;
     private final Set<LocalDialogDeleteStore.HiddenDialog> locallyHiddenDialogs =
             Collections.synchronizedSet(new HashSet<>());
@@ -92,6 +95,7 @@ final class TelegramHookInstaller {
     private static final long CLEANUP_MODE_DURATION_MS = SelfDeleteTracker.DEFAULT_CLEANUP_MODE_MS;
 
     private final XposedModule module;
+    private final EnhancementHookInstaller enhancementHooks;
     private XposedConfigProvider configProvider;
     private final FilterEngine filterEngine = new FilterEngine();
     private final DecisionCache decisionCache = new DecisionCache();
@@ -123,6 +127,7 @@ final class TelegramHookInstaller {
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
         this.reliableDownloadHooks = new ReliableDownloadHooks(module, downloadCancellationRegistry);
+        this.enhancementHooks = new EnhancementHookInstaller(module);
     }
 
     synchronized void install(ClassLoader classLoader, ApplicationInfo applicationInfo) {
@@ -135,6 +140,7 @@ final class TelegramHookInstaller {
                     () -> module.getRemotePreferences(ModuleConfigStore.PREFS_NAME)
             );
         }
+        enhancementHooks.install(classLoader, configProvider);
         initAntiRecall(classLoader);
         logRemoteCapabilities();
         logTelegramVersion(classLoader, applicationInfo);
@@ -219,6 +225,7 @@ final class TelegramHookInstaller {
     private void doInitAntiRecall(Context context, ClassLoader classLoader) {
         ModuleLogger.init(context);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
+        messageMarkStore = new MessageMarkStore(context);
         localDialogDeleteStore = new LocalDialogDeleteStore(context);
         dialogDatabasePruner = new TelegramDialogDatabasePruner(context, new TelegramDialogDatabasePruner.Logger() {
             @Override
@@ -4095,6 +4102,17 @@ final class TelegramHookInstaller {
                 showSelectedMessageEditHistory(v, chatActivity, selectedMessageObject);
             });
         }
+        View reloadItem = isEnhancementEnabled(
+                ((View) contentView).getContext(),
+                EnhancementConfig.Feature.RELOAD_MESSAGE
+        ) ? createReloadMessageMenuItem(((View) contentView).getContext(), chatActivity) : null;
+        if (reloadItem != null) {
+            reloadItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_RELOAD_MESSAGE);
+            reloadItem.setOnClickListener(v -> {
+                dismissScrimPopup(chatActivity);
+                reloadSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
+            });
+        }
 
         MenuInsertionPoint insertionPoint = findReportInsertionPoint((View) contentView);
         if (insertionPoint != null) {
@@ -4114,6 +4132,12 @@ final class TelegramHookInstaller {
                         Math.min(insertionPoint.index + 3, insertionPoint.parent.getChildCount())
                 );
             }
+            if (reloadItem != null) {
+                insertionPoint.parent.addView(
+                        reloadItem,
+                        Math.min(insertionPoint.index + 4, insertionPoint.parent.getChildCount())
+                );
+            }
         } else {
             ViewGroup fallbackContainer = resolvePopupLinearLayout(contentView);
             if (fallbackContainer == null) {
@@ -4125,6 +4149,9 @@ final class TelegramHookInstaller {
             }
             if (editHistoryItem != null) {
                 fallbackContainer.addView(editHistoryItem);
+            }
+            if (reloadItem != null) {
+                fallbackContainer.addView(reloadItem);
             }
         }
         refreshMessagePopup((View) contentView, blockItem, popupWindow);
@@ -4268,6 +4295,130 @@ final class TelegramHookInstaller {
             error("Failed to create edit-history menu item", throwable);
             return null;
         }
+    }
+
+    private View createReloadMessageMenuItem(Context context, Object chatActivity) {
+        try {
+            ClassLoader classLoader = chatActivity.getClass().getClassLoader();
+            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
+            View item;
+            if (themeDelegate != null) {
+                Constructor<?> constructor = itemClass.getConstructor(
+                        Context.class,
+                        boolean.class,
+                        boolean.class,
+                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                );
+                item = (View) constructor.newInstance(context, false, true, themeDelegate);
+            } else {
+                Constructor<?> constructor = itemClass.getConstructor(Context.class, boolean.class, boolean.class);
+                item = (View) constructor.newInstance(context, false, true);
+            }
+            CharSequence label = isChineseLocale(context) ? "重新加载这条消息" : "Reload this message";
+            int iconRes = context.getResources().getIdentifier("msg_retry", "drawable", "org.telegram.messenger");
+            if (iconRes == 0) {
+                iconRes = android.R.drawable.ic_popup_sync;
+            }
+            Reflect.invokeIfExists(
+                    item,
+                    "setTextAndIcon",
+                    new Class<?>[]{CharSequence.class, int.class},
+                    label,
+                    iconRes
+            );
+            Reflect.invokeIfExists(item, "setText", new Class<?>[]{CharSequence.class}, label);
+            item.setMinimumWidth(dp(context, 160f));
+            return item;
+        } catch (Throwable throwable) {
+            error("Failed to create reload-message menu item", throwable);
+            return null;
+        }
+    }
+
+    private void reloadSelectedMessage(Context context, Object chatActivity, Object messageObject) {
+        int messageId = resolveMessageId(messageObject);
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
+        if (messageId <= 0 || dialogId == 0L) {
+            return;
+        }
+        try {
+            ClassLoader classLoader = chatActivity.getClass().getClassLoader();
+            Class<?> controllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            int account = resolveSelectedTelegramAccount(classLoader);
+            Object controller = Reflect.invokeStatic(
+                    controllerClass,
+                    "getInstance",
+                    new Class<?>[]{int.class},
+                    account
+            );
+            ArrayList<Integer> ids = new ArrayList<>();
+            ids.add(messageId);
+            boolean invoked = false;
+            for (Method method : controllerClass.getDeclaredMethods()) {
+                if (!"reloadMessages".equals(method.getName())) {
+                    continue;
+                }
+                Object[] args = buildReloadMessageArgs(method.getParameterTypes(), ids, dialogId);
+                if (args == null) {
+                    continue;
+                }
+                method.setAccessible(true);
+                method.invoke(controller, args);
+                invoked = true;
+                break;
+            }
+            if (!invoked) {
+                throw new NoSuchMethodException("MessagesController.reloadMessages");
+            }
+            Toast.makeText(
+                    context,
+                    isChineseLocale(context) ? "已请求重新加载" : "Reload requested",
+                    Toast.LENGTH_SHORT
+            ).show();
+            info("Reloaded message " + messageId + " for dialog " + dialogId);
+        } catch (Throwable throwable) {
+            error("Reload selected message failed", throwable);
+            Toast.makeText(
+                    context,
+                    isChineseLocale(context) ? "当前 Telegram 版本不支持重新加载" : "Reload is unavailable in this Telegram version",
+                    Toast.LENGTH_SHORT
+            ).show();
+        }
+    }
+
+    private Object[] buildReloadMessageArgs(Class<?>[] parameterTypes, ArrayList<Integer> ids, long dialogId) {
+        Object[] args = new Object[parameterTypes.length];
+        boolean hasIds = false;
+        boolean hasDialog = false;
+        for (int i = 0; i < parameterTypes.length; i++) {
+            Class<?> type = parameterTypes[i];
+            if (List.class.isAssignableFrom(type) || ArrayList.class.isAssignableFrom(type)) {
+                args[i] = ids;
+                hasIds = true;
+            } else if (type == long.class || type == Long.class) {
+                args[i] = hasDialog ? 0L : dialogId;
+                hasDialog = true;
+            } else if (type == int.class || type == Integer.class) {
+                args[i] = 0;
+            } else if (type == boolean.class || type == Boolean.class) {
+                args[i] = true;
+            } else {
+                args[i] = null;
+            }
+        }
+        return hasIds && hasDialog ? args : null;
+    }
+
+    private boolean isEnhancementEnabled(Context context, EnhancementConfig.Feature feature) {
+        if (context == null || configProvider == null) {
+            return false;
+        }
+        Context appContext = context.getApplicationContext() != null
+                ? context.getApplicationContext()
+                : context;
+        FilterConfig config = configProvider.getConfig(appContext);
+        return config.enhancements != null && config.enhancements.isEnabled(feature);
     }
 
     private void showSelectedMessageEditHistory(View anchor, Object chatActivity, Object messageObject) {
@@ -4821,19 +4972,28 @@ final class TelegramHookInstaller {
         if (dialogId == 0L || messageId <= 0) {
             return;
         }
-        saveMarkedPosition(context.getApplicationContext(), dialogId, messageId);
+        int account = resolveSelectedTelegramAccount(savedClassLoader);
+        markStore(context).add(account, dialogId, messageId, resolveMarkPreview(messageObject));
         Toast.makeText(context, localizedMarkSavedToast(context), Toast.LENGTH_SHORT).show();
         info("Marked message " + messageId + " for dialog " + dialogId);
     }
 
-    private void saveMarkedPosition(Context context, long dialogId, int messageId) {
-        SharedPreferences prefs = context.getSharedPreferences("gramsieve_marked_positions", Context.MODE_PRIVATE);
-        prefs.edit().putInt("marked_msg_" + dialogId, messageId).apply();
+    private MessageMarkStore markStore(Context context) {
+        if (messageMarkStore == null) {
+            messageMarkStore = new MessageMarkStore(context.getApplicationContext());
+        }
+        return messageMarkStore;
     }
 
-    private int loadMarkedPosition(Context context, long dialogId) {
-        SharedPreferences prefs = context.getSharedPreferences("gramsieve_marked_positions", Context.MODE_PRIVATE);
-        return prefs.getInt("marked_msg_" + dialogId, 0);
+    private String resolveMarkPreview(Object messageObject) {
+        String preview = Reflect.asString(Reflect.field(messageObject, "messageText"));
+        if (preview.isBlank()) {
+            preview = Reflect.asString(Reflect.field(messageObject, "caption"));
+        }
+        if (preview.isBlank()) {
+            preview = Reflect.asString(Reflect.field(Reflect.field(messageObject, "messageOwner"), "message"));
+        }
+        return preview;
     }
 
     private MenuInsertionPoint findReportInsertionPoint(View root) {
@@ -5587,11 +5747,41 @@ final class TelegramHookInstaller {
 
     private void jumpToMarkedPosition(Object chatActivity, Context context) {
         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
-        int markedMessageId = loadMarkedPosition(context.getApplicationContext(), dialogId);
-        if (markedMessageId <= 0) {
+        int account = resolveSelectedTelegramAccount(savedClassLoader);
+        List<MessageMarkStore.Mark> marks = markStore(context).list(account, dialogId);
+        if (marks.isEmpty()) {
             Toast.makeText(context, localizedNoMarkToast(context), Toast.LENGTH_SHORT).show();
             return;
         }
+        if (marks.size() == 1) {
+            jumpToMarkedMessage(chatActivity, context, marks.get(0).messageId);
+            return;
+        }
+        CharSequence[] labels = new CharSequence[marks.size()];
+        for (int i = 0; i < marks.size(); i++) {
+            MessageMarkStore.Mark mark = marks.get(i);
+            labels[i] = "#" + mark.messageId + (mark.preview.isBlank() ? "" : "  ·  " + mark.preview);
+        }
+        new android.app.AlertDialog.Builder(context)
+                .setTitle(isChineseLocale(context) ? "标记消息" : "Marked messages")
+                .setItems(labels, (dialog, which) -> jumpToMarkedMessage(
+                        chatActivity,
+                        context,
+                        marks.get(which).messageId
+                ))
+                .setNeutralButton(isChineseLocale(context) ? "清空" : "Clear", (dialog, which) -> {
+                    markStore(context).clear(account, dialogId);
+                    Toast.makeText(
+                            context,
+                            isChineseLocale(context) ? "已清空当前聊天的标记" : "Marks cleared for this chat",
+                            Toast.LENGTH_SHORT
+                    ).show();
+                })
+                .setNegativeButton(isChineseLocale(context) ? "取消" : "Cancel", null)
+                .show();
+    }
+
+    private void jumpToMarkedMessage(Object chatActivity, Context context, int markedMessageId) {
         Toast.makeText(context, localizedJumpToMarkStarted(context), Toast.LENGTH_SHORT).show();
         boolean invoked = invokeScrollToMessageId(chatActivity, markedMessageId);
         if (invoked) {

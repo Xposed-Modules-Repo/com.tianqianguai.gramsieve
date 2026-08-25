@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
+import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.RuleTextCodec;
 
@@ -28,5 +29,21 @@ public class ModuleConfigStoreTest {
         assertEquals(FilterConfig.RuleTarget.BUTTONS, decoded.globalRules.get(1).target);
         assertEquals(1, decoded.globalExclusions.size());
         assertTrue(decoded.updatedAtEpochMs > 0L);
+    }
+
+    @Test
+    public void jsonRoundTripPreservesEnhancementSettings() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.enhancements.setEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS, true);
+        config.enhancements.setEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST, true);
+        config.enhancements.downloadParallelism = 12;
+        config.enhancements.outgoingPrefix = "[GramSieve]";
+
+        FilterConfig decoded = ModuleConfigStore.fromJson(ModuleConfigStore.toJson(config));
+
+        assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS));
+        assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST));
+        assertEquals(12, decoded.enhancements.downloadParallelism);
+        assertEquals("[GramSieve]", decoded.enhancements.outgoingPrefix);
     }
 }
