@@ -1,6 +1,7 @@
 package com.tianqianguai.gramsieve.module;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -38,6 +39,7 @@ public class MessageCacheTest {
         assertFalse(message.isRecalled);
         assertFalse(message.isEdited);
         assertNull(message.editedText);
+        assertNull(message.rawMessageBlob);
     }
 
     @Test
@@ -97,6 +99,17 @@ public class MessageCacheTest {
     }
 
     @Test
+    public void testSameDialogAndMessageAreIsolatedByAccount() {
+        cache.putFresh(0, 77, 8, "account zero", null, 1);
+        cache.putFresh(1, 77, 8, "account one", null, 2);
+
+        assertEquals("account zero", cache.get(0, 77, 8).text);
+        assertEquals("account one", cache.get(1, 77, 8).text);
+        assertEquals(0, cache.get(0, 77, 8).accountId);
+        assertEquals(1, cache.get(1, 77, 8).accountId);
+    }
+
+    @Test
     public void testMarkRecalledIntegration() {
         cache.put(1, 10, "hello", null, 100);
         cache.markRecalled(1, 10);
@@ -118,8 +131,10 @@ public class MessageCacheTest {
 
     @Test
     public void testRecordEditedVersionPreservesOriginalText() {
+        byte[] rawMessageBlob = new byte[]{1, 2, 3};
         cache.recordEditedVersion(1, 10, 100,
-                "old text", "old caption", "new text", "TL_messageMediaPhoto", "photo_1", null);
+                "old text", "old caption", "new text", "TL_messageMediaPhoto", "photo_1", null,
+                rawMessageBlob);
 
         MessageCache.CachedMessage msg = cache.get(1, 10);
 
@@ -131,10 +146,28 @@ public class MessageCacheTest {
         assertEquals("TL_messageMediaPhoto", msg.mediaType);
         assertEquals("photo_1", msg.mediaId);
         assertNull(msg.cachedMediaPath);
+        assertArrayEquals(rawMessageBlob, msg.rawMessageBlob);
         List<MessageCache.CachedMessage> history = cache.getEditHistory(1, 10);
         assertEquals(1, history.size());
         assertEquals("old text", history.get(0).text);
         assertEquals("new text", history.get(0).editedText);
+        assertArrayEquals(rawMessageBlob, history.get(0).rawMessageBlob);
+    }
+
+    @Test
+    public void testRecordEditedVersionKeepsMainRawAndStoresIncomingHistoryRaw() {
+        byte[] firstRaw = new byte[]{1};
+        byte[] editedRaw = new byte[]{2};
+        cache.putFresh(1, 10, "original", "", 100,
+                null, null, null, firstRaw);
+
+        cache.recordEditedVersion(1, 10, 100,
+                "original", "", "edited", null, null, null, editedRaw);
+
+        MessageCache.CachedMessage message = cache.get(1, 10);
+        assertArrayEquals(firstRaw, message.rawMessageBlob);
+        assertEquals(1, cache.getEditHistory(1, 10).size());
+        assertArrayEquals(editedRaw, cache.getEditHistory(1, 10).get(0).rawMessageBlob);
     }
 
     @Test
@@ -195,6 +228,19 @@ public class MessageCacheTest {
         assertNotNull(msg);
         assertEquals("/tmp/original.jpg", msg.cachedMediaPath);
         assertEquals("old_photo", msg.mediaId);
+    }
+
+    @Test
+    public void testFreshUpdatePreservesExistingRawMessageBlobWhenMissing() {
+        byte[] rawMessageBlob = new byte[]{4, 5, 6};
+        cache.putFresh(1, 1, "", "", 1,
+                "TL_messageMediaPhoto", "old_photo", "/tmp/original.jpg", rawMessageBlob);
+
+        cache.putFresh(1, 1, "", "", 1,
+                "TL_messageMediaPhoto", "old_photo", "/tmp/original.jpg", null);
+
+        MessageCache.CachedMessage message = cache.get(1, 1);
+        assertArrayEquals(rawMessageBlob, message.rawMessageBlob);
     }
 
     @Test
@@ -316,6 +362,11 @@ public class MessageCacheTest {
         }
 
         @Override
+        public void insertOrReplaceFresh(int accountId, MessageCache.CachedMessage message) {
+            db.put(accountKey(accountId, message.dialogId, message.messageId), message);
+        }
+
+        @Override
         public void insertEditHistory(MessageCache.CachedMessage message) {
             editHistory.add(0, message);
         }
@@ -344,6 +395,12 @@ public class MessageCacheTest {
         public MessageCache.CachedMessage getMessage(long dialogId, long messageId) {
             getCallCount++;
             return db.get(dialogId + ":" + messageId);
+        }
+
+        @Override
+        public MessageCache.CachedMessage getMessage(int accountId, long dialogId, long messageId) {
+            getCallCount++;
+            return db.get(accountKey(accountId, dialogId, messageId));
         }
 
         @Override
@@ -381,6 +438,12 @@ public class MessageCacheTest {
 
         MessageCache.CachedMessage getLastUpdated() {
             return lastUpdated;
+        }
+
+        private static String accountKey(int accountId, long dialogId, long messageId) {
+            return accountId == 0
+                    ? dialogId + ":" + messageId
+                    : accountId + "@" + dialogId + ":" + messageId;
         }
     }
 }

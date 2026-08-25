@@ -23,17 +23,31 @@ public final class MediaCache {
     }
 
     public File getMediaFile(long dialogId, long messageId, String extension) {
-        String filename = dialogId + "_" + messageId + (extension != null ? extension : "");
+        return getMediaFile(0, dialogId, messageId, extension);
+    }
+
+    public File getMediaFile(int accountId, long dialogId, long messageId, String extension) {
+        String prefix = accountId == 0 ? "" : "account" + Math.max(0, accountId) + "_";
+        String filename = prefix + dialogId + "_" + messageId + (extension != null ? extension : "");
         return new File(mediaDir, filename);
     }
 
     public boolean hasMedia(long dialogId, long messageId, String extension) {
-        File file = getMediaFile(dialogId, messageId, extension);
+        return hasMedia(0, dialogId, messageId, extension);
+    }
+
+    public boolean hasMedia(int accountId, long dialogId, long messageId, String extension) {
+        File file = getMediaFile(accountId, dialogId, messageId, extension);
         return file.exists() && file.length() > 0;
     }
 
     public File saveMedia(long dialogId, long messageId, String extension, InputStream inputStream) {
-        File file = getMediaFile(dialogId, messageId, extension);
+        return saveMedia(0, dialogId, messageId, extension, inputStream);
+    }
+
+    public File saveMedia(int accountId, long dialogId, long messageId, String extension,
+                          InputStream inputStream) {
+        File file = getMediaFile(accountId, dialogId, messageId, extension);
         try (FileOutputStream fos = new FileOutputStream(file)) {
             byte[] buffer = new byte[8192];
             int bytesRead;
@@ -49,7 +63,11 @@ public final class MediaCache {
     }
 
     public File getMedia(long dialogId, long messageId, String extension) {
-        File file = getMediaFile(dialogId, messageId, extension);
+        return getMedia(0, dialogId, messageId, extension);
+    }
+
+    public File getMedia(int accountId, long dialogId, long messageId, String extension) {
+        File file = getMediaFile(accountId, dialogId, messageId, extension);
         if (file.exists() && file.length() > 0) {
             return file;
         }
@@ -57,7 +75,11 @@ public final class MediaCache {
     }
 
     public void deleteMedia(long dialogId, long messageId, String extension) {
-        File file = getMediaFile(dialogId, messageId, extension);
+        deleteMedia(0, dialogId, messageId, extension);
+    }
+
+    public void deleteMedia(int accountId, long dialogId, long messageId, String extension) {
+        File file = getMediaFile(accountId, dialogId, messageId, extension);
         if (file.exists()) {
             file.delete();
         }

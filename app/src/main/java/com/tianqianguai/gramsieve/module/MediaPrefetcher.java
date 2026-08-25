@@ -53,6 +53,13 @@ public final class MediaPrefetcher {
     }
 
     public void prefetchFromMessage(long dialogId, long messageId, Object messageLike, Object mediaObject) {
+        int account = TelegramAccountResolver.resolveWithFallback(telegramClassLoader, messageLike,
+                Reflect.field(messageLike, "messageOwner"));
+        prefetchFromMessage(account, dialogId, messageId, messageLike, mediaObject);
+    }
+
+    public void prefetchFromMessage(int account, long dialogId, long messageId,
+                                    Object messageLike, Object mediaObject) {
         if (dialogId == 0 || messageId == 0 || messageLike == null || mediaObject == null) {
             return;
         }
@@ -63,7 +70,6 @@ public final class MediaPrefetcher {
             return;
         }
 
-        int account = resolveAccount(messageLike, messageOwner);
         String cancellationKey = cancellationRegistry.keyFor(account, telegramClassLoader, target.fileObject);
         if ("video".equals(target.kind) && cancellationRegistry.isCancelled(cancellationKey)) {
             if (loggedCancelledKeys.add(cancellationKey)) {
@@ -76,8 +82,8 @@ public final class MediaPrefetcher {
             loggedCancelledKeys.remove(cancellationKey);
         }
 
-        String key = dialogId + ":" + messageId + ":" + target.extension;
-        if (cacheAlreadyPresent(dialogId, messageId, target)) {
+        String key = account + ":" + dialogId + ":" + messageId + ":" + target.extension;
+        if (cacheAlreadyPresent(account, dialogId, messageId, target)) {
             return;
         }
 
@@ -105,12 +111,12 @@ public final class MediaPrefetcher {
         }
     }
 
-    private boolean cacheAlreadyPresent(long dialogId, long messageId, MediaTarget target) {
-        if (!mediaCache.hasMedia(dialogId, messageId, target.extension)) {
+    private boolean cacheAlreadyPresent(int account, long dialogId, long messageId, MediaTarget target) {
+        if (!mediaCache.hasMedia(account, dialogId, messageId, target.extension)) {
             return false;
         }
-        updateCachedPath(dialogId, messageId, target,
-                mediaCache.getMediaFile(dialogId, messageId, target.extension).getAbsolutePath());
+        updateCachedPath(account, dialogId, messageId, target,
+                mediaCache.getMediaFile(account, dialogId, messageId, target.extension).getAbsolutePath());
         return true;
     }
 
@@ -142,9 +148,13 @@ public final class MediaPrefetcher {
         }
 
         try (InputStream input = new FileInputStream(source)) {
-            File cached = mediaCache.saveMedia(pending.dialogId, pending.messageId,
-                    pending.target.extension, input);
-            updateCachedPath(pending.dialogId, pending.messageId, pending.target, cached.getAbsolutePath());
+            File cached = mediaCache.saveMedia(pending.account, pending.dialogId,
+                    pending.messageId, pending.target.extension, input);
+            if (cached == null) {
+                return false;
+            }
+            updateCachedPath(pending.account, pending.dialogId, pending.messageId,
+                    pending.target, cached.getAbsolutePath());
             ModuleLogger.hook(TAG, "prefetched media cached dialogId=" + pending.dialogId
                     + " msgId=" + pending.messageId + " path=" + cached.getAbsolutePath());
             return true;
@@ -155,17 +165,18 @@ public final class MediaPrefetcher {
         }
     }
 
-    private void updateCachedPath(long dialogId, long messageId, MediaTarget target, String cachedPath) {
-        MessageCache.CachedMessage existing = messageCache.get(dialogId, messageId);
+    private void updateCachedPath(int account, long dialogId, long messageId,
+                                  MediaTarget target, String cachedPath) {
+        MessageCache.CachedMessage existing = messageCache.get(account, dialogId, messageId);
         if (existing != null) {
             String mediaType = existing.mediaType != null ? existing.mediaType : target.mediaType;
             String mediaId = existing.mediaId != null ? existing.mediaId : target.mediaId;
-            messageCache.putFresh(dialogId, messageId, existing.text, existing.caption,
+            messageCache.putFresh(account, dialogId, messageId, existing.text, existing.caption,
                     existing.senderId, mediaType, mediaId, cachedPath);
             return;
         }
 
-        messageCache.putFresh(dialogId, messageId, "", "", 0L,
+        messageCache.putFresh(account, dialogId, messageId, "", "", 0L,
                 target.mediaType, target.mediaId, cachedPath);
     }
 
@@ -202,27 +213,6 @@ public final class MediaPrefetcher {
         }
         getInstance.setAccessible(true);
         return getInstance.invoke(null, account);
-    }
-
-    private int resolveAccount(Object messageLike, Object messageOwner) {
-        int account = Reflect.asInt(Reflect.field(messageLike, "currentAccount"), -1);
-        if (account >= 0) {
-            return account;
-        }
-        account = Reflect.asInt(Reflect.field(messageOwner, "currentAccount"), -1);
-        if (account >= 0) {
-            return account;
-        }
-        ClassLoader classLoader = telegramClassLoader;
-        if (classLoader != null) {
-            try {
-                Class<?> userConfigClass = classLoader.loadClass("org.telegram.messenger.UserConfig");
-                return Reflect.asInt(Reflect.staticField(userConfigClass, "selectedAccount"), 0);
-            } catch (Throwable ignored) {
-                // Fall through to Telegram's first account.
-            }
-        }
-        return 0;
     }
 
     private Object createParentObject(int account, Object messageLike, Object messageOwner) {

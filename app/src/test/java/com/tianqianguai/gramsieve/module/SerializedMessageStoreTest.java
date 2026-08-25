@@ -1,6 +1,7 @@
 package com.tianqianguai.gramsieve.module;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
@@ -35,14 +36,17 @@ public class SerializedMessageStoreTest {
         BlockingMessageStore delegate = new BlockingMessageStore();
 
         try (SerializedMessageStore store = new SerializedMessageStore(delegate, "test-message-store")) {
+            byte[] rawMessageBlob = new byte[]{7, 8, 9};
             MessageCache.CachedMessage message =
-                    new MessageCache.CachedMessage(1L, 10L, 100L, "original", null, 123L);
+                    new MessageCache.CachedMessage(1L, 10L, 100L, "original", null, 123L,
+                            null, null, null, false, false, null, rawMessageBlob);
 
             store.insertMessage(message);
             try {
                 assertTrue(delegate.writeStarted.await(1, TimeUnit.SECONDS));
                 message.isEdited = true;
                 message.editedText = "mutated after enqueue";
+                message.rawMessageBlob[0] = 99;
             } finally {
                 delegate.releaseWrite.countDown();
             }
@@ -52,6 +56,7 @@ public class SerializedMessageStoreTest {
             assertNotNull(stored);
             assertFalse(stored.isEdited);
             assertNull(stored.editedText);
+            assertArrayEquals(rawMessageBlob, stored.rawMessageBlob);
         }
     }
 

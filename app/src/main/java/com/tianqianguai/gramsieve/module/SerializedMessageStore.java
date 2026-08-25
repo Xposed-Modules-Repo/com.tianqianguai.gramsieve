@@ -39,56 +39,106 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
 
     @Override
     public void insertMessage(MessageCache.CachedMessage message) {
+        insertMessage(message.accountId, message);
+    }
+
+    @Override
+    public void insertMessage(int accountId, MessageCache.CachedMessage message) {
         MessageCache.CachedMessage snapshot = snapshot(message);
-        enqueueWrite(() -> delegate.insertMessage(snapshot));
+        enqueueWrite(() -> delegate.insertMessage(accountId, snapshot));
     }
 
     @Override
     public void insertOrReplaceFresh(MessageCache.CachedMessage message) {
+        insertOrReplaceFresh(message.accountId, message);
+    }
+
+    @Override
+    public void insertOrReplaceFresh(int accountId, MessageCache.CachedMessage message) {
         MessageCache.CachedMessage snapshot = snapshot(message);
-        enqueueWrite(() -> delegate.insertOrReplaceFresh(snapshot));
+        enqueueWrite(() -> delegate.insertOrReplaceFresh(accountId, snapshot));
     }
 
     @Override
     public void insertEditHistory(MessageCache.CachedMessage message) {
+        insertEditHistory(message.accountId, message);
+    }
+
+    @Override
+    public void insertEditHistory(int accountId, MessageCache.CachedMessage message) {
         MessageCache.CachedMessage snapshot = snapshot(message);
-        enqueueWrite(() -> delegate.insertEditHistory(snapshot));
+        enqueueWrite(() -> delegate.insertEditHistory(accountId, snapshot));
     }
 
     @Override
     public void updateMessage(MessageCache.CachedMessage message) {
+        updateMessage(message.accountId, message);
+    }
+
+    @Override
+    public void updateMessage(int accountId, MessageCache.CachedMessage message) {
         MessageCache.CachedMessage snapshot = snapshot(message);
-        enqueueWrite(() -> delegate.updateMessage(snapshot));
+        enqueueWrite(() -> delegate.updateMessage(accountId, snapshot));
     }
 
     @Override
     public void deleteMessage(long dialogId, long messageId) {
-        enqueueWrite(() -> delegate.deleteMessage(dialogId, messageId));
+        deleteMessage(0, dialogId, messageId);
+    }
+
+    @Override
+    public void deleteMessage(int accountId, long dialogId, long messageId) {
+        enqueueWrite(() -> delegate.deleteMessage(accountId, dialogId, messageId));
     }
 
     @Override
     public void deleteDialog(long dialogId) {
-        enqueueWrite(() -> delegate.deleteDialog(dialogId));
+        deleteDialog(0, dialogId);
+    }
+
+    @Override
+    public void deleteDialog(int accountId, long dialogId) {
+        enqueueWrite(() -> delegate.deleteDialog(accountId, dialogId));
     }
 
     @Override
     public MessageCache.CachedMessage getMessage(long dialogId, long messageId) {
-        return submitRead(() -> delegate.getMessage(dialogId, messageId), null);
+        return getMessage(0, dialogId, messageId);
+    }
+
+    @Override
+    public MessageCache.CachedMessage getMessage(int accountId, long dialogId, long messageId) {
+        return submitRead(() -> delegate.getMessage(accountId, dialogId, messageId), null);
     }
 
     @Override
     public List<MessageCache.CachedMessage> getRecalledMessages(long dialogId) {
-        return submitRead(() -> delegate.getRecalledMessages(dialogId), Collections.emptyList());
+        return getRecalledMessages(0, dialogId);
+    }
+
+    @Override
+    public List<MessageCache.CachedMessage> getRecalledMessages(int accountId, long dialogId) {
+        return submitRead(() -> delegate.getRecalledMessages(accountId, dialogId), Collections.emptyList());
     }
 
     @Override
     public List<MessageCache.CachedMessage> getEditedMessages(long dialogId) {
-        return submitRead(() -> delegate.getEditedMessages(dialogId), Collections.emptyList());
+        return getEditedMessages(0, dialogId);
+    }
+
+    @Override
+    public List<MessageCache.CachedMessage> getEditedMessages(int accountId, long dialogId) {
+        return submitRead(() -> delegate.getEditedMessages(accountId, dialogId), Collections.emptyList());
     }
 
     @Override
     public List<MessageCache.CachedMessage> getEditHistory(long dialogId, long messageId) {
-        return submitRead(() -> delegate.getEditHistory(dialogId, messageId), Collections.emptyList());
+        return getEditHistory(0, dialogId, messageId);
+    }
+
+    @Override
+    public List<MessageCache.CachedMessage> getEditHistory(int accountId, long dialogId, long messageId) {
+        return submitRead(() -> delegate.getEditHistory(accountId, dialogId, messageId), Collections.emptyList());
     }
 
     @Override
@@ -150,6 +200,7 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
 
     private static MessageCache.CachedMessage snapshot(MessageCache.CachedMessage message) {
         return new MessageCache.CachedMessage(
+                message.accountId,
                 message.dialogId,
                 message.messageId,
                 message.senderId,
@@ -161,7 +212,8 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
                 message.cachedMediaPath,
                 message.isRecalled,
                 message.isEdited,
-                message.editedText
+                message.editedText,
+                message.rawMessageBlob
         );
     }
 

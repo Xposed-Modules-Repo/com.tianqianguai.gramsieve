@@ -59,6 +59,25 @@ public class ReliableDownloadStateTest {
     }
 
     @Test
+    public void telegramVideoMiniButtonStateZeroIsAnExplicitStartAfterCancel() {
+        assertTrue(ReliableVideoDownloadManager.isExplicitMiniStartState(0));
+        assertFalse(ReliableVideoDownloadManager.isExplicitMiniStartState(1));
+        assertFalse(ReliableVideoDownloadManager.isExplicitMiniStartState(2));
+    }
+
+    @Test
+    public void telegramFileFailureReasonOneIsExplicitCancellation() {
+        assertTrue(ReliableVideoDownloadManager.isExplicitCancelFailure(
+                new Object[]{"video.mp4", 1}));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelFailure(
+                new Object[]{"video.mp4", 0}));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelFailure(
+                new Object[]{"video.mp4", -1}));
+        assertFalse(ReliableVideoDownloadManager.isExplicitCancelFailure(
+                new Object[]{"video.mp4"}));
+    }
+
+    @Test
     public void playableVideosSentAsFilesAreStillProtectedByTheCancelGate() {
         assertTrue(ReliableVideoDownloadManager.isVideoMetadata("video/quicktime", "document.bin"));
         assertTrue(ReliableVideoDownloadManager.isVideoMetadata("application/octet-stream", "clip.MOV"));

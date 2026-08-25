@@ -95,6 +95,13 @@ public final class ModuleConflictDetector {
                 "Telegram Tweaks",
                 new String[]{"ru.mike.telegramtweaks", "ru.mike.sidestories"},
                 Capability.STORIES
+        ),
+        TAUXILIARY(
+                "TAuxiliary",
+                new String[]{"org.telegram.auxiliary"},
+                Capability.ANTI_RECALL,
+                Capability.DOWNLOAD_ACCELERATION,
+                Capability.UI_INJECTION
         );
 
         public final String displayName;
