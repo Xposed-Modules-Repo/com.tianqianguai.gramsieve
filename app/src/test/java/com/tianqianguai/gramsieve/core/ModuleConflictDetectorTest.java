@@ -131,6 +131,31 @@ public final class ModuleConflictDetectorTest {
     }
 
     @Test
+    public void tauxiliaryPackage_resolvesToTauxiliary() {
+        Set<ModuleConflictDetector.KnownModule> installed =
+                ModuleConflictDetector.identifyInstalledModules(
+                        Collections.singleton("org.telegram.auxiliary")
+                );
+
+        assertEquals(1, installed.size());
+        assertTrue(installed.contains(ModuleConflictDetector.KnownModule.TAUXILIARY));
+    }
+
+    @Test
+    public void activeGramSieveAndTauxiliary_reportAntiRecallHighAndUiInjection() {
+        ModuleConflictDetector.Report report = ModuleConflictDetector.detect(
+                EnumSet.of(ModuleConflictDetector.KnownModule.TAUXILIARY),
+                true
+        );
+
+        assertEquals(ModuleConflictDetector.Severity.HIGH, severityOf(
+                report,
+                ModuleConflictDetector.ConflictKind.ANTI_RECALL
+        ));
+        assertTrue(hasFinding(report, ModuleConflictDetector.ConflictKind.UI_INJECTION));
+    }
+
+    @Test
     public void findings_areOrderedByDescendingSeverity() {
         ModuleConflictDetector.Report report = ModuleConflictDetector.detect(
                 EnumSet.of(

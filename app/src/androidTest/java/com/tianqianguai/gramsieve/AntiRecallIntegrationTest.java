@@ -96,4 +96,18 @@ public class AntiRecallIntegrationTest {
         assertEquals("persistent", message.text);
         assertTrue(message.isRecalled);
     }
+
+    @Test
+    public void testRawMessageBlobPersistence() {
+        byte[] rawMessageBlob = new byte[]{1, 2, 3, 4};
+        cache.putFresh(987654, 321, "normalized", null, 10,
+                null, null, null, rawMessageBlob);
+
+        MessageCache newCache = new MessageCache(databaseHelper);
+        MessageCache.CachedMessage message = newCache.get(987654, 321);
+
+        assertNotNull(message);
+        assertEquals("normalized", message.text);
+        assertArrayEquals(rawMessageBlob, message.rawMessageBlob);
+    }
 }

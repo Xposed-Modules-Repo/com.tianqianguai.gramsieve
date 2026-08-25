@@ -103,11 +103,10 @@ final class ReliableVideoDownloadManager {
                 + " args=" + Arrays.toString(buttonArgs));
     }
 
-    /** @return true when the native mini-button action must not be allowed to restart a canceled stream. */
-    boolean onUserMiniButton(Object cell, Object[] buttonArgs) {
+    void onUserMiniButton(Object cell, Object[] buttonArgs) {
         Object message = Reflect.field(cell, "currentMessageObject");
         if (!isVideo(message)) {
-            return false;
+            return;
         }
         Object document = documentOf(message, Reflect.field(cell, "documentAttach"));
         int account = Reflect.asInt(Reflect.field(cell, "currentAccount"), 0);
@@ -119,7 +118,7 @@ final class ReliableVideoDownloadManager {
                     + " mainState=" + buttonState + " account=" + account
                     + " message=" + typeOf(message) + " attachment=" + typeOf(document)
                     + " args=" + Arrays.toString(buttonArgs));
-            return false;
+            return;
         }
         boolean hadJob = jobs.containsKey(key);
         boolean pendingStart = userStarted.contains(key);
@@ -133,12 +132,7 @@ final class ReliableVideoDownloadManager {
             hardStopNativeVideoState(account, key, document, "mini");
             ModuleLogger.hook(TAG, "mini explicit-cancel state=" + miniState + " mainState=" + buttonState
                     + " " + targetDescription(account, key, document) + " hadJob=" + hadJob);
-        } else if (miniState == 0) {
-            if (cancellationRegistry.isCancelled(key)) {
-                ModuleLogger.hook(TAG, "mini start blocked after explicit-cancel; requires primary download "
-                        + targetDescription(account, key, document));
-                return true;
-            }
+        } else if (isExplicitMiniStartState(miniState)) {
             markExplicitStart(key);
             ModuleLogger.hook(TAG, "mini explicit-start " + targetDescription(account, key, document));
         } else {
@@ -146,7 +140,6 @@ final class ReliableVideoDownloadManager {
                     + " mainState=" + buttonState + " "
                     + targetDescription(account, key, document));
         }
-        return false;
     }
 
     void onUserMiniButtonComplete(Object cell, Object[] buttonArgs) {
@@ -313,8 +306,12 @@ final class ReliableVideoDownloadManager {
             complete(job, "completed");
         } else if (id == failedId) {
             if (cancellationRegistry.isCancelled(key)) {
-                ModuleLogger.hook(TAG, "failure notification ignored after explicit-cancel "
+                ModuleLogger.hook(TAG, "cancellation failure ignored "
                         + targetDescription(account, key, job.args[0]));
+            } else if (isExplicitCancelFailure(args)) {
+                // FileLoader removes the old operation before posting reason=1. If the user
+                // already started again, re-submit without cancelling the fresh operation.
+                scheduleRestart(job, "previous cancel completed", false);
             } else {
                 scheduleRestart(job, "interrupted");
             }
@@ -332,6 +329,10 @@ final class ReliableVideoDownloadManager {
     }
 
     private void scheduleRestart(Job job, String reason) {
+        scheduleRestart(job, reason, true);
+    }
+
+    private void scheduleRestart(Job job, String reason, boolean cancelFirst) {
         synchronized (job) {
             if (job.recovering) {
                 return;
@@ -344,10 +345,14 @@ final class ReliableVideoDownloadManager {
             job.recovering = true;
         }
         long generation = job.state.generation();
-        long delayMs = Math.min(15_000L, RESTART_DELAY_MS << Math.min(job.retryCount++, 4));
+        long delayMs = cancelFirst
+                ? Math.min(15_000L, RESTART_DELAY_MS << Math.min(job.retryCount++, 4))
+                : 0L;
         ModuleLogger.hook(TAG, "recovering " + reason + " account=" + job.account
                 + " file=" + fileName(job.args[0]) + " delayMs=" + delayMs);
-        cancelNative(job);
+        if (cancelFirst) {
+            cancelNative(job);
+        }
         scheduler.schedule(() -> restart(job, generation), delayMs, TimeUnit.MILLISECONDS);
     }
 
@@ -655,6 +660,17 @@ final class ReliableVideoDownloadManager {
         return state == 1;
     }
 
+    static boolean isExplicitMiniStartState(int state) {
+        // A visible mini download button at state 0 is a fresh user start, including after X.
+        return state == 0;
+    }
+
+    static boolean isExplicitCancelFailure(Object[] notificationArgs) {
+        // Telegram posts fileLoadFailed(fileName, reason); reason 1 is FileLoadOperation.cancel().
+        return notificationArgs != null && notificationArgs.length >= 2
+                && Reflect.asInt(notificationArgs[1], Integer.MIN_VALUE) == 1;
+    }
+
     private String typeOf(Object value) {
         return value == null ? "null" : value.getClass().getSimpleName();
     }
@@ -701,4 +717,5 @@ final class ReliableVideoDownloadManager {
             this.args = args.clone();
         }
     }
+
 }

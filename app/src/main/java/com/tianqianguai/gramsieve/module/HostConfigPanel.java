@@ -44,6 +44,12 @@ import java.lang.reflect.Method;
 
 @SuppressLint("UseSwitchCompatOrMaterialCode")
 final class HostConfigPanel {
+    private enum DialogHistoryChoice {
+        FOLLOW_GLOBAL,
+        RECORD,
+        SKIP
+    }
+
     interface ConfigSaver {
         FilterConfig save(FilterConfig updated);
     }
@@ -70,8 +76,10 @@ final class HostConfigPanel {
     private final boolean chatMode;
     private final long dialogId;
     private final String chatTitle;
+    private final int accountId;
     private final AntiRecallConfigStore antiRecallConfigStore;
     private final BackgroundMessageLoader backgroundMessageLoader;
+    private final EditHistoryPolicyStore editHistoryPolicyStore;
     private final ConfigSaver saver;
     private final Runnable afterSave;
     private final boolean chinese;
@@ -93,8 +101,11 @@ final class HostConfigPanel {
     private Switch debugLoggingSwitch;
     private Switch excludeChatSwitch;
     private Switch chatAntiRecallSwitch;
+    private Switch editHistoryEnabledSwitch;
     private RadioGroup languageGroup;
     private RadioGroup actionGroup;
+    private RadioGroup editHistoryModeGroup;
+    private RadioGroup dialogHistoryRuleGroup;
 
     private HostConfigPanel(
             Context context,
@@ -103,8 +114,10 @@ final class HostConfigPanel {
             boolean chatMode,
             long dialogId,
             String chatTitle,
+            int accountId,
             AntiRecallConfigStore antiRecallConfigStore,
             BackgroundMessageLoader backgroundMessageLoader,
+            EditHistoryPolicyStore editHistoryPolicyStore,
             ConfigSaver saver,
             Runnable afterSave
     ) {
@@ -114,8 +127,10 @@ final class HostConfigPanel {
         this.chatMode = chatMode;
         this.dialogId = dialogId;
         this.chatTitle = chatTitle == null ? "" : chatTitle;
+        this.accountId = Math.max(0, accountId);
         this.antiRecallConfigStore = antiRecallConfigStore;
         this.backgroundMessageLoader = backgroundMessageLoader;
+        this.editHistoryPolicyStore = editHistoryPolicyStore;
         this.saver = saver;
         this.afterSave = afterSave;
         this.chinese = isChineseLocale(context);
@@ -143,8 +158,10 @@ final class HostConfigPanel {
             boolean chatMode,
             long dialogId,
             String chatTitle,
+            int accountId,
             AntiRecallConfigStore antiRecallConfigStore,
             BackgroundMessageLoader backgroundMessageLoader,
+            EditHistoryPolicyStore editHistoryPolicyStore,
             ConfigSaver saver,
             Runnable afterSave
     ) {
@@ -159,8 +176,10 @@ final class HostConfigPanel {
                 chatMode,
                 dialogId,
                 chatTitle,
+                accountId,
                 antiRecallConfigStore,
                 backgroundMessageLoader,
+                editHistoryPolicyStore,
                 saver,
                 afterSave
         );
@@ -313,6 +332,7 @@ final class HostConfigPanel {
         if (chatMode) {
             buildChatAntiRecallCard(container);
         }
+        buildEditHistoryCard(container);
         buildRulesCard(container);
 
         root.addView(overlay, new ViewGroup.LayoutParams(
@@ -407,6 +427,47 @@ final class HostConfigPanel {
         addInfo(card, t("保存后会立即同步到宿主里的后台加载器。", "Saving updates the host background loader immediately."));
     }
 
+    private void buildEditHistoryCard(LinearLayout container) {
+        if (editHistoryPolicyStore == null || (chatMode && dialogId == 0L)) {
+            return;
+        }
+        LinearLayout card = addCard(container);
+        addTitle(card, t("编辑历史", "Edit History"));
+        if (chatMode) {
+            addInfo(card, t(
+                    "为当前用户或群组设置记录规则；“跟随全局”不会创建单独规则。",
+                    "Choose the rule for this user or group. Follow global creates no override."
+            ));
+            dialogHistoryRuleGroup = new RadioGroup(context);
+            dialogHistoryRuleGroup.setOrientation(RadioGroup.VERTICAL);
+            addRadio(dialogHistoryRuleGroup, t("跟随全局模式", "Follow global mode"),
+                    DialogHistoryChoice.FOLLOW_GLOBAL);
+            addRadio(dialogHistoryRuleGroup, t("始终记录", "Always record"), DialogHistoryChoice.RECORD);
+            addRadio(dialogHistoryRuleGroup, t("从不记录", "Never record"), DialogHistoryChoice.SKIP);
+            Boolean explicit = editHistoryPolicyStore.getDialogRule(accountId, dialogId);
+            checkTaggedRadio(dialogHistoryRuleGroup, explicit == null
+                    ? DialogHistoryChoice.FOLLOW_GLOBAL
+                    : explicit ? DialogHistoryChoice.RECORD : DialogHistoryChoice.SKIP);
+            addView(card, dialogHistoryRuleGroup, 0);
+            return;
+        }
+
+        editHistoryEnabledSwitch = addSwitch(card, t("启用编辑历史", "Enable edit history"));
+        editHistoryEnabledSwitch.setChecked(editHistoryPolicyStore.isEnabled(accountId));
+        addSectionLabel(card, t("默认记录范围", "Default recording scope"));
+        editHistoryModeGroup = new RadioGroup(context);
+        editHistoryModeGroup.setOrientation(RadioGroup.VERTICAL);
+        addRadio(editHistoryModeGroup,
+                t("黑名单：默认记录，仅排除指定用户/群组", "Blacklist: record by default, except selected users/groups"),
+                EditHistoryPolicyStore.Mode.BLACKLIST);
+        addRadio(editHistoryModeGroup,
+                t("白名单：默认不记录，仅记录指定用户/群组", "Whitelist: only record selected users/groups"),
+                EditHistoryPolicyStore.Mode.WHITELIST);
+        checkTaggedRadio(editHistoryModeGroup, editHistoryPolicyStore.getMode(accountId));
+        addView(card, editHistoryModeGroup, 0);
+        addInfo(card, t("账号槽位：", "Account slot: ") + accountId);
+    }
+
     private void buildRulesCard(LinearLayout container) {
         LinearLayout card = addCard(container);
         addTitle(card, t("规则内容", "Rules"));
@@ -449,6 +510,7 @@ final class HostConfigPanel {
                         exclusionMatrix
                 );
                 persistChatAntiRecall();
+                persistChatEditHistoryRule();
             } else {
                 updated = applyGlobalDraft(
                         baseConfig,
@@ -459,6 +521,7 @@ final class HostConfigPanel {
                         matchMatrix,
                         exclusionMatrix
                 );
+                persistGlobalEditHistoryPolicy();
             }
             saver.save(updated);
             if (afterSave != null) {
@@ -511,6 +574,31 @@ final class HostConfigPanel {
             return;
         }
         antiRecallConfigStore.setChatEnabled(dialogId, enabled);
+    }
+
+    private void persistGlobalEditHistoryPolicy() {
+        if (editHistoryPolicyStore == null || editHistoryEnabledSwitch == null) {
+            return;
+        }
+        editHistoryPolicyStore.setEnabled(accountId, editHistoryEnabledSwitch.isChecked());
+        Object selected = selectedRadioTag(editHistoryModeGroup);
+        if (selected instanceof EditHistoryPolicyStore.Mode) {
+            editHistoryPolicyStore.setMode(accountId, (EditHistoryPolicyStore.Mode) selected);
+        }
+    }
+
+    private void persistChatEditHistoryRule() {
+        if (editHistoryPolicyStore == null || dialogHistoryRuleGroup == null || dialogId == 0L) {
+            return;
+        }
+        Object selected = selectedRadioTag(dialogHistoryRuleGroup);
+        if (selected == DialogHistoryChoice.RECORD) {
+            editHistoryPolicyStore.setDialogRecorded(accountId, dialogId, true);
+        } else if (selected == DialogHistoryChoice.SKIP) {
+            editHistoryPolicyStore.setDialogRecorded(accountId, dialogId, false);
+        } else {
+            editHistoryPolicyStore.clearDialogRule(accountId, dialogId);
+        }
     }
 
     private void close() {

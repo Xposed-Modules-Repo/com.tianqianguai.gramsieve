@@ -79,10 +79,11 @@ final class TelegramHookInstaller {
     private MediaPrefetcher mediaPrefetcher;
     private final DownloadCancellationRegistry downloadCancellationRegistry =
             new DownloadCancellationRegistry();
-    private ReliableVideoDownloadManager reliableVideoDownloads;
+    private final ReliableDownloadHooks reliableDownloadHooks;
     private BackgroundMessageLoader backgroundMessageLoader;
     private RecallDetector recallDetector;
     private AntiRecallConfigStore antiRecallConfigStore;
+    private EditHistoryPolicyStore editHistoryPolicyStore;
     private LocalDialogDeleteStore localDialogDeleteStore;
     private TelegramDialogDatabasePruner dialogDatabasePruner;
     private final Set<LocalDialogDeleteStore.HiddenDialog> locallyHiddenDialogs =
@@ -121,6 +122,7 @@ final class TelegramHookInstaller {
 
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
+        this.reliableDownloadHooks = new ReliableDownloadHooks(module, downloadCancellationRegistry);
     }
 
     synchronized void install(ClassLoader classLoader, ApplicationInfo applicationInfo) {
@@ -138,7 +140,7 @@ final class TelegramHookInstaller {
         logTelegramVersion(classLoader, applicationInfo);
         hookPushNotificationTriggers(classLoader);
         hookTaggedViewMeasure();
-        hookReliableVideoDownloads(classLoader);
+        reliableDownloadHooks.install(classLoader);
         hookChatMessageCell(classLoader);
         hookRecyclerViewBinding(classLoader);
         hookChatActivityAdapter(classLoader);
@@ -235,11 +237,14 @@ final class TelegramHookInstaller {
         locallyHiddenDialogs.addAll(hiddenDialogs);
         pruneKnownHiddenDialogs(hiddenDialogs);
         MessageDatabaseHelper databaseHelper = new MessageDatabaseHelper(context);
+        databaseHelper.getWritableDatabase();
+        editHistoryPolicyStore = new EditHistoryPolicyStore(context, antiRecallConfigStore);
         messageCache = new MessageCache(new SerializedMessageStore(databaseHelper));
         mediaCache = new MediaCache(context);
         mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache, downloadCancellationRegistry);
         backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
-        recallDetector = new RecallDetector(messageCache, backgroundMessageLoader, mediaPrefetcher);
+        recallDetector = new RecallDetector(messageCache, backgroundMessageLoader,
+                mediaPrefetcher, editHistoryPolicyStore);
         backgroundMessageLoader.setLoadedMessagesConsumer(recallDetector::cacheBackgroundMessages);
         if (classLoader != null) {
             mediaPrefetcher.setTelegramClassLoader(classLoader);
@@ -436,254 +441,6 @@ final class TelegramHookInstaller {
             }
         } catch (Throwable throwable) {
             error("Failed to hook ChatMessageCell", throwable);
-        }
-    }
-
-    private void hookReliableVideoDownloads(ClassLoader classLoader) {
-        reliableVideoDownloads = new ReliableVideoDownloadManager(downloadCancellationRegistry);
-        reliableVideoDownloads.setClassLoader(classLoader);
-        hookReliableDownloadButton(classLoader);
-        hookReliableDownloadMiniButton(classLoader);
-        hookReliableDownloadTransport(classLoader);
-        hookReliableDownloadNotifications(classLoader);
-    }
-
-    private void hookReliableDownloadButton(ClassLoader classLoader) {
-        try {
-            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
-            Method method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
-            deoptimize(method, "ChatMessageCell.didPressButton(boolean, boolean)");
-            hook(method, chain -> {
-                Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
-                reliableVideoDownloads.onUserButton(chain.getThisObject(), buttonArgs);
-                Object result = chain.proceed();
-                reliableVideoDownloads.onUserButtonComplete(chain.getThisObject(), buttonArgs);
-                return result;
-            });
-            info("ReliableDownload: hooked ChatMessageCell.didPressButton");
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook user download button", throwable);
-        }
-    }
-
-    private void hookReliableDownloadMiniButton(ClassLoader classLoader) {
-        try {
-            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
-            Method method = Reflect.method(cellClass, "didPressMiniButton", boolean.class);
-            deoptimize(method, "ChatMessageCell.didPressMiniButton(boolean)");
-            hook(method, chain -> {
-                Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
-                if (reliableVideoDownloads.onUserMiniButton(chain.getThisObject(), buttonArgs)) {
-                    return null;
-                }
-                Object result = chain.proceed();
-                reliableVideoDownloads.onUserMiniButtonComplete(chain.getThisObject(), buttonArgs);
-                return result;
-            });
-            info("ReliableDownload: hooked ChatMessageCell.didPressMiniButton");
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook user mini download button", throwable);
-        }
-    }
-
-    private void hookReliableDownloadTransport(ClassLoader classLoader) {
-        try {
-            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
-            boolean hooked = false;
-            for (Method method : fileLoaderClass.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadFile".equals(method.getName()) || parameters.length != 4
-                        || parameters[2] != int.class || parameters[3] != int.class
-                        || method.getReturnType() != void.class) {
-                    continue;
-                }
-                deoptimize(method, "FileLoader.loadFile(Document, Object, int, int)");
-                hook(method, chain -> {
-                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
-                    if (!reliableVideoDownloads.onLoadFile(chain.getThisObject(), loadArgs)) {
-                        return null;
-                    }
-                    return chain.proceed();
-                });
-                hooked = true;
-            }
-            if (!hooked) {
-                throw new NoSuchMethodException("FileLoader.loadFile(Document,Object,int,int)");
-            }
-            info("ReliableDownload: hooked FileLoader video download transport");
-            hookReliableDownloadStreamTransport(fileLoaderClass);
-            hookReliableDownloadInternalTransport(fileLoaderClass);
-            hookReliableDownloadLoadingQuery(fileLoaderClass);
-            hookReliableDownloadVideoLoadingState(fileLoaderClass);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook FileLoader", throwable);
-        }
-    }
-
-    private void hookReliableDownloadStreamTransport(Class<?> fileLoaderClass) {
-        int hooked = 0;
-        try {
-            for (Method method : fileLoaderClass.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadStreamFile".equals(method.getName()) || parameters.length < 4
-                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[1].getName())) {
-                    continue;
-                }
-                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
-                hook(method, chain -> {
-                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
-                    if (!reliableVideoDownloads.onLoadStreamFile(chain.getThisObject(), loadArgs)) {
-                        // AnimatedFileDrawableStream and FileStreamLoadOperation accept a null
-                        // operation here and stop waiting for the canceled stream.
-                        return null;
-                    }
-                    return chain.proceed();
-                });
-                hooked++;
-            }
-            if (hooked == 0) {
-                throw new NoSuchMethodException("FileLoader.loadStreamFile(...,Document,...)");
-            }
-            info("ReliableDownload: hooked FileLoader stream transport overloads=" + hooked);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook FileLoader stream transport", throwable);
-        }
-    }
-
-    private void hookReliableDownloadInternalTransport(Class<?> fileLoaderClass) {
-        int hooked = 0;
-        try {
-            for (Method method : fileLoaderClass.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadFileInternal".equals(method.getName()) || parameters.length < 6
-                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName())
-                        || !"org.telegram.messenger.FileLoadOperation".equals(method.getReturnType().getName())) {
-                    continue;
-                }
-                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
-                hook(method, chain -> {
-                    Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
-                    if (!reliableVideoDownloads.onLoadFileInternal(chain.getThisObject(), loadArgs)) {
-                        // This is the FileLoader queue's operation-creation point. Returning null
-                        // also releases the stream caller's CountDownLatch without reviving the
-                        // canceled download.
-                        return null;
-                    }
-                    return chain.proceed();
-                });
-                hooked++;
-            }
-            if (hooked == 0) {
-                throw new NoSuchMethodException("FileLoader.loadFileInternal(Document,...)");
-            }
-            info("ReliableDownload: hooked FileLoader internal transport overloads=" + hooked);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook FileLoader internal transport", throwable);
-        }
-    }
-
-    private void hookReliableDownloadLoadingQuery(Class<?> fileLoaderClass) {
-        int hooked = 0;
-        try {
-            for (Method method : fileLoaderClass.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                if (!"isLoadingFile".equals(method.getName()) || parameters.length != 1
-                        || parameters[0] != String.class || method.getReturnType() != boolean.class) {
-                    continue;
-                }
-                deoptimize(method, "FileLoader.isLoadingFile(String)");
-                hook(method, chain -> {
-                    Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
-                    if (!reliableVideoDownloads.onIsLoadingFile(chain.getThisObject(), queryArgs)) {
-                        // ChatMessageCell derives the mini X directly from this query. Returning
-                        // false removes a stale operation from the UI and asks the manager to
-                        // cancel it by file name as a final safety net.
-                        return false;
-                    }
-                    return chain.proceed();
-                });
-                hooked++;
-            }
-            if (hooked == 0) {
-                throw new NoSuchMethodException("FileLoader.isLoadingFile(String)");
-            }
-            info("ReliableDownload: hooked FileLoader loading-state query overloads=" + hooked);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook FileLoader loading-state query", throwable);
-        }
-    }
-
-    private void hookReliableDownloadVideoLoadingState(Class<?> fileLoaderClass) {
-        int queries = 0;
-        int mutations = 0;
-        try {
-            for (Method method : fileLoaderClass.getDeclaredMethods()) {
-                Class<?>[] parameters = method.getParameterTypes();
-                boolean documentFirst = parameters.length > 0
-                        && "org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName());
-                if ("isLoadingVideo".equals(method.getName()) && parameters.length == 2
-                        && documentFirst && parameters[1] == boolean.class
-                        && method.getReturnType() == boolean.class) {
-                    deoptimize(method, "FileLoader.isLoadingVideo(Document, boolean)");
-                    hook(method, chain -> {
-                        Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
-                        if (!reliableVideoDownloads.onIsLoadingVideo(chain.getThisObject(), queryArgs)) {
-                            return false;
-                        }
-                        return chain.proceed();
-                    });
-                    queries++;
-                } else if (("setLoadingVideo".equals(method.getName()) && parameters.length == 3
-                        || "setLoadingVideoForPlayer".equals(method.getName()) && parameters.length == 2)
-                        && documentFirst && parameters[1] == boolean.class
-                        && method.getReturnType() == void.class) {
-                    deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
-                    hook(method, chain -> {
-                        Object[] stateArgs = chain.getArgs().toArray(new Object[0]);
-                        if (!reliableVideoDownloads.onSetLoadingVideo(
-                                chain.getThisObject(), stateArgs, method.getName())) {
-                            return null;
-                        }
-                        return chain.proceed();
-                    });
-                    mutations++;
-                }
-            }
-            if (queries == 0 || mutations == 0) {
-                throw new NoSuchMethodException("FileLoader video loading-state methods queries="
-                        + queries + " mutations=" + mutations);
-            }
-            info("ReliableDownload: hooked FileLoader player loading-state queries=" + queries
-                    + " mutators=" + mutations);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook FileLoader player loading-state", throwable);
-        }
-    }
-
-    private void hookReliableDownloadNotifications(ClassLoader classLoader) {
-        try {
-            Class<?> notificationClass = classLoader.loadClass("org.telegram.messenger.NotificationCenter");
-            int progressId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadProgressChanged"), -1);
-            int loadedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoaded"), -1);
-            int failedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadFailed"), -1);
-            Method method = Reflect.method(notificationClass, "postNotificationName", int.class, Object[].class);
-            hook(method, chain -> {
-                Object result = chain.proceed();
-                java.util.List<Object> hookArgs = chain.getArgs();
-                if (hookArgs != null && hookArgs.size() >= 2 && hookArgs.get(1) instanceof Object[]) {
-                    reliableVideoDownloads.onNotification(
-                            chain.getThisObject(),
-                            Reflect.asInt(hookArgs.get(0), -1),
-                            (Object[]) hookArgs.get(1),
-                            progressId, loadedId, failedId
-                    );
-                }
-                return result;
-            });
-            info("ReliableDownload: hooked progress notifications ids="
-                    + progressId + "/" + loadedId + "/" + failedId);
-        } catch (Throwable throwable) {
-            error("ReliableDownload: failed to hook progress notifications", throwable);
         }
     }
 
@@ -1051,7 +808,7 @@ final class TelegramHookInstaller {
         int marked = 0;
         for (Long dialogId : dialogIds) {
             if (dialogId != null && dialogId != 0L
-                    && detector.processDialogDeletion(dialogId, action, revoke, "uiDeleteDialog")) {
+                    && detector.processDialogDeletion(account, dialogId, action, revoke, "uiDeleteDialog")) {
                 markLocalDialogHidden(dialogId, account);
                 if (shouldPruneDatabase) {
                     pruneTelegramDialogDatabase(dialogId, account, methodName);
@@ -2927,18 +2684,25 @@ final class TelegramHookInstaller {
 
     private void cacheAndApplyAntiRecall(View cell, Object messageObject) {
         int count = ++cacheCallCount;
-        if (messageObject == null || messageCache == null || backgroundMessageLoader == null || mediaCache == null) return;
+        if (messageObject == null || messageCache == null || mediaCache == null) return;
         try {
             long dialogId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getDialogId", new Class<?>[0]), 0L);
             long messageId = Reflect.asLong(Reflect.invokeIfExists(messageObject, "getId", new Class<?>[0]), 0L);
             if (dialogId == 0L || messageId == 0L) return;
-            boolean enabled = backgroundMessageLoader.isChatEnabled(dialogId);
-            if (count <= 10 || count % 200 == 0) {
-                info("cacheAndApply #" + count + " dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + enabled);
-            }
-            if (!enabled) return;
-
             Object owner = Reflect.field(messageObject, "messageOwner");
+            int accountId = TelegramAccountResolver.resolveWithFallback(
+                    savedClassLoader, messageObject, owner);
+            boolean antiRecallEnabled = backgroundMessageLoader != null
+                    && backgroundMessageLoader.isChatEnabled(dialogId);
+            boolean editHistoryEnabled = editHistoryPolicyStore != null
+                    && editHistoryPolicyStore.shouldRecord(accountId, dialogId);
+            if (count <= 10 || count % 200 == 0) {
+                info("cacheAndApply #" + count + " account=" + accountId + " dialogId="
+                        + dialogId + " msgId=" + messageId + " antiRecall=" + antiRecallEnabled
+                        + " editHistory=" + editHistoryEnabled);
+            }
+            if (!antiRecallEnabled && !editHistoryEnabled) return;
+
             String fullContent = "";
             String caption = "";
             String mediaType = null;
@@ -2981,7 +2745,7 @@ final class TelegramHookInstaller {
                 }
             }
 
-            MessageCache.CachedMessage existing = messageCache.get(dialogId, messageId);
+            MessageCache.CachedMessage existing = messageCache.get(accountId, dialogId, messageId);
 
             // Build a content fingerprint for comparison (text + mediaType + mediaId)
             String contentFingerprint = fullContent + "|" + (mediaType != null ? mediaType : "") + "|" + (mediaId != null ? mediaId : "");
@@ -2992,22 +2756,38 @@ final class TelegramHookInstaller {
                         + (existing.mediaType != null ? existing.mediaType : "") + "|"
                         + (existing.mediaId != null ? existing.mediaId : "");
                 if (!existingFingerprint.isEmpty() && !existingFingerprint.equals(contentFingerprint)) {
-                    messageCache.markEdited(dialogId, messageId, fullContent);
-                    info("Anti-recall: detected edit msgId=" + messageId);
+                    if (editHistoryEnabled) {
+                        messageCache.markEdited(accountId, dialogId, messageId, fullContent);
+                        info("EditHistory: detected edit account=" + accountId + " msgId=" + messageId);
+                    } else {
+                        messageCache.putFresh(accountId, dialogId, messageId, fullContent, caption, 0L,
+                                mediaType, mediaId, existing.cachedMediaPath,
+                                TelegramMessageSerializer.serialize(messageObject));
+                    }
                 } else if (existingFingerprint.isEmpty() || existingFingerprint.equals(contentFingerprint)) {
-                    cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
-                    messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
-                    messageCache.putMediaObject(dialogId, messageId, media);
-                    prefetchMediaIfNeeded(dialogId, messageId, messageObject, media, cachedMediaPath);
+                    cachedMediaPath = tryCacheMedia(cell, accountId, dialogId, messageId,
+                            owner, mediaAttachment, mediaKind);
+                    messageCache.putFresh(accountId, dialogId, messageId, fullContent, caption, 0L,
+                            mediaType, mediaId, cachedMediaPath,
+                            existing.rawMessageBlob == null
+                                    ? TelegramMessageSerializer.serialize(messageObject) : null);
+                    messageCache.putMediaObject(accountId, dialogId, messageId, media);
+                    prefetchMediaIfNeeded(accountId, dialogId, messageId,
+                            messageObject, media, cachedMediaPath);
                 }
             } else if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
-                cachedMediaPath = tryCacheMedia(cell, dialogId, messageId, owner, mediaAttachment, mediaKind);
-                messageCache.putFresh(dialogId, messageId, fullContent, caption, 0L, mediaType, mediaId, cachedMediaPath);
-                messageCache.putMediaObject(dialogId, messageId, media);
-                prefetchMediaIfNeeded(dialogId, messageId, messageObject, media, cachedMediaPath);
+                cachedMediaPath = tryCacheMedia(cell, accountId, dialogId, messageId,
+                        owner, mediaAttachment, mediaKind);
+                messageCache.putFresh(accountId, dialogId, messageId, fullContent, caption, 0L,
+                        mediaType, mediaId, cachedMediaPath,
+                        existing == null || existing.rawMessageBlob == null
+                                ? TelegramMessageSerializer.serialize(messageObject) : null);
+                messageCache.putMediaObject(accountId, dialogId, messageId, media);
+                prefetchMediaIfNeeded(accountId, dialogId, messageId,
+                        messageObject, media, cachedMediaPath);
             }
 
-            MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+            MessageCache.CachedMessage cached = messageCache.get(accountId, dialogId, messageId);
             if (cached != null && cached.isEdited) {
                 showEditedMark(cell, cached);
             } else if (cached != null && cached.isRecalled) {
@@ -3018,35 +2798,37 @@ final class TelegramHookInstaller {
         }
     }
 
-    private void prefetchMediaIfNeeded(long dialogId, long messageId, Object messageLike,
+    private void prefetchMediaIfNeeded(int accountId, long dialogId, long messageId, Object messageLike,
                                        Object media, String cachedMediaPath) {
         if (cachedMediaPath != null || mediaPrefetcher == null || messageLike == null || media == null) {
             return;
         }
-        mediaPrefetcher.prefetchFromMessage(dialogId, messageId, messageLike, media);
+        mediaPrefetcher.prefetchFromMessage(accountId, dialogId, messageId, messageLike, media);
     }
 
-    private String tryCacheMedia(View cell, long dialogId, long messageId, Object messageOwner, Object mediaObj, String mediaKind) {
+    private String tryCacheMedia(View cell, int accountId, long dialogId, long messageId,
+                                 Object messageOwner, Object mediaObj, String mediaKind) {
         if (mediaObj == null || mediaKind == null) {
             return null;
         }
         try {
             // Check if we already cached this media
             String extension = mediaKind.equals("photo") ? ".jpg" : mediaKind.equals("video") ? ".mp4" : ".bin";
-            if (mediaCache.hasMedia(dialogId, messageId, extension)) {
-                return mediaCache.getMediaFile(dialogId, messageId, extension).getAbsolutePath();
+            if (mediaCache.hasMedia(accountId, dialogId, messageId, extension)) {
+                return mediaCache.getMediaFile(accountId, dialogId, messageId, extension).getAbsolutePath();
             }
 
             // Try to get the file path from Telegram's FileLoader
             ClassLoader classLoader = savedClassLoader != null ? savedClassLoader : cell.getContext().getClassLoader();
             Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
             Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance",
-                    new Class<?>[]{int.class}, resolveSelectedTelegramAccount(classLoader));
+                    new Class<?>[]{int.class}, accountId);
 
             java.io.File srcFile = resolveTelegramMediaPath(fileLoaderClass, fileLoader, messageOwner, mediaObj);
             if (srcFile != null && srcFile.exists() && srcFile.length() > 0) {
                 try (java.io.FileInputStream fis = new java.io.FileInputStream(srcFile)) {
-                    java.io.File cached = mediaCache.saveMedia(dialogId, messageId, extension, fis);
+                    java.io.File cached = mediaCache.saveMedia(
+                            accountId, dialogId, messageId, extension, fis);
                     if (cached != null) {
                         info("Anti-recall: cached media msgId=" + messageId + " kind=" + mediaKind);
                         return cached.getAbsolutePath();
@@ -3421,7 +3203,9 @@ final class TelegramHookInstaller {
         if (dialogId == 0L || messageId == 0L) {
             return;
         }
-        MessageCache.CachedMessage cachedMessage = messageCache.get(dialogId, messageId);
+        int accountId = TelegramAccountResolver.resolveWithFallback(
+                savedClassLoader, messageObject, Reflect.field(messageObject, "messageOwner"));
+        MessageCache.CachedMessage cachedMessage = messageCache.get(accountId, dialogId, messageId);
         if (cachedMessage == null) {
             return;
         }
@@ -4493,7 +4277,7 @@ final class TelegramHookInstaller {
             return;
         }
         List<MessageCache.CachedMessage> history = messageCache != null
-                ? messageCache.getEditHistory(cached.dialogId, cached.messageId)
+                ? messageCache.getEditHistory(cached.accountId, cached.dialogId, cached.messageId)
                 : java.util.Collections.emptyList();
         if (history.size() > 1) {
             showEditHistoryDialog(anchor, history, cached);
@@ -4517,18 +4301,22 @@ final class TelegramHookInstaller {
         if (dialogId == 0L || messageId <= 0) {
             return null;
         }
-        MessageCache.CachedMessage cached = messageCache.get(dialogId, messageId);
+        int accountId = TelegramAccountResolver.resolveWithFallback(
+                savedClassLoader, messageObject, chatActivity,
+                Reflect.field(messageObject, "messageOwner"));
+        MessageCache.CachedMessage cached = messageCache.get(accountId, dialogId, messageId);
         if (hasRenderableEditHistory(cached)) {
             return cached;
         }
-        List<MessageCache.CachedMessage> history = messageCache.getEditHistory(dialogId, messageId);
+        List<MessageCache.CachedMessage> history = messageCache.getEditHistory(accountId, dialogId, messageId);
         return history.isEmpty() ? null : history.get(0);
     }
 
     private boolean showOriginalMediaHistory(View anchor, Object chatActivity, Object selectedMessageObject,
                                              MessageCache.CachedMessage cachedMessage) {
         Object mediaObject = messageCache != null
-                ? messageCache.getMediaObject(cachedMessage.dialogId, cachedMessage.messageId)
+                ? messageCache.getMediaObject(cachedMessage.accountId,
+                        cachedMessage.dialogId, cachedMessage.messageId)
                 : null;
         java.io.File file = resolveCachedMediaFile(cachedMessage);
         if (file == null) {
@@ -4539,6 +4327,7 @@ final class TelegramHookInstaller {
                     + " hasTelegramMedia=" + (mediaObject != null));
             if (mediaObject != null && mediaPrefetcher != null && selectedMessageObject != null) {
                 mediaPrefetcher.prefetchFromMessage(
+                        cachedMessage.accountId,
                         cachedMessage.dialogId,
                         cachedMessage.messageId,
                         selectedMessageObject,
@@ -4581,7 +4370,8 @@ final class TelegramHookInstaller {
             return true;
         }
         return messageCache != null
-                && messageCache.getMediaObject(cachedMessage.dialogId, cachedMessage.messageId) != null;
+                && messageCache.getMediaObject(cachedMessage.accountId,
+                        cachedMessage.dialogId, cachedMessage.messageId) != null;
     }
 
     private static boolean hasDisplayText(String value) {
@@ -4622,7 +4412,7 @@ final class TelegramHookInstaller {
                 return false;
             }
 
-            int account = resolveSelectedTelegramAccount(classLoader);
+            int account = cachedMessage.accountId;
             Object message = createSyntheticHistoryMessage(classLoader, selectedMessageObject, cachedMessage, mediaObject, file, isolateIdentity);
             java.io.File telegramPath = syncHistoryFileToTelegramPath(classLoader, account, message, file);
             if (telegramPath == null) {
@@ -4986,25 +4776,27 @@ final class TelegramHookInstaller {
         if (mediaCache == null) {
             return null;
         }
-        java.io.File file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".jpg");
+        java.io.File file = mediaCache.getMedia(cachedMessage.accountId,
+                cachedMessage.dialogId, cachedMessage.messageId, ".jpg");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".png");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".png");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".webp");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".webp");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".gif");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".gif");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mp4");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".mp4");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".m4v");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".m4v");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mov");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".mov");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".webm");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".webm");
         if (file != null) return file;
-        file = mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".mkv");
+        file = mediaCache.getMedia(cachedMessage.accountId, cachedMessage.dialogId, cachedMessage.messageId, ".mkv");
         if (file != null) return file;
-        return mediaCache.getMedia(cachedMessage.dialogId, cachedMessage.messageId, ".bin");
+        return mediaCache.getMedia(cachedMessage.accountId,
+                cachedMessage.dialogId, cachedMessage.messageId, ".bin");
     }
 
     private String localizedNoEditHistory(Context context) {
@@ -6294,6 +6086,7 @@ final class TelegramHookInstaller {
                 ? antiRecallConfigStore
                 : new AntiRecallConfigStore(hostContext);
         FilterConfig config = configProvider.getConfig(hostContext).deepCopy();
+        int accountId = TelegramAccountResolver.resolveHost(host, savedClassLoader);
         boolean shown = HostConfigPanel.show(
                 context,
                 root,
@@ -6301,8 +6094,10 @@ final class TelegramHookInstaller {
                 chatMode,
                 dialogId,
                 title,
+                accountId,
                 antiStore,
                 backgroundMessageLoader,
+                editHistoryPolicyStore,
                 updated -> {
                     FilterConfig saved = saveUpdatedConfig(hostContext, updated);
                     decisionCache.clear();

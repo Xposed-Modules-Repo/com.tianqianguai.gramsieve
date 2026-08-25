@@ -18,8 +18,10 @@ public final class RecallDetector {
     private final MessageCache messageCache;
     private final BackgroundMessageLoader loader;
     private final MediaPrefetcher mediaPrefetcher;
+    private final EditHistoryPolicyStore editHistoryPolicyStore;
     private final TelegramMessageDatabaseBridge telegramDbBridge;
     private final SelfDeleteTracker selfDeleteTracker;
+    private volatile ClassLoader telegramClassLoader;
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader) {
         this(messageCache, loader, null);
@@ -27,14 +29,28 @@ public final class RecallDetector {
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                           MediaPrefetcher mediaPrefetcher) {
-        this(messageCache, loader, mediaPrefetcher, new SelfDeleteTracker());
+        this(messageCache, loader, mediaPrefetcher, null, new SelfDeleteTracker());
+    }
+
+    public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                          MediaPrefetcher mediaPrefetcher,
+                          EditHistoryPolicyStore editHistoryPolicyStore) {
+        this(messageCache, loader, mediaPrefetcher, editHistoryPolicyStore, new SelfDeleteTracker());
     }
 
     RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                    MediaPrefetcher mediaPrefetcher, SelfDeleteTracker selfDeleteTracker) {
+        this(messageCache, loader, mediaPrefetcher, null, selfDeleteTracker);
+    }
+
+    RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                   MediaPrefetcher mediaPrefetcher,
+                   EditHistoryPolicyStore editHistoryPolicyStore,
+                   SelfDeleteTracker selfDeleteTracker) {
         this.messageCache = messageCache;
         this.loader = loader;
         this.mediaPrefetcher = mediaPrefetcher;
+        this.editHistoryPolicyStore = editHistoryPolicyStore;
         this.telegramDbBridge = new TelegramMessageDatabaseBridge();
         this.selfDeleteTracker = selfDeleteTracker;
     }
@@ -48,6 +64,7 @@ public final class RecallDetector {
     }
 
     public void install(ClassLoader classLoader, XposedModule module) {
+        telegramClassLoader = classLoader;
         ModuleLogger.hook(TAG, "RecallDetector: installing hooks...");
         try {
             Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
@@ -129,9 +146,12 @@ public final class RecallDetector {
                             chain.getArgs(),
                             messageCache,
                             loader,
+                            editHistoryPolicyStore,
                             mediaPrefetcher
                     );
-                    cacheMessagesFromStorageArgs(chain.getArgs());
+                    int accountId = TelegramAccountResolver.resolveHost(
+                            chain.getThisObject(), telegramClassLoader);
+                    cacheMessagesFromStorageArgs(accountId, chain.getArgs());
                 } catch (Throwable t) {
                     // Ignore
                 }
@@ -148,15 +168,17 @@ public final class RecallDetector {
             hook(module, method, chain -> {
                 try {
                     DeletionRequest deletion = deletionFromStorageArgs(chain.getArgs());
+                    int accountId = TelegramAccountResolver.resolveHost(
+                            chain.getThisObject(), telegramClassLoader);
                     if (shouldAllowUserDeletion(deletion)) {
-                        purgeDeletedMessages(deletion.dialogId, deletion.messageIds);
+                        purgeDeletedMessages(accountId, deletion.dialogId, deletion.messageIds);
                         ModuleLogger.hook(TAG, "RecallDetector: allowed storage." + methodName
                                 + " for user delete dialogId=" + deletion.dialogId
                                 + " count=" + deletion.messageIds.size());
                         return chain.proceed();
                     }
-                    if (shouldBlockDeletion(deletion)) {
-                        processDeletions(deletion.dialogId, deletion.messageIds);
+                    if (shouldBlockDeletion(accountId, deletion)) {
+                        processDeletions(accountId, deletion.dialogId, deletion.messageIds);
                         telegramDbBridge.markMessagesDeletedAsync(chain.getThisObject(),
                                 deletion.dialogId, deletion.messageIds);
                         ModuleLogger.hook(TAG, "RecallDetector: blocked storage." + methodName
@@ -185,7 +207,9 @@ public final class RecallDetector {
             }
             hook(module, method, chain -> {
                 try {
-                    if (shouldSuppressDeletionNotification(chain.getArgs())) {
+                    int accountId = TelegramAccountResolver.resolveHost(
+                            chain.getThisObject(), telegramClassLoader);
+                    if (shouldSuppressDeletionNotification(accountId, chain.getArgs())) {
                         ModuleLogger.hook(TAG, "RecallDetector: blocked removeDeletedMessagesFromNotifications");
                         return skipResult(method.getReturnType());
                     }
@@ -204,19 +228,19 @@ public final class RecallDetector {
         }
     }
 
-    private boolean shouldSuppressDeletionNotification(java.util.List<Object> args) {
+    private boolean shouldSuppressDeletionNotification(int accountId, java.util.List<Object> args) {
         if (loader == null || args == null) {
             return false;
         }
         for (Object arg : args) {
-            if (containsEnabledDialogKey(arg)) {
+            if (containsEnabledDialogKey(accountId, arg)) {
                 return true;
             }
         }
         return false;
     }
 
-    private boolean containsEnabledDialogKey(Object sparse) {
+    private boolean containsEnabledDialogKey(int accountId, Object sparse) {
         if (sparse == null) {
             return false;
         }
@@ -232,7 +256,7 @@ public final class RecallDetector {
                 List<?> messageIds = deletionIdsFromSparseValue(Reflect.invokeIfExists(sparse, "valueAt",
                         new Class<?>[]{int.class}, i));
                 if (!messageIds.isEmpty() && shouldAllowUserDeletion(key, messageIds)) {
-                    purgeDeletedMessages(key, messageIds);
+                    purgeDeletedMessages(accountId, key, messageIds);
                     continue;
                 }
                 if (selfDeleteTracker != null && selfDeleteTracker.isCleanupModeActive(key)) {
@@ -275,7 +299,9 @@ public final class RecallDetector {
                 try {
                     java.util.List<Object> args = chain.getArgs();
                     int id = args == null || args.isEmpty() ? -1 : Reflect.asInt(args.get(0), -1);
-                    if (id == messagesDeletedId && shouldSuppressMessagesDeletedEvent(args)) {
+                    int accountId = TelegramAccountResolver.resolveHost(
+                            chain.getThisObject(), telegramClassLoader);
+                    if (id == messagesDeletedId && shouldSuppressMessagesDeletedEvent(accountId, args)) {
                         ModuleLogger.hook(TAG, "RecallDetector: blocked NotificationCenter.messagesDeleted");
                         return skipResult(method.getReturnType());
                     }
@@ -291,6 +317,11 @@ public final class RecallDetector {
     }
 
     boolean shouldSuppressMessagesDeletedEvent(java.util.List<Object> hookArgs) {
+        return shouldSuppressMessagesDeletedEvent(0, hookArgs);
+    }
+
+    private boolean shouldSuppressMessagesDeletedEvent(int accountId,
+                                                       java.util.List<Object> hookArgs) {
         if (hookArgs == null) {
             return false;
         }
@@ -318,10 +349,10 @@ public final class RecallDetector {
             selfDeleteDialogId = selfDeleteTracker.inferUniqueDialog(messageIds);
         }
         if (selfDeleteDialogId != 0L && shouldAllowUserDeletion(selfDeleteDialogId, messageIds)) {
-            purgeDeletedMessages(selfDeleteDialogId, messageIds);
+            purgeDeletedMessages(accountId, selfDeleteDialogId, messageIds);
             return false;
         }
-        return messageIds != null && isDeletionEnabled(dialogId, messageIds);
+        return messageIds != null && isDeletionEnabled(accountId, dialogId, messageIds);
     }
 
     private DeletionRequest deletionFromStorageArgs(java.util.List<Object> args) {
@@ -378,11 +409,11 @@ public final class RecallDetector {
         return new DeletionRequest(dialogId, messageIds);
     }
 
-    private boolean shouldBlockDeletion(DeletionRequest deletion) {
+    private boolean shouldBlockDeletion(int accountId, DeletionRequest deletion) {
         return deletion != null
                 && !deletion.messageIds.isEmpty()
                 && !shouldAllowUserDeletion(deletion)
-                && isDeletionEnabled(deletion.dialogId, deletion.messageIds);
+                && isDeletionEnabled(accountId, deletion.dialogId, deletion.messageIds);
     }
 
     private boolean shouldAllowUserDeletion(DeletionRequest deletion) {
@@ -416,8 +447,9 @@ public final class RecallDetector {
         return null;
     }
 
-    private void cacheMessagesFromStorageArgs(java.util.List<Object> args) {
-        if (args == null || messageCache == null || loader == null) return;
+    private void cacheMessagesFromStorageArgs(int accountId, java.util.List<Object> args) {
+        if (args == null || messageCache == null
+                || (loader == null && editHistoryPolicyStore == null)) return;
         // Look for ArrayList of MessageObject or TLRPC.Message
         for (Object arg : args) {
             if (arg instanceof ArrayList) {
@@ -427,7 +459,7 @@ public final class RecallDetector {
                     if (first != null) {
                         String className = first.getClass().getSimpleName();
                         if (className.contains("Message")) {
-                            cacheMessageList(list);
+                            cacheMessageList(accountId, list);
                             return;
                         }
                     }
@@ -436,7 +468,7 @@ public final class RecallDetector {
         }
     }
 
-    private void cacheMessageList(ArrayList<?> messages) {
+    private void cacheMessageList(int accountId, ArrayList<?> messages) {
         int cached = 0;
         for (Object msgObj : messages) {
             try {
@@ -453,7 +485,7 @@ public final class RecallDetector {
                     else if (chatId != 0L) dialogId = -chatId;
                     else if (userId != 0L) dialogId = userId;
                 }
-                if (dialogId == 0L || !loader.isChatEnabled(dialogId)) continue;
+                if (dialogId == 0L || !shouldCacheMessage(accountId, dialogId)) continue;
 
                 int msgId = Reflect.asInt(Reflect.field(messageOwner, "id"), 0);
                 if (msgId == 0) continue;
@@ -488,11 +520,14 @@ public final class RecallDetector {
                 if (caption != null && !caption.isEmpty()) {
                     fullContent = fullContent.isEmpty() ? caption : fullContent + "\n" + caption;
                 }
-                MessageCache.CachedMessage existing = messageCache.get(dialogId, msgId);
+                MessageCache.CachedMessage existing = messageCache.get(accountId, dialogId, msgId);
                 if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
-                    messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
-                    messageCache.putMediaObject(dialogId, msgId, media);
-                    prefetchMedia(dialogId, msgId, msgObj, media);
+                    messageCache.putFresh(accountId, dialogId, msgId, fullContent, caption, 0L,
+                            mediaType, mediaId, null,
+                            existing == null || existing.rawMessageBlob == null
+                                    ? TelegramMessageSerializer.serialize(messageOwner) : null);
+                    messageCache.putMediaObject(accountId, dialogId, msgId, media);
+                    prefetchMedia(accountId, dialogId, msgId, msgObj, media);
                     cached++;
                 }
             } catch (Throwable t) {
@@ -515,7 +550,7 @@ public final class RecallDetector {
                         return chain.proceed();
                     }
                     if (methodName.equals("deleteDialog") || methodName.equals("blockPeer")) {
-                        handleControllerDialogAction(methodName, args);
+                        handleControllerDialogAction(chain.getThisObject(), methodName, args);
                         return chain.proceed();
                     }
                     if (methodName.equals("deleteParticipantFromChat")) {
@@ -525,9 +560,9 @@ public final class RecallDetector {
                     }
                     Object result = chain.proceed();
                     if (methodName.equals("editMessage")) {
-                        processEditFromArgs(args);
+                        processEditFromArgs(chain.getThisObject(), args);
                     } else if (methodName.equals("processLoadedMessages")) {
-                        processLoadedMessagesFromArgs(args);
+                        processLoadedMessagesFromArgs(chain.getThisObject(), args);
                     }
                     return result;
                 } catch (Throwable throwable) {
@@ -554,10 +589,11 @@ public final class RecallDetector {
     boolean processDeletionsFromArgs(Object messagesController, java.util.List<Object> args) {
         DeletionRequest deletion = deletionFromControllerArgs(args);
         if (deletion.dialogId != 0L && !deletion.messageIds.isEmpty()) {
+            int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
             if (selfDeleteTracker != null) {
                 selfDeleteTracker.recordUserDelete(deletion.dialogId, deletion.messageIds);
             }
-            int removed = purgeDeletedMessages(deletion.dialogId, deletion.messageIds);
+            int removed = purgeDeletedMessages(accountId, deletion.dialogId, deletion.messageIds);
             ModuleLogger.hook(TAG, "RecallDetector: allowing local deleteMessages dialogId="
                     + deletion.dialogId + " count=" + deletion.messageIds.size()
                     + " purged=" + removed);
@@ -593,13 +629,24 @@ public final class RecallDetector {
     }
 
     boolean processDialogDeletionFromArgs(java.util.List<Object> args) {
+        return processDialogDeletionFromArgs(0, args);
+    }
+
+    private boolean processDialogDeletionFromArgs(int accountId, java.util.List<Object> args) {
         DialogDeletionRequest deletion = dialogDeletionFromArgs(args);
-        return processDialogDeletion(deletion.dialogId, deletion.mode, deletion.revoke, "deleteDialog");
+        return processDialogDeletion(accountId, deletion.dialogId,
+                deletion.mode, deletion.revoke, "deleteDialog");
     }
 
     boolean handleControllerDialogAction(String methodName, java.util.List<Object> args) {
+        return handleControllerDialogAction(null, methodName, args);
+    }
+
+    private boolean handleControllerDialogAction(Object messagesController, String methodName,
+                                                 java.util.List<Object> args) {
         if ("deleteDialog".equals(methodName)) {
-            boolean handled = processDialogDeletionFromArgs(args);
+            int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
+            boolean handled = processDialogDeletionFromArgs(accountId, args);
             if (!handled) {
                 ModuleLogger.hook(TAG, "RecallDetector: deleteDialog args ignored " + summarizeArgs(args));
             }
@@ -612,6 +659,11 @@ public final class RecallDetector {
     }
 
     boolean processDialogDeletion(long dialogId, int mode, boolean revoke, String source) {
+        return processDialogDeletion(0, dialogId, mode, revoke, source);
+    }
+
+    boolean processDialogDeletion(int accountId, long dialogId, int mode,
+                                  boolean revoke, String source) {
         if (dialogId == 0L) {
             return false;
         }
@@ -622,7 +674,7 @@ public final class RecallDetector {
             loader.disableChat(dialogId);
         }
         if (messageCache != null) {
-            messageCache.removeDialog(dialogId);
+            messageCache.removeDialog(accountId, dialogId);
         }
         String sourceName = source == null ? "deleteDialog" : source;
         ModuleLogger.hook(TAG, "RecallDetector: allowing local " + sourceName + " dialogId="
@@ -651,7 +703,7 @@ public final class RecallDetector {
         return new DialogDeletionRequest(dialogId, mode, revoke);
     }
 
-    private void processEditFromArgs(java.util.List<Object> args) {
+    private void processEditFromArgs(Object messagesController, java.util.List<Object> args) {
         if (args == null || args.size() < 3) return;
         long dialogId = 0L;
         int messageId = 0;
@@ -667,11 +719,13 @@ public final class RecallDetector {
             }
         }
         if (dialogId != 0L && messageId != 0 && newText != null) {
-            processEdit(dialogId, messageId, newText);
+            int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
+            processEdit(accountId, dialogId, messageId, newText);
         }
     }
 
-    private void processLoadedMessagesFromArgs(java.util.List<Object> args) {
+    private void processLoadedMessagesFromArgs(Object messagesController,
+                                               java.util.List<Object> args) {
         if (args == null || args.isEmpty()) return;
         // Look for ArrayList of messages and a dialogId
         ArrayList<?> messages = null;
@@ -683,12 +737,13 @@ public final class RecallDetector {
                 dialogId = (Long) arg;
             }
         }
-        if (messages != null && dialogId != 0L && loader.isChatEnabled(dialogId)) {
-            cacheLoadedMessages(dialogId, messages);
+        int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
+        if (messages != null && dialogId != 0L && shouldCacheMessage(accountId, dialogId)) {
+            cacheLoadedMessages(accountId, dialogId, messages);
         }
     }
 
-    private void cacheLoadedMessages(long dialogId, ArrayList<?> messages) {
+    private void cacheLoadedMessages(int accountId, long dialogId, ArrayList<?> messages) {
         if (messageCache == null) return;
         int cached = 0;
         for (Object msgObj : messages) {
@@ -730,11 +785,14 @@ public final class RecallDetector {
                 }
                 // Only cache if there's content
                 if (!fullContent.isEmpty() || mediaId != null) {
-                    MessageCache.CachedMessage existing = messageCache.get(dialogId, msgId);
+                    MessageCache.CachedMessage existing = messageCache.get(accountId, dialogId, msgId);
                     if (existing == null || (!existing.isEdited && !existing.isRecalled)) {
-                        messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
-                        messageCache.putMediaObject(dialogId, msgId, media);
-                        prefetchMedia(dialogId, msgId, msgObj, media);
+                        messageCache.putFresh(accountId, dialogId, msgId, fullContent, caption, 0L,
+                                mediaType, mediaId, null,
+                                existing == null || existing.rawMessageBlob == null
+                                        ? TelegramMessageSerializer.serialize(messageOwner) : null);
+                        messageCache.putMediaObject(accountId, dialogId, msgId, media);
+                        prefetchMedia(accountId, dialogId, msgId, msgObj, media);
                         cached++;
                     }
                 }
@@ -745,10 +803,14 @@ public final class RecallDetector {
     }
 
     void cacheBackgroundMessages(long dialogId, List<?> messages) {
+        cacheBackgroundMessages(0, dialogId, messages);
+    }
+
+    void cacheBackgroundMessages(int accountId, long dialogId, List<?> messages) {
         if (messages == null || messages.isEmpty() || !loader.isChatEnabled(dialogId)) {
             return;
         }
-        cacheLoadedMessages(dialogId, new ArrayList<>(messages));
+        cacheLoadedMessages(accountId, dialogId, new ArrayList<>(messages));
     }
 
     private static void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
@@ -825,7 +887,8 @@ public final class RecallDetector {
     }
 
     private void processUpdates(Object messagesController, ArrayList<?> updates) {
-        if (messageCache == null || loader == null || updates == null) {
+        if (messageCache == null || (loader == null && editHistoryPolicyStore == null)
+                || updates == null) {
             return;
         }
         for (Object update : updates) {
@@ -836,19 +899,21 @@ public final class RecallDetector {
 
                 Object message = Reflect.field(update, "message");
                 if (message != null) {
+                    int accountId = TelegramAccountResolver.resolveWithFallback(
+                            telegramClassLoader, messagesController, message, update);
                     if (className.contains("Edit")) {
                         // This is an edit update — but Telegram also sends TL_updateEditChannelMessage
                         // for non-content changes (reactions, views, etc.). Only mark as edited
                         // if the message text actually changed.
-                        if (isRealEdit(message)) {
-                            processEditedMessage(message);
+                        if (isRealEdit(accountId, message)) {
+                            processEditedMessage(accountId, message);
                         } else {
                             // Not a real edit (e.g. reaction added) — refresh cache
-                            processMessageFromUpdate(message);
+                            processMessageFromUpdate(accountId, message);
                         }
                     } else {
                         // This is a new message
-                        processMessageFromUpdate(message);
+                        processMessageFromUpdate(accountId, message);
                     }
                     continue;
                 }
@@ -857,6 +922,8 @@ public final class RecallDetector {
                 Object deleteMessages = Reflect.field(update, "messages");
                 Object channelId = Reflect.field(update, "channel_id");
                 if (className.contains("Delete") && deleteMessages instanceof ArrayList) {
+                    int accountId = TelegramAccountResolver.resolveWithFallback(
+                            telegramClassLoader, messagesController, update);
                     long dialogId = 0L;
                     long channelIdValue = Reflect.asLong(channelId, 0L);
                     if (channelIdValue != 0L) {
@@ -864,12 +931,12 @@ public final class RecallDetector {
                     }
                     ArrayList<?> msgIds = (ArrayList<?>) deleteMessages;
                     if (shouldAllowUserDeletion(dialogId, msgIds)) {
-                        int removed = purgeDeletedMessages(dialogId, msgIds);
+                        int removed = purgeDeletedMessages(accountId, dialogId, msgIds);
                         ModuleLogger.hook(TAG, "RecallDetector: allowed delete update for user delete dialogId="
                                 + dialogId + " count=" + msgIds.size() + " purged=" + removed);
-                    } else if (isDeletionEnabled(dialogId, msgIds)) {
+                    } else if (isDeletionEnabled(accountId, dialogId, msgIds)) {
                         int count = msgIds.size();
-                        processDeletions(dialogId, msgIds);
+                        processDeletions(accountId, dialogId, msgIds);
                         Object storage = resolveMessagesStorage(messagesController);
                         telegramDbBridge.markMessagesDeletedAsync(storage, dialogId, msgIds);
                         if (count > 0) {
@@ -885,7 +952,7 @@ public final class RecallDetector {
         }
     }
 
-    private void processMessageFromUpdate(Object message) {
+    private void processMessageFromUpdate(int accountId, Object message) {
         try {
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
             if (msgId == 0) return;
@@ -901,8 +968,7 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
 
-            boolean enabled = loader.isChatEnabled(dialogId);
-            if (!enabled) {
+            if (!shouldCacheMessage(accountId, dialogId)) {
                 return;
             }
 
@@ -940,9 +1006,10 @@ public final class RecallDetector {
 
             // Fresh update from Telegram — this message is NOT edited/recalled at this point
             // Reset any stale flags from prior sessions
-            messageCache.putFresh(dialogId, msgId, fullContent, caption, 0L, mediaType, mediaId);
-            messageCache.putMediaObject(dialogId, msgId, media);
-            prefetchMedia(dialogId, msgId, message, media);
+            messageCache.putFresh(accountId, dialogId, msgId, fullContent, caption, 0L,
+                    mediaType, mediaId, null, TelegramMessageSerializer.serialize(message));
+            messageCache.putMediaObject(accountId, dialogId, msgId, media);
+            prefetchMedia(accountId, dialogId, msgId, message, media);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process message", throwable);
         }
@@ -953,14 +1020,27 @@ public final class RecallDetector {
         return owner != null ? owner : messageLike;
     }
 
-    private void prefetchMedia(long dialogId, long messageId, Object messageOwner, Object media) {
+    private void prefetchMedia(int accountId, long dialogId, long messageId,
+                               Object messageOwner, Object media) {
         if (mediaPrefetcher == null || media == null) {
             return;
         }
-        mediaPrefetcher.prefetchFromMessage(dialogId, messageId, messageOwner, media);
+        mediaPrefetcher.prefetchFromMessage(accountId, dialogId, messageId, messageOwner, media);
     }
 
-    private boolean isRealEdit(Object message) {
+    private boolean shouldCacheMessage(int accountId, long dialogId) {
+        return (loader != null && loader.isChatEnabled(dialogId))
+                || shouldRecordEditHistory(accountId, dialogId);
+    }
+
+    private boolean shouldRecordEditHistory(int accountId, long dialogId) {
+        if (editHistoryPolicyStore != null) {
+            return editHistoryPolicyStore.shouldRecord(accountId, dialogId);
+        }
+        return loader != null && loader.isChatEnabled(dialogId);
+    }
+
+    private boolean isRealEdit(int accountId, Object message) {
         try {
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
             if (msgId == 0) {
@@ -981,7 +1061,7 @@ public final class RecallDetector {
                 return false;
             }
 
-            MessageCache.CachedMessage cached = messageCache.get(dialogId, msgId);
+            MessageCache.CachedMessage cached = messageCache.get(accountId, dialogId, msgId);
             if (cached == null || cached.text == null) {
                 return true;
             }
@@ -1032,7 +1112,7 @@ public final class RecallDetector {
         }
     }
 
-    private void processEditedMessage(Object message) {
+    private void processEditedMessage(int accountId, Object message) {
         try {
             int msgId = Reflect.asInt(Reflect.field(message, "id"), 0);
             if (msgId == 0) return;
@@ -1048,7 +1128,7 @@ public final class RecallDetector {
                 else if (channelId != 0L) dialogId = -channelId;
             }
             
-            if (!loader.isChatEnabled(dialogId)) {
+            if (!shouldRecordEditHistory(accountId, dialogId)) {
                 return;
             }
             
@@ -1076,25 +1156,30 @@ public final class RecallDetector {
             }
             
             // Mark as edited with new content
-            messageCache.markEdited(dialogId, msgId, newContent);
-            ModuleLogger.hook(TAG, "RecallDetector: marked edited dialogId=" + dialogId + " msgId=" + msgId);
+            messageCache.markEdited(accountId, dialogId, msgId, newContent);
+            ModuleLogger.hook(TAG, "RecallDetector: marked edited account=" + accountId
+                    + " dialogId=" + dialogId + " msgId=" + msgId);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to process edited message", throwable);
         }
     }
 
     void processDeletions(long dialogId, ArrayList<?> messageIds) {
+        processDeletions(0, dialogId, messageIds);
+    }
+
+    void processDeletions(int accountId, long dialogId, ArrayList<?> messageIds) {
         if (messageCache == null || loader == null || messageIds == null) {
             return;
         }
-        boolean enabled = isDeletionEnabled(dialogId, messageIds);
+        boolean enabled = isDeletionEnabled(accountId, dialogId, messageIds);
         ModuleLogger.hook(TAG, "RecallDetector: processDeletions dialogId=" + dialogId
                 + " count=" + messageIds.size() + " enabled=" + enabled);
         if (!enabled) {
             return;
         }
         if (shouldAllowUserDeletion(dialogId, messageIds)) {
-            int removed = purgeDeletedMessages(dialogId, messageIds);
+            int removed = purgeDeletedMessages(accountId, dialogId, messageIds);
             ModuleLogger.hook(TAG, "RecallDetector: purged user-deleted messages dialogId="
                     + dialogId + " count=" + messageIds.size() + " purged=" + removed);
             return;
@@ -1103,7 +1188,7 @@ public final class RecallDetector {
             for (Object messageIdObj : messageIds) {
                 int messageId = Reflect.asInt(messageIdObj, 0);
                 if (messageId > 0) {
-                    messageCache.markRecalled(dialogId, messageId);
+                    messageCache.markRecalled(accountId, dialogId, messageId);
                     ModuleLogger.hook(TAG, "RecallDetector: marked recalled dialogId=" + dialogId + " msgId=" + messageId);
                 }
             }
@@ -1112,8 +1197,9 @@ public final class RecallDetector {
         for (long enabledDialogId : loader.enabledChatIdsSnapshot()) {
             for (Object messageIdObj : messageIds) {
                 int messageId = Reflect.asInt(messageIdObj, 0);
-                if (messageId > 0 && messageCache.get(enabledDialogId, messageId) != null) {
-                    messageCache.markRecalled(enabledDialogId, messageId);
+                if (messageId > 0
+                        && messageCache.get(accountId, enabledDialogId, messageId) != null) {
+                    messageCache.markRecalled(accountId, enabledDialogId, messageId);
                     ModuleLogger.hook(TAG, "RecallDetector: marked recalled dialogId="
                             + enabledDialogId + " msgId=" + messageId + " via global delete update");
                 }
@@ -1121,7 +1207,7 @@ public final class RecallDetector {
         }
     }
 
-    private int purgeDeletedMessages(long dialogId, List<?> messageIds) {
+    private int purgeDeletedMessages(int accountId, long dialogId, List<?> messageIds) {
         if (messageCache == null || messageIds == null || messageIds.isEmpty()) {
             return 0;
         }
@@ -1129,7 +1215,7 @@ public final class RecallDetector {
         if (dialogId != 0L) {
             for (Object messageIdObj : messageIds) {
                 int messageId = Reflect.asInt(messageIdObj, 0);
-                if (messageId > 0 && purgeDeletedMessage(dialogId, messageId)) {
+                if (messageId > 0 && purgeDeletedMessage(accountId, dialogId, messageId)) {
                     removed++;
                 }
             }
@@ -1140,7 +1226,7 @@ public final class RecallDetector {
                 int messageId = Reflect.asInt(messageIdObj, 0);
                 if (messageId > 0
                         && hasUserDeletionIntent(enabledDialogId, Collections.singletonList(messageId))
-                        && purgeDeletedMessage(enabledDialogId, messageId)) {
+                        && purgeDeletedMessage(accountId, enabledDialogId, messageId)) {
                     removed++;
                 }
             }
@@ -1148,8 +1234,8 @@ public final class RecallDetector {
         return removed;
     }
 
-    private boolean purgeDeletedMessage(long dialogId, int messageId) {
-        MessageCache.CachedMessage removed = messageCache.remove(dialogId, messageId);
+    private boolean purgeDeletedMessage(int accountId, long dialogId, int messageId) {
+        MessageCache.CachedMessage removed = messageCache.remove(accountId, dialogId, messageId);
         deleteCachedMediaFile(removed);
         return removed != null;
     }
@@ -1168,7 +1254,7 @@ public final class RecallDetector {
         }
     }
 
-    private boolean isDeletionEnabled(long dialogId, java.util.List<?> messageIds) {
+    private boolean isDeletionEnabled(int accountId, long dialogId, java.util.List<?> messageIds) {
         if (loader == null || messageIds == null || messageIds.isEmpty()) {
             return false;
         }
@@ -1178,7 +1264,8 @@ public final class RecallDetector {
         for (long enabledDialogId : loader.enabledChatIdsSnapshot()) {
             for (Object messageIdObj : messageIds) {
                 int messageId = Reflect.asInt(messageIdObj, 0);
-                if (messageId > 0 && messageCache != null && messageCache.get(enabledDialogId, messageId) != null) {
+                if (messageId > 0 && messageCache != null
+                        && messageCache.get(accountId, enabledDialogId, messageId) != null) {
                     return true;
                 }
             }
@@ -1203,14 +1290,20 @@ public final class RecallDetector {
     }
 
     void processEdit(long dialogId, int messageId, String newText) {
-        if (messageCache == null || loader == null) {
+        processEdit(0, dialogId, messageId, newText);
+    }
+
+    void processEdit(int accountId, long dialogId, int messageId, String newText) {
+        if (messageCache == null || (loader == null && editHistoryPolicyStore == null)) {
             return;
         }
-        ModuleLogger.hook(TAG, "RecallDetector: processEdit dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + loader.isChatEnabled(dialogId));
-        if (!loader.isChatEnabled(dialogId)) {
+        boolean enabled = shouldRecordEditHistory(accountId, dialogId);
+        ModuleLogger.hook(TAG, "RecallDetector: processEdit account=" + accountId
+                + " dialogId=" + dialogId + " msgId=" + messageId + " enabled=" + enabled);
+        if (!enabled) {
             return;
         }
-        messageCache.markEdited(dialogId, messageId, newText);
+        messageCache.markEdited(accountId, dialogId, messageId, newText);
         ModuleLogger.hook(TAG, "RecallDetector: marked edited dialogId=" + dialogId + " msgId=" + messageId);
     }
 

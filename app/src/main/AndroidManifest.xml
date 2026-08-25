@@ -6,6 +6,7 @@
         <package android:name="com.my.televip" />
         <package android:name="com.shatyuka.killergram" />
         <package android:name="nep.timeline.re_telegram" />
+        <package android:name="org.telegram.auxiliary" />
         <package android:name="Telegram.Speed.Hook" />
         <package android:name="ru.mike.telegramtweaks" />
         <package android:name="ru.mike.sidestories" />

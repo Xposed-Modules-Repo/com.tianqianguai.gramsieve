@@ -25,8 +25,10 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
     void captureEditsBeforePutMessages(Object messagesStorage, List<Object> args,
                                        MessageCache messageCache,
                                        BackgroundMessageLoader loader,
+                                       EditHistoryPolicyStore editHistoryPolicyStore,
                                        MediaPrefetcher mediaPrefetcher) {
-        if (messagesStorage == null || args == null || messageCache == null || loader == null) {
+        if (messagesStorage == null || args == null || messageCache == null
+                || (loader == null && editHistoryPolicyStore == null)) {
             return;
         }
         Object database = database(messagesStorage);
@@ -38,11 +40,16 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
             return;
         }
 
+        int accountId = TelegramAccountResolver.resolveHost(
+                messagesStorage, messagesStorage.getClass().getClassLoader());
         int captured = 0;
         for (Object messageLike : messages) {
             try {
                 MessageSnapshot incoming = snapshot(messageLike);
-                if (!incoming.isValid() || !loader.isChatEnabled(incoming.dialogId)) {
+                boolean shouldRecord = editHistoryPolicyStore != null
+                        ? editHistoryPolicyStore.shouldRecord(accountId, incoming.dialogId)
+                        : loader != null && loader.isChatEnabled(incoming.dialogId);
+                if (!incoming.isValid() || !shouldRecord) {
                     continue;
                 }
                 Object oldMessage = queryOldMessage(messagesStorage, database, incoming.dialogId, incoming.messageId);
@@ -57,6 +64,7 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
                     continue;
                 }
                 messageCache.recordEditedVersion(
+                        accountId,
                         incoming.dialogId,
                         incoming.messageId,
                         old.senderId != 0L ? old.senderId : incoming.senderId,
@@ -65,12 +73,14 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
                         incoming.content,
                         old.mediaType != null ? old.mediaType : incoming.mediaType,
                         old.mediaId != null ? old.mediaId : incoming.mediaId,
-                        null
+                        null,
+                        TelegramMessageSerializer.serialize(oldMessage)
                 );
                 if (old.media != null) {
-                    messageCache.putMediaObject(incoming.dialogId, incoming.messageId, old.media);
+                    messageCache.putMediaObject(accountId, incoming.dialogId, incoming.messageId, old.media);
                     if (mediaPrefetcher != null) {
-                        mediaPrefetcher.prefetchFromMessage(incoming.dialogId, incoming.messageId, oldMessage, old.media);
+                        mediaPrefetcher.prefetchFromMessage(accountId, incoming.dialogId,
+                                incoming.messageId, oldMessage, old.media);
                     }
                 }
                 captured++;
