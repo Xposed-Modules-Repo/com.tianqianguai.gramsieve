@@ -6,6 +6,8 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
+import android.net.Uri;
+import android.os.Bundle;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -22,6 +24,7 @@ import android.window.OnBackInvokedDispatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
+import android.widget.HorizontalScrollView;
 import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
@@ -32,17 +35,22 @@ import android.widget.Toast;
 
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
+import com.tianqianguai.gramsieve.config.ConfigContentProvider;
+import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterConfig;
+import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 import com.tianqianguai.gramsieve.core.RuleDraftMatrix;
 
 import java.util.EnumMap;
+import java.util.EnumSet;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
-@SuppressLint("UseSwitchCompatOrMaterialCode")
+@SuppressLint({"UseSwitchCompatOrMaterialCode", "SetTextI18n"})
 final class HostConfigPanel {
     private enum DialogHistoryChoice {
         FOLLOW_GLOBAL,
@@ -93,6 +101,8 @@ final class HostConfigPanel {
     private final int toolbarTextColor;
     private final Map<FilterConfig.RuleTarget, RuleInputs> ruleInputs =
             new EnumMap<>(FilterConfig.RuleTarget.class);
+    private final Map<EnhancementConfig.Feature, Switch> enhancementSwitches =
+            new EnumMap<>(EnhancementConfig.Feature.class);
 
     private FrameLayout overlay;
     private OnBackInvokedDispatcher backDispatcher;
@@ -106,6 +116,10 @@ final class HostConfigPanel {
     private RadioGroup actionGroup;
     private RadioGroup editHistoryModeGroup;
     private RadioGroup dialogHistoryRuleGroup;
+    private EditText downloadParallelismInput;
+    private EditText uploadParallelismInput;
+    private EditText outgoingPrefixInput;
+    private EditText outgoingSuffixInput;
 
     private HostConfigPanel(
             Context context,
@@ -142,7 +156,7 @@ final class HostConfigPanel {
         );
         int androidAccent = resolveThemeColor(android.R.attr.colorAccent, Color.rgb(42, 171, 238));
         this.backgroundColor = telegramThemeColor("key_windowBackgroundWhite", androidBackground);
-        this.cardColor = backgroundColor;
+        this.cardColor = blend(backgroundColor, androidPrimaryText, 0.035f);
         this.primaryTextColor = telegramThemeColor("key_windowBackgroundWhiteBlackText", androidPrimaryText);
         this.secondaryTextColor = telegramThemeColor("key_windowBackgroundWhiteGrayText2", androidSecondaryText);
         this.strokeColor = telegramThemeColor("key_divider", adjustAlpha(primaryTextColor, 0.14f));
@@ -328,9 +342,13 @@ final class HostConfigPanel {
                 1f
         ));
 
+        buildHeroCard(container);
         buildGeneralCard(container);
         if (chatMode) {
             buildChatAntiRecallCard(container);
+        } else {
+            buildConflictCard(container);
+            buildEnhancementCards(container);
         }
         buildEditHistoryCard(container);
         buildRulesCard(container);
@@ -371,6 +389,50 @@ final class HostConfigPanel {
         saveButton.setOnClickListener(v -> save());
         toolbar.addView(saveButton, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT));
         return toolbar;
+    }
+
+    private void buildHeroCard(LinearLayout container) {
+        LinearLayout hero = new LinearLayout(context);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        hero.setPadding(dp(20), dp(20), dp(20), dp(20));
+        GradientDrawable gradient = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{accentColor, blend(accentColor, Color.rgb(128, 86, 246), 0.58f)}
+        );
+        gradient.setCornerRadius(dp(22));
+        hero.setBackground(gradient);
+        hero.setElevation(dp(5));
+
+        TextView eyebrow = new TextView(context);
+        eyebrow.setText(chatMode ? t("GRAMSIEVE · 当前聊天", "GRAMSIEVE · CURRENT CHAT")
+                : t("GRAMSIEVE · TELEGRAM 工具箱", "GRAMSIEVE · TELEGRAM TOOLBOX"));
+        eyebrow.setTextColor(adjustAlpha(Color.WHITE, 0.78f));
+        eyebrow.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        eyebrow.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        addView(hero, eyebrow, 8);
+
+        TextView title = new TextView(context);
+        title.setText(chatMode ? t("净化这个聊天，留下真正重要的内容", "Keep what matters in this chat")
+                : t("过滤是核心，增强能力由你选择", "Filtering first. Enhancements on your terms."));
+        title.setTextColor(Color.WHITE);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22f);
+        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        addView(hero, title, 8);
+
+        TextView summary = new TextView(context);
+        summary.setText(chatMode
+                ? t("规则、防撤回与标记仍按聊天独立管理。", "Rules, anti-recall, and marks stay scoped to this chat.")
+                : t("隐私、消息、媒体、界面与传输设置统一收纳；所有功能默认关闭，不替你做决定。", "Privacy, messages, media, interface, and transfer controls in one place. Every enhancement is opt-in."));
+        summary.setTextColor(adjustAlpha(Color.WHITE, 0.88f));
+        summary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        addView(hero, summary, 0);
+
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.bottomMargin = dp(14);
+        container.addView(hero, params);
     }
 
     private void buildGeneralCard(LinearLayout container) {
@@ -468,6 +530,202 @@ final class HostConfigPanel {
         addInfo(card, t("账号槽位：", "Account slot: ") + accountId);
     }
 
+    private void buildEnhancementCards(LinearLayout container) {
+        addCategoryStrip(container);
+        for (EnhancementConfig.Category category : EnhancementConfig.Category.values()) {
+            LinearLayout card = addCard(container);
+            addCategoryHeader(card, category);
+            for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+                if (feature.category != category || !feature.isAvailableInCurrentBuild()) {
+                    continue;
+                }
+                Switch toggle = addFeatureSwitch(card, featureTitle(feature));
+                toggle.setChecked(baseConfig.enhancements.isEnabled(feature));
+                enhancementSwitches.put(feature, toggle);
+            }
+            if (category == EnhancementConfig.Category.MESSAGES) {
+                addDivider(card);
+                outgoingPrefixInput = addInput(
+                        card,
+                        t("发送前缀（最多 64 字符）", "Outgoing prefix (up to 64 characters)"),
+                        baseConfig.enhancements.outgoingPrefix
+                );
+                outgoingSuffixInput = addInput(
+                        card,
+                        t("发送后缀（最多 64 字符）", "Outgoing suffix (up to 64 characters)"),
+                        baseConfig.enhancements.outgoingSuffix
+                );
+            } else if (category == EnhancementConfig.Category.TRANSFER) {
+                addDivider(card);
+                downloadParallelismInput = addNumberInput(
+                        card,
+                        t("下载并发（2–32）", "Download parallelism (2–32)"),
+                        baseConfig.enhancements.downloadParallelism
+                );
+                uploadParallelismInput = addNumberInput(
+                        card,
+                        t("上传并发（1–16）", "Upload parallelism (1–16)"),
+                        baseConfig.enhancements.uploadParallelism
+                );
+                addInfo(card, t(
+                        "加速只调整并发；GramSieve 的卡死检测、退避重试和取消语义保持不变。",
+                        "Boosting only adjusts parallelism; GramSieve's stall detection, backoff, and cancellation semantics remain intact."
+                ));
+            }
+        }
+    }
+
+    private void buildConflictCard(LinearLayout container) {
+        EnumSet<ModuleConflictDetector.KnownModule> installed = loadInstalledModules();
+        ModuleConflictDetector.Report report = ModuleConflictDetector.detect(installed, true);
+        LinearLayout card = addCard(container);
+        addTitle(card, t("⚠  模块冲突", "⚠  Module conflicts"));
+        if (installed.isEmpty()) {
+            addInfo(card, t(
+                    "未检测到已知的 Telegram 增强模块。检测来自 GramSieve 自身进程的安装包可见性。",
+                    "No known Telegram enhancement module was detected. Detection uses package visibility from GramSieve's own process."
+            ));
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (ModuleConflictDetector.KnownModule module : installed) {
+            if (names.length() > 0) {
+                names.append(" · ");
+            }
+            names.append(module.displayName);
+        }
+        TextView modules = addInfo(card, t("检测到：", "Detected: ") + names);
+        modules.setTextColor(report.highestSeverity == ModuleConflictDetector.Severity.HIGH
+                ? Color.rgb(232, 86, 76)
+                : secondaryTextColor);
+        if (report.findings.isEmpty()) {
+            addInfo(card, t("未发现已知功能组重叠。", "No known capability overlap was found."));
+            return;
+        }
+        addInfo(card, t(
+                "同一能力建议只保留一个模块接管。检测不到第三方模块内部开关状态。",
+                "Keep one owner per capability. Third-party in-module switch states cannot be inspected."
+        ));
+        for (ModuleConflictDetector.Finding finding : report.findings) {
+            addConflictRow(card, finding);
+        }
+    }
+
+    private EnumSet<ModuleConflictDetector.KnownModule> loadInstalledModules() {
+        EnumSet<ModuleConflictDetector.KnownModule> modules =
+                EnumSet.noneOf(ModuleConflictDetector.KnownModule.class);
+        try {
+            Bundle bundle = context.getContentResolver().call(
+                    Uri.parse("content://" + ConfigContentProvider.AUTHORITY),
+                    ConfigContentProvider.METHOD_GET_INSTALLED_MODULES,
+                    null,
+                    null
+            );
+            ArrayList<String> names = bundle == null
+                    ? null
+                    : bundle.getStringArrayList(ConfigContentProvider.KEY_INSTALLED_MODULES);
+            if (names != null) {
+                for (String name : names) {
+                    try {
+                        modules.add(ModuleConflictDetector.KnownModule.valueOf(name));
+                    } catch (IllegalArgumentException ignored) {
+                        // A newer module APK may report a capability unknown to this host process.
+                    }
+                }
+            }
+        } catch (RuntimeException ignored) {
+            // The module app may be stopped or its provider temporarily unavailable.
+        }
+        return modules;
+    }
+
+    private void addConflictRow(LinearLayout card, ModuleConflictDetector.Finding finding) {
+        TextView row = new TextView(context);
+        row.setText("• " + conflictLabel(finding.kind) + "  ·  " + severityLabel(finding.severity));
+        row.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
+        row.setTextColor(finding.severity == ModuleConflictDetector.Severity.HIGH
+                ? Color.rgb(232, 86, 76)
+                : primaryTextColor);
+        addView(card, row, 4);
+    }
+
+    private String conflictLabel(ModuleConflictDetector.ConflictKind kind) {
+        switch (kind) {
+            case ANTI_RECALL:
+                return t("防撤回删除链", "Anti-recall deletion chain");
+            case EDIT_HISTORY:
+                return t("编辑历史重复记录", "Duplicate edit history");
+            case DOWNLOAD_ACCELERATION:
+                return t("下载参数覆盖", "Download parameter overwrite");
+            case SECRET_MEDIA:
+                return t("私密媒体处理", "Secret-media handling");
+            case SAVE_RESTRICTION:
+                return t("复制/转发限制", "Copy/forward restriction");
+            case ADS:
+                return t("赞助消息过滤", "Sponsored-message filtering");
+            case STORIES:
+                return t("Story 界面", "Stories interface");
+            case PRIVACY:
+                return t("隐私请求拦截", "Privacy request interception");
+            case UI_INJECTION:
+            default:
+                return t("菜单与消息 Cell", "Menus and message cells");
+        }
+    }
+
+    private String severityLabel(ModuleConflictDetector.Severity severity) {
+        switch (severity) {
+            case HIGH:
+                return t("高风险", "high");
+            case MEDIUM:
+                return t("中风险", "medium");
+            case LOW:
+                return t("低风险", "low");
+            case NONE:
+            default:
+                return t("无", "none");
+        }
+    }
+
+    private void addCategoryStrip(LinearLayout container) {
+        HorizontalScrollView scroll = new HorizontalScrollView(context);
+        scroll.setHorizontalScrollBarEnabled(false);
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(0, 0, dp(8), 0);
+        for (EnhancementConfig.Category category : EnhancementConfig.Category.values()) {
+            TextView chip = new TextView(context);
+            chip.setText(categoryIcon(category) + "  " + categoryTitle(category));
+            chip.setTextColor(primaryTextColor);
+            chip.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12f);
+            chip.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            chip.setPadding(dp(14), dp(9), dp(14), dp(9));
+            chip.setBackground(rounded(blend(cardColor, accentColor, 0.10f), dp(18), adjustAlpha(accentColor, 0.28f)));
+            LinearLayout.LayoutParams chipParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT
+            );
+            chipParams.rightMargin = dp(8);
+            row.addView(chip, chipParams);
+        }
+        scroll.addView(row, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        params.bottomMargin = dp(12);
+        container.addView(scroll, params);
+    }
+
+    private void addCategoryHeader(LinearLayout card, EnhancementConfig.Category category) {
+        TextView title = addTitle(card, categoryIcon(category) + "  " + categoryTitle(category));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17f);
+        addInfo(card, categoryDescription(category));
+    }
+
     private void buildRulesCard(LinearLayout container) {
         LinearLayout card = addCard(container);
         addTitle(card, t("规则内容", "Rules"));
@@ -522,6 +780,8 @@ final class HostConfigPanel {
                         exclusionMatrix
                 );
                 persistGlobalEditHistoryPolicy();
+                updated.enhancements = collectEnhancementConfig();
+                updated.updatedAtEpochMs = System.currentTimeMillis();
             }
             saver.save(updated);
             if (afterSave != null) {
@@ -536,6 +796,23 @@ final class HostConfigPanel {
                     Toast.LENGTH_LONG
             ).show();
         }
+    }
+
+    private EnhancementConfig collectEnhancementConfig() {
+        EnhancementConfig config = baseConfig.enhancements == null
+                ? new EnhancementConfig()
+                : baseConfig.enhancements.deepCopy();
+        for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+            Switch toggle = enhancementSwitches.get(feature);
+            if (feature.isAvailableInCurrentBuild()) {
+                config.setEnabled(feature, toggle != null && toggle.isChecked());
+            }
+        }
+        config.downloadParallelism = parseInt(downloadParallelismInput, config.downloadParallelism);
+        config.uploadParallelism = parseInt(uploadParallelismInput, config.uploadParallelism);
+        config.outgoingPrefix = valueOf(outgoingPrefixInput);
+        config.outgoingSuffix = valueOf(outgoingSuffixInput);
+        return config.sanitize();
     }
 
     private RuleDraftMatrix collectMatrix(int kind) {
@@ -668,8 +945,9 @@ final class HostConfigPanel {
     private LinearLayout addCard(LinearLayout parent) {
         LinearLayout card = new LinearLayout(context);
         card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        card.setBackground(rounded(cardColor, dp(8), strokeColor));
+        card.setPadding(dp(18), dp(16), dp(18), dp(16));
+        card.setBackground(rounded(cardColor, dp(18), strokeColor));
+        card.setElevation(dp(2));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
@@ -723,6 +1001,29 @@ final class HostConfigPanel {
         return toggle;
     }
 
+    private Switch addFeatureSwitch(LinearLayout parent, String text) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(2), 0, dp(2));
+
+        TextView label = new TextView(context);
+        label.setText(text);
+        label.setTextColor(primaryTextColor);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(label, new LinearLayout.LayoutParams(0, dp(48), 1f));
+
+        Switch toggle = new Switch(context);
+        toggle.setShowText(false);
+        row.addView(toggle, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        addView(parent, row, 2);
+        return toggle;
+    }
+
     private EditText addInput(LinearLayout parent, String label, String initialValue) {
         TextView title = new TextView(context);
         title.setText(label);
@@ -743,6 +1044,13 @@ final class HostConfigPanel {
                 | InputType.TYPE_TEXT_FLAG_MULTI_LINE
                 | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         addView(parent, input, 8);
+        return input;
+    }
+
+    private EditText addNumberInput(LinearLayout parent, String label, int initialValue) {
+        EditText input = addInput(parent, label, Integer.toString(initialValue));
+        input.setInputType(InputType.TYPE_CLASS_NUMBER);
+        input.setMaxLines(1);
         return input;
     }
 
@@ -847,6 +1155,174 @@ final class HostConfigPanel {
         }
     }
 
+    private String categoryIcon(EnhancementConfig.Category category) {
+        switch (category) {
+            case PRIVACY:
+                return "◈";
+            case MESSAGES:
+                return "✦";
+            case MEDIA:
+                return "▶";
+            case INTERFACE:
+                return "◇";
+            case TRANSFER:
+                return "⇅";
+            case TOOLS:
+            default:
+                return "⌁";
+        }
+    }
+
+    private String categoryTitle(EnhancementConfig.Category category) {
+        switch (category) {
+            case PRIVACY:
+                return t("隐私", "Privacy");
+            case MESSAGES:
+                return t("消息", "Messages");
+            case MEDIA:
+                return t("媒体", "Media");
+            case INTERFACE:
+                return t("界面", "Interface");
+            case TRANSFER:
+                return t("传输", "Transfer");
+            case TOOLS:
+            default:
+                return t("工具", "Tools");
+        }
+    }
+
+    private String categoryDescription(EnhancementConfig.Category category) {
+        switch (category) {
+            case PRIVACY:
+                return t("控制哪些行为允许发送到 Telegram 服务器。", "Control which activity may be reported to Telegram.");
+            case MESSAGES:
+                return t("扩展消息显示、发送与定位，同时保留 GramSieve 的规则体系。", "Extend message display, sending, and navigation while preserving GramSieve rules.");
+            case MEDIA:
+                return t("本地媒体操作与播放行为。", "Local media actions and playback behavior.");
+            case INTERFACE:
+                return t("精简 Telegram 界面，并补充更直接的信息展示。", "Trim Telegram's interface and expose useful context directly.");
+            case TRANSFER:
+                return t("下载和上传的并发参数；需要重启 Telegram。", "Download and upload concurrency; restart Telegram after changing.");
+            case TOOLS:
+            default:
+                return t("搜索、成员、会话定位和诊断工具。", "Search, member, navigation, and diagnostic tools.");
+        }
+    }
+
+    private String featureTitle(EnhancementConfig.Feature feature) {
+        switch (feature) {
+            case DISABLE_TYPING_STATUS:
+                return t("不发送正在输入状态", "Do not send typing status");
+            case HIDE_PRIVATE_READ_STATUS:
+                return t("隐藏私聊已读状态", "Hide private-chat read status");
+            case HIDE_GROUP_READ_STATUS:
+                return t("隐藏群聊已读状态", "Hide group read status");
+            case HIDE_STORY_VIEW_STATUS:
+                return t("隐藏 Story 浏览状态", "Hide Story view status");
+            case HIDE_PHONE_NUMBER:
+                return t("在资料页隐藏手机号", "Hide phone number in profiles");
+            case DISABLE_PERSONALIZED_ADS:
+                return t("减少个性化广告追踪", "Reduce personalized-ad tracking");
+            case SHOW_EXACT_LAST_SEEN:
+                return t("显示精确最后在线时间", "Show exact last-seen time");
+            case MARK_READ_AFTER_SEND:
+                return t("发送后再标记已读", "Mark read only after sending");
+            case SHOW_MESSAGE_ID:
+                return t("在时间旁显示消息 ID", "Show message ID beside time");
+            case RELOAD_MESSAGE:
+                return t("消息重新加载入口", "Message reload action");
+            case MESSAGE_AFFIXES:
+                return t("发送消息前缀/后缀", "Outgoing message prefix/suffix");
+            case AUTO_SAVE_SENT_MESSAGES:
+                return t("自动留存已发送消息", "Archive sent messages automatically");
+            case EXTENDED_JUMP_TO_MESSAGE:
+                return t("增强消息跳转", "Extended jump to message");
+            case LOCAL_MESSAGE_DISPLAY:
+                return t("本地替换消息显示文字", "Local message display override");
+            case SEND_COMMANDS:
+                return t("快捷发送命令", "Quick send commands");
+            case ALLOW_COPY:
+                return t("允许复制受限内容", "Allow copying restricted content");
+            case ALLOW_FORWARD:
+                return t("允许转发受限内容", "Allow forwarding restricted content");
+            case SAVE_VOICE_MESSAGES:
+                return t("允许保存语音消息", "Allow saving voice messages");
+            case SAVE_SECRET_MEDIA:
+                return t("允许保存私密媒体", "Allow saving secret media");
+            case KEEP_SECRET_MEDIA:
+                return t("防止私密媒体本地销毁", "Keep secret media locally");
+            case SAVE_STORIES:
+                return t("允许保存 Story", "Allow saving Stories");
+            case KEEP_VIDEO_MUTED:
+                return t("视频默认保持静音", "Keep videos muted by default");
+            case DISABLE_PREMIUM_STICKER_ANIMATION:
+                return t("关闭高级贴纸动画", "Disable premium sticker animation");
+            case HIDE_SPONSORED_MESSAGES:
+                return t("隐藏赞助消息", "Hide sponsored messages");
+            case HIDE_PINNED_MESSAGE:
+                return t("隐藏聊天置顶横幅", "Hide pinned-message banner");
+            case HIDE_SERVICE_STORIES:
+                return t("隐藏服务账号 Story", "Hide service-account Stories");
+            case HIDE_PREMIUM_STICKER_TAB:
+                return t("隐藏高级贴纸页", "Hide premium sticker tab");
+            case HIDE_CONTACTS_TAB:
+                return t("隐藏联系人页", "Hide contacts tab");
+            case HIDE_HOME_ACTION_BUTTONS:
+                return t("隐藏首页悬浮操作按钮", "Hide home action buttons");
+            case DISABLE_INSTANT_CAMERA:
+                return t("关闭输入框即时相机", "Disable instant camera");
+            case DISABLE_CHAT_SWIPE_BACK:
+                return t("关闭聊天页侧滑返回", "Disable chat swipe-back");
+            case DISABLE_PROFILE_SWIPE_BACK:
+                return t("关闭资料页侧滑返回", "Disable profile swipe-back");
+            case DISABLE_UPDATE_PROMPT:
+                return t("关闭 Telegram 更新提示", "Disable Telegram update prompts");
+            case FORCE_CHAT_BLUR:
+                return t("强制启用聊天模糊效果", "Force chat blur effects");
+            case USE_SYSTEM_EMOJI:
+                return t("使用系统 Emoji", "Use system emoji");
+            case SHOW_ID_IN_PROFILE:
+                return t("资料页显示 ID", "Show ID in profiles");
+            case SHOW_ID_IN_STATUS_LINE:
+                return t("聊天状态栏显示 ID", "Show ID in chat status line");
+            case COPY_PROFILE_NAME:
+                return t("允许复制资料名称", "Allow copying profile names");
+            case SHOW_FULL_NUMBERS:
+                return t("人数与计数不缩写", "Show counts without abbreviation");
+            case VIEW_TOPIC_AS_MESSAGES:
+                return t("话题默认按消息浏览", "View topics as messages by default");
+            case FORCE_SNOW_ANIMATION:
+                return t("强制雪花动画", "Force snow animation");
+            case HIDE_PROTOCOL_ERRORS:
+                return t("隐藏底层协议错误弹窗", "Hide protocol error dialogs");
+            case DOWNLOAD_BOOST:
+                return t("下载并发增强", "Download concurrency boost");
+            case UPLOAD_BOOST:
+                return t("上传并发增强", "Upload concurrency boost");
+            case SHOW_DOWNLOAD_SOURCE:
+                return t("显示下载来源", "Show download source");
+            case EXTENDED_OFFLINE_SEARCH:
+                return t("扩展离线搜索", "Extended offline search");
+            case LOCAL_GROUP_MEMBER_LIST:
+                return t("本地群成员列表", "Local group member list");
+            case HISTORIC_GROUP_MEMBERS:
+                return t("记录历史群成员", "Record historic group members");
+            case ACCOUNT_CREATION_ESTIMATE:
+                return t("估算账号创建时间", "Estimate account creation date");
+            case CUSTOM_CALENDAR:
+                return t("自定义日历定位消息", "Custom calendar navigation");
+            case OPEN_DIALOG_BY_ID:
+                return t("按 ID 打开会话", "Open dialog by ID");
+            case DATABASE_CORRUPTION_WARNING:
+                return t("数据库损坏提醒", "Database corruption warnings");
+            case TELEGRAM_DEBUG_MODE:
+                return t("Telegram 调试模式", "Telegram debug mode");
+            case NETWORK_LOG_CONTROL:
+            default:
+                return t("Telegram 网络日志", "Telegram network logs");
+        }
+    }
+
     private String targetScope(FilterConfig.RuleTarget target) {
         switch (target == null ? FilterConfig.RuleTarget.ANY : target) {
             case TEXT:
@@ -929,6 +1405,15 @@ final class HostConfigPanel {
         return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
     }
 
+    private static int blend(int from, int to, float amount) {
+        float safe = Math.max(0f, Math.min(1f, amount));
+        int alpha = Math.round(Color.alpha(from) + (Color.alpha(to) - Color.alpha(from)) * safe);
+        int red = Math.round(Color.red(from) + (Color.red(to) - Color.red(from)) * safe);
+        int green = Math.round(Color.green(from) + (Color.green(to) - Color.green(from)) * safe);
+        int blue = Math.round(Color.blue(from) + (Color.blue(to) - Color.blue(from)) * safe);
+        return Color.argb(alpha, red, green, blue);
+    }
+
     private static boolean isChineseLocale(Context context) {
         try {
             Locale locale = context.getResources().getConfiguration().locale;
@@ -940,6 +1425,14 @@ final class HostConfigPanel {
 
     private static String valueOf(EditText editText) {
         return editText == null || editText.getText() == null ? "" : editText.getText().toString();
+    }
+
+    private static int parseInt(EditText editText, int fallback) {
+        try {
+            return Integer.parseInt(valueOf(editText).trim());
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
     }
 
     private static final class RuleInputs {

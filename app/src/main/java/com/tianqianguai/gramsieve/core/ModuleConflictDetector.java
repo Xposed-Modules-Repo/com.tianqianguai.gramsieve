@@ -205,28 +205,38 @@ public final class ModuleConflictDetector {
             ));
         }
         if (gramSieveActiveForTelegram) {
+            EnumSet<KnownModule> editHistoryModules = EnumSet.noneOf(KnownModule.class);
             if (installed.contains(KnownModule.TELEVIP)) {
+                editHistoryModules.add(KnownModule.TELEVIP);
+            }
+            if (!editHistoryModules.isEmpty()) {
                 findings.add(new Finding(
                         ConflictKind.EDIT_HISTORY,
                         Severity.MEDIUM,
                         true,
-                        EnumSet.of(KnownModule.TELEVIP)
+                        editHistoryModules
                 ));
             }
         }
 
-        addWhenPresent(findings, installed, Capability.DOWNLOAD_ACCELERATION, 2,
-                ConflictKind.DOWNLOAD_ACCELERATION, Severity.HIGH, false);
-        addWhenPresent(findings, installed, Capability.SECRET_MEDIA, 2,
-                ConflictKind.SECRET_MEDIA, Severity.HIGH, false);
-        addWhenPresent(findings, installed, Capability.SAVE_RESTRICTION, 2,
-                ConflictKind.SAVE_RESTRICTION, Severity.LOW, false);
-        addWhenPresent(findings, installed, Capability.ADS, 2,
-                ConflictKind.ADS, Severity.LOW, false);
-        addWhenPresent(findings, installed, Capability.STORIES, 2,
-                ConflictKind.STORIES, Severity.MEDIUM, false);
-        addWhenPresent(findings, installed, Capability.PRIVACY, 2,
-                ConflictKind.PRIVACY, Severity.MEDIUM, false);
+        addWhenPresent(findings, installed, Capability.DOWNLOAD_ACCELERATION,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.DOWNLOAD_ACCELERATION, Severity.HIGH, gramSieveActiveForTelegram);
+        addWhenPresent(findings, installed, Capability.SECRET_MEDIA,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.SECRET_MEDIA, Severity.HIGH, gramSieveActiveForTelegram);
+        addWhenPresent(findings, installed, Capability.SAVE_RESTRICTION,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.SAVE_RESTRICTION, Severity.LOW, gramSieveActiveForTelegram);
+        addWhenPresent(findings, installed, Capability.ADS,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.ADS, Severity.LOW, gramSieveActiveForTelegram);
+        addWhenPresent(findings, installed, Capability.STORIES,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.STORIES, Severity.MEDIUM, gramSieveActiveForTelegram);
+        addWhenPresent(findings, installed, Capability.PRIVACY,
+                gramSieveActiveForTelegram ? 1 : 2,
+                ConflictKind.PRIVACY, Severity.MEDIUM, gramSieveActiveForTelegram);
         if (gramSieveActiveForTelegram) {
             addWhenPresent(findings, installed, Capability.UI_INJECTION, 1,
                     ConflictKind.UI_INJECTION, Severity.MEDIUM, true);

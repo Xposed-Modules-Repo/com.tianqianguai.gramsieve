@@ -10,6 +10,10 @@ import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
 
 import com.tianqianguai.gramsieve.core.FilterConfig;
+import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
+
+import java.util.ArrayList;
+import java.util.Set;
 
 public final class ConfigContentProvider extends ContentProvider {
     public static final String AUTHORITY = "com.tianqianguai.gramsieve.config";
@@ -22,6 +26,7 @@ public final class ConfigContentProvider extends ContentProvider {
     public static final String METHOD_GET_LOGS = "getLogs";
     public static final String METHOD_APPEND_LOG = "appendLog";
     public static final String METHOD_CLEAR_LOGS = "clearLogs";
+    public static final String METHOD_GET_INSTALLED_MODULES = "getInstalledModules";
     public static final String KEY_CONFIG_JSON = "config_json";
     public static final String KEY_UPDATED_AT_EPOCH_MS = "updated_at_epoch_ms";
     public static final String KEY_DIAGNOSTICS_JSON = "diagnostics_json";
@@ -30,6 +35,7 @@ public final class ConfigContentProvider extends ContentProvider {
     public static final String KEY_LOGS_JSON = "logs_json";
     public static final String KEY_LOG_COUNT = "log_count";
     public static final String KEY_LOG_ENTRY_JSON = "log_entry_json";
+    public static final String KEY_INSTALLED_MODULES = "installed_modules";
 
     @Override
     public boolean onCreate() {
@@ -62,6 +68,9 @@ public final class ConfigContentProvider extends ContentProvider {
         }
         if (METHOD_CLEAR_LOGS.equals(method)) {
             return handleClearLogs();
+        }
+        if (METHOD_GET_INSTALLED_MODULES.equals(method)) {
+            return handleGetInstalledModules();
         }
         return super.call(method, arg, extras);
     }
@@ -171,6 +180,20 @@ public final class ConfigContentProvider extends ContentProvider {
             PersistentLogStore.clear(getContext());
         }
         bundle.putInt(KEY_LOG_COUNT, 0);
+        return bundle;
+    }
+
+    @NonNull
+    private Bundle handleGetInstalledModules() {
+        Bundle bundle = new Bundle();
+        ArrayList<String> names = new ArrayList<>();
+        if (getContext() != null) {
+            Set<ModuleConflictDetector.KnownModule> modules = InstalledModuleScanner.scan(getContext());
+            for (ModuleConflictDetector.KnownModule module : modules) {
+                names.add(module.name());
+            }
+        }
+        bundle.putStringArrayList(KEY_INSTALLED_MODULES, names);
         return bundle;
     }
 

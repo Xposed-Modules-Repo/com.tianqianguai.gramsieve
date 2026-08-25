@@ -6,7 +6,7 @@ import java.util.List;
 import java.util.Map;
 
 public final class FilterConfig {
-    public static final int CURRENT_SCHEMA_VERSION = 2;
+    public static final int CURRENT_SCHEMA_VERSION = 3;
     public static final String APP_LANGUAGE_SYSTEM = "";
     public static final String APP_LANGUAGE_ENGLISH = "en";
     public static final String APP_LANGUAGE_SIMPLIFIED_CHINESE = "zh-CN";
@@ -19,6 +19,7 @@ public final class FilterConfig {
     public List<RuleSpec> globalRules = new ArrayList<>();
     public List<RuleSpec> globalExclusions = new ArrayList<>();
     public Map<String, ChatRuleSet> chatRules = new LinkedHashMap<>();
+    public EnhancementConfig enhancements = new EnhancementConfig();
     public long updatedAtEpochMs = System.currentTimeMillis();
 
     public static FilterConfig createDefault() {
@@ -58,6 +59,10 @@ public final class FilterConfig {
         if (chatRules == null) {
             chatRules = new LinkedHashMap<>();
         }
+        if (enhancements == null) {
+            enhancements = new EnhancementConfig();
+        }
+        enhancements.sanitize();
         globalRules = sanitizeRules(globalRules);
         globalExclusions = sanitizeRules(globalExclusions);
         Map<String, ChatRuleSet> sanitizedChats = new LinkedHashMap<>();
@@ -83,6 +88,9 @@ public final class FilterConfig {
         copy.action = action;
         copy.appLanguageTag = appLanguageTag;
         copy.updatedAtEpochMs = updatedAtEpochMs;
+        copy.enhancements = enhancements == null
+                ? new EnhancementConfig()
+                : enhancements.deepCopy().sanitize();
         for (RuleSpec rule : globalRules) {
             copy.globalRules.add(rule.deepCopy());
         }
