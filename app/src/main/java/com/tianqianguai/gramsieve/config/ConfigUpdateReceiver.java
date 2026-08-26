@@ -17,7 +17,10 @@ public final class ConfigUpdateReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (context == null || intent == null || !ACTION_SAVE_CONFIG.equals(intent.getAction())) {
+        if (context == null || intent == null) {
+            return;
+        }
+        if (!ACTION_SAVE_CONFIG.equals(intent.getAction())) {
             return;
         }
         String json = configJsonFromIntent(intent);

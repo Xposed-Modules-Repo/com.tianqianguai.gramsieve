@@ -98,15 +98,8 @@ If you fill the "Chat" section with something that matches the current chat name
     <string name="anti_recall_enabled">Enable anti-recall and edit detection</string>
     <string name="anti_recall_load_interval">Load interval (seconds)</string>
     <string name="conflict_detection_title">Module conflict detection</string>
-    <string name="conflict_detection_intro">GramSieve first requests root access to read the LSPosed private database in read-only mode and confirm module enablement and Telegram scope. If that fails, it falls back to installed-package detection. The database is never modified.</string>
+    <string name="conflict_detection_intro">GramSieve probes known module packages from its own process. Only if probes return nothing does it try the LSPosed database read-only with normal app permissions; it gives up if unreadable and never requests root.</string>
     <string name="conflict_detection_disclaimer">Detection only confirms that an app package is installed. It cannot confirm that the module is enabled in LSPosed, scoped to Telegram, or that a related feature is turned on.</string>
-    <string name="conflict_detection_db_disclaimer">LSPosed enablement and Telegram scope were confirmed from the database in read-only mode. Module-specific feature switches still cannot be confirmed.</string>
-    <string name="conflict_detection_db_reading">Reading LSPosed module state in read-only mode…</string>
-    <string name="conflict_detection_db_success">LSPosed database read-only access succeeded. GramSieve: %1$s. Conflicts now include only modules that are enabled and scoped to Telegram.</string>
-    <string name="conflict_detection_db_root_unavailable">Read-only root access was unavailable. Falling back to installed-package detection.</string>
-    <string name="conflict_detection_db_unavailable">The LSPosed private database was not found. Falling back to installed-package detection.</string>
-    <string name="conflict_detection_db_timeout">The read-only LSPosed query timed out. Falling back to installed-package detection.</string>
-    <string name="conflict_detection_db_failed">The LSPosed private database could not be read. Falling back to installed-package detection.</string>
     <string name="conflict_detection_no_modules">No known conflicting module packages detected.</string>
     <string name="conflict_detection_modules">Detected modules: %1$s</string>
     <string name="conflict_detection_no_conflicts">No overlapping feature group was detected among the installed packages.</string>
