@@ -5181,15 +5181,6 @@ final class TelegramHookInstaller {
                 return;
             }
             String encodedConfig = encodedConfig(updated);
-            Intent activityIntent = new Intent();
-            activityIntent.setComponent(new ComponentName(MODULE_PACKAGE, MODULE_PACKAGE + ".config.ConfigPersistActivity"));
-            activityIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            activityIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-            activityIntent.addFlags(Intent.FLAG_ACTIVITY_EXCLUDE_FROM_RECENTS);
-            activityIntent.putExtra(ConfigUpdateReceiver.EXTRA_CONFIG_JSON_BASE64, encodedConfig);
-            hostContext.startActivity(activityIntent);
-            info("Requested module-local config persistence activity updatedAt=" + updated.updatedAtEpochMs);
-
             Intent intent = new Intent(ConfigUpdateReceiver.ACTION_SAVE_CONFIG);
             intent.setComponent(new ComponentName(MODULE_PACKAGE, MODULE_PACKAGE + ".config.ConfigUpdateReceiver"));
             intent.putExtra(ConfigUpdateReceiver.EXTRA_CONFIG_JSON_BASE64, encodedConfig);
@@ -6295,7 +6286,8 @@ final class TelegramHookInstaller {
                     if (chatMode) {
                         refreshChatActivityFiltering(host);
                     }
-                }
+                },
+                module
         );
         if (shown) {
             info("Opened host config panel mode=" + mode + " dialogId=" + dialogId);

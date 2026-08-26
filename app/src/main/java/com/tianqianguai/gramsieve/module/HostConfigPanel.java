@@ -6,7 +6,6 @@ import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
-import android.net.Uri;
 import android.os.Bundle;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -35,7 +34,8 @@ import android.widget.Toast;
 
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
-import com.tianqianguai.gramsieve.config.ConfigContentProvider;
+import com.tianqianguai.gramsieve.config.ModuleLogger;
+import com.tianqianguai.gramsieve.config.RuntimeModuleProbe;
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
@@ -49,6 +49,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+
+import io.github.libxposed.api.XposedModule;
 
 @SuppressLint({"UseSwitchCompatOrMaterialCode", "SetTextI18n"})
 final class HostConfigPanel {
@@ -90,6 +92,7 @@ final class HostConfigPanel {
     private final EditHistoryPolicyStore editHistoryPolicyStore;
     private final ConfigSaver saver;
     private final Runnable afterSave;
+    private final XposedModule module;
     private final boolean chinese;
     private final int backgroundColor;
     private final int cardColor;
@@ -97,6 +100,8 @@ final class HostConfigPanel {
     private final int secondaryTextColor;
     private final int strokeColor;
     private final int accentColor;
+    private final int heroStartColor;
+    private final int heroEndColor;
     private final int toolbarColor;
     private final int toolbarTextColor;
     private final Map<FilterConfig.RuleTarget, RuleInputs> ruleInputs =
@@ -107,6 +112,7 @@ final class HostConfigPanel {
     private FrameLayout overlay;
     private OnBackInvokedDispatcher backDispatcher;
     private OnBackInvokedCallback backCallback;
+    private int moduleProbeGeneration;
     private Switch enabledSwitch;
     private Switch debugLoggingSwitch;
     private Switch excludeChatSwitch;
@@ -133,7 +139,8 @@ final class HostConfigPanel {
             BackgroundMessageLoader backgroundMessageLoader,
             EditHistoryPolicyStore editHistoryPolicyStore,
             ConfigSaver saver,
-            Runnable afterSave
+            Runnable afterSave,
+            XposedModule module
     ) {
         this.context = context;
         this.root = root;
@@ -147,6 +154,7 @@ final class HostConfigPanel {
         this.editHistoryPolicyStore = editHistoryPolicyStore;
         this.saver = saver;
         this.afterSave = afterSave;
+        this.module = module;
         this.chinese = isChineseLocale(context);
         int androidBackground = resolveThemeColor(android.R.attr.colorBackground, Color.rgb(18, 18, 18));
         int androidPrimaryText = resolveThemeColor(android.R.attr.textColorPrimary, Color.WHITE);
@@ -155,14 +163,19 @@ final class HostConfigPanel {
                 adjustAlpha(androidPrimaryText, 0.68f)
         );
         int androidAccent = resolveThemeColor(android.R.attr.colorAccent, Color.rgb(42, 171, 238));
-        this.backgroundColor = telegramThemeColor("key_windowBackgroundWhite", androidBackground);
-        this.cardColor = blend(backgroundColor, androidPrimaryText, 0.035f);
         this.primaryTextColor = telegramThemeColor("key_windowBackgroundWhiteBlackText", androidPrimaryText);
-        this.secondaryTextColor = telegramThemeColor("key_windowBackgroundWhiteGrayText2", androidSecondaryText);
-        this.strokeColor = telegramThemeColor("key_divider", adjustAlpha(primaryTextColor, 0.14f));
+        this.backgroundColor = telegramThemeColor("key_windowBackgroundWhite", androidBackground);
+        this.cardColor = blend(backgroundColor, primaryTextColor, 0.075f);
+        int themedSecondary = telegramThemeColor("key_windowBackgroundWhiteGrayText2", androidSecondaryText);
+        this.secondaryTextColor = blend(themedSecondary, primaryTextColor, 0.24f);
+        this.strokeColor = blend(backgroundColor, primaryTextColor, 0.18f);
         this.toolbarColor = telegramThemeColor("key_actionBarDefault", backgroundColor);
         this.toolbarTextColor = telegramThemeColor("key_actionBarDefaultTitle", primaryTextColor);
-        this.accentColor = telegramThemeColor("key_actionBarDefaultIcon", androidAccent);
+        this.accentColor = telegramThemeColor("key_windowBackgroundWhiteBlueText", androidAccent);
+        this.heroStartColor = ensureWhiteTextContrast(accentColor);
+        this.heroEndColor = ensureWhiteTextContrast(
+                blend(heroStartColor, Color.rgb(104, 76, 226), 0.58f)
+        );
     }
 
     static boolean show(
@@ -177,7 +190,8 @@ final class HostConfigPanel {
             BackgroundMessageLoader backgroundMessageLoader,
             EditHistoryPolicyStore editHistoryPolicyStore,
             ConfigSaver saver,
-            Runnable afterSave
+            Runnable afterSave,
+            XposedModule module
     ) {
         if (context == null || root == null || saver == null) {
             return false;
@@ -195,7 +209,8 @@ final class HostConfigPanel {
                 backgroundMessageLoader,
                 editHistoryPolicyStore,
                 saver,
-                afterSave
+                afterSave,
+                module
         );
         panel.attach();
         return true;
@@ -397,7 +412,7 @@ final class HostConfigPanel {
         hero.setPadding(dp(20), dp(20), dp(20), dp(20));
         GradientDrawable gradient = new GradientDrawable(
                 GradientDrawable.Orientation.TL_BR,
-                new int[]{accentColor, blend(accentColor, Color.rgb(128, 86, 246), 0.58f)}
+                new int[]{heroStartColor, heroEndColor}
         );
         gradient.setCornerRadius(dp(22));
         hero.setBackground(gradient);
@@ -576,67 +591,174 @@ final class HostConfigPanel {
     }
 
     private void buildConflictCard(LinearLayout container) {
-        EnumSet<ModuleConflictDetector.KnownModule> installed = loadInstalledModules();
-        ModuleConflictDetector.Report report = ModuleConflictDetector.detect(installed, true);
         LinearLayout card = addCard(container);
         addTitle(card, t("⚠  模块冲突", "⚠  Module conflicts"));
+        addInfo(card, t(
+                "正在检测已安装模块…",
+                "Detecting installed modules…"
+        ));
+        requestModuleState(card);
+    }
+
+    private void requestModuleState(LinearLayout card) {
+        int generation = ++moduleProbeGeneration;
+        new Thread(() -> {
+            RuntimeModuleProbe.Result result = RuntimeModuleProbe.scan(context, module);
+            ArrayList<String> names = new ArrayList<>();
+            for (ModuleConflictDetector.KnownModule module : result.modules) {
+                names.add(module.name());
+            }
+            Bundle data = new Bundle();
+            data.putStringArrayList("installed_modules", names);
+            data.putString("source", result.source);
+            card.post(() -> completeModuleProbe(generation, card, data));
+        }, "GramSieve-module-probe").start();
+    }
+
+    private void completeModuleProbe(int generation, LinearLayout card, Bundle data) {
+        if (generation != moduleProbeGeneration) {
+            return;
+        }
+        moduleProbeGeneration++;
+        if (overlay == null || !card.isAttachedToWindow()) {
+            return;
+        }
+        renderModuleState(card, data);
+    }
+
+    private void renderModuleState(LinearLayout card, Bundle data) {
+        clearConflictCardBody(card);
+        EnumSet<ModuleConflictDetector.KnownModule> installed = moduleSet(
+                data.getStringArrayList("installed_modules")
+        );
+        String source = data.getString("source", RuntimeModuleProbe.SOURCE_NONE);
+        logSettingsState(source, installed);
         if (installed.isEmpty()) {
             addInfo(card, t(
-                    "未检测到已知的 Telegram 增强模块。检测来自 GramSieve 自身进程的安装包可见性。",
-                    "No known Telegram enhancement module was detected. Detection uses package visibility from GramSieve's own process."
+                    "未检测到已知的 Telegram 增强模块。",
+                    "No known Telegram enhancement module was detected."
             ));
             return;
         }
-        StringBuilder names = new StringBuilder();
+
         for (ModuleConflictDetector.KnownModule module : installed) {
-            if (names.length() > 0) {
-                names.append(" · ");
-            }
-            names.append(module.displayName);
+            TextView row = addInfo(card, module.displayName + "  ·  " + t("已安装", "installed"));
+            row.setTextColor(primaryTextColor);
         }
-        TextView modules = addInfo(card, t("检测到：", "Detected: ") + names);
-        modules.setTextColor(report.highestSeverity == ModuleConflictDetector.Severity.HIGH
-                ? Color.rgb(232, 86, 76)
-                : secondaryTextColor);
+
+        ModuleConflictDetector.Report report = ModuleConflictDetector.detect(installed, true);
         if (report.findings.isEmpty()) {
-            addInfo(card, t("未发现已知功能组重叠。", "No known capability overlap was found."));
+            addInfo(card, t(
+                    "已安装模块之间未发现已知功能组重叠。",
+                    "No known capability overlap was found among installed modules."
+            ));
             return;
         }
         addInfo(card, t(
-                "同一能力建议只保留一个模块接管。检测不到第三方模块内部开关状态。",
-                "Keep one owner per capability. Third-party in-module switch states cannot be inspected."
+                "以下按已安装模块保守估计；探针无结果时才尝试普通权限只读 LSPosed 数据库，绝不申请 root。",
+                "The following is a conservative installed-package estimate; the LSPosed database is tried read-only only if probes return nothing, and root is never requested."
         ));
         for (ModuleConflictDetector.Finding finding : report.findings) {
             addConflictRow(card, finding);
         }
     }
 
-    private EnumSet<ModuleConflictDetector.KnownModule> loadInstalledModules() {
+    private void clearConflictCardBody(LinearLayout card) {
+        while (card.getChildCount() > 1) {
+            card.removeViewAt(1);
+        }
+    }
+
+    private static EnumSet<ModuleConflictDetector.KnownModule> moduleSet(List<String> names) {
         EnumSet<ModuleConflictDetector.KnownModule> modules =
                 EnumSet.noneOf(ModuleConflictDetector.KnownModule.class);
-        try {
-            Bundle bundle = context.getContentResolver().call(
-                    Uri.parse("content://" + ConfigContentProvider.AUTHORITY),
-                    ConfigContentProvider.METHOD_GET_INSTALLED_MODULES,
-                    null,
-                    null
-            );
-            ArrayList<String> names = bundle == null
-                    ? null
-                    : bundle.getStringArrayList(ConfigContentProvider.KEY_INSTALLED_MODULES);
-            if (names != null) {
-                for (String name : names) {
-                    try {
-                        modules.add(ModuleConflictDetector.KnownModule.valueOf(name));
-                    } catch (IllegalArgumentException ignored) {
-                        // A newer module APK may report a capability unknown to this host process.
-                    }
-                }
+        if (names == null) {
+            return modules;
+        }
+        for (String name : names) {
+            try {
+                modules.add(ModuleConflictDetector.KnownModule.valueOf(name));
+            } catch (IllegalArgumentException ignored) {
+                // A newer module APK may report a module unknown to this host process.
             }
-        } catch (RuntimeException ignored) {
-            // The module app may be stopped or its provider temporarily unavailable.
         }
         return modules;
+    }
+
+    private void logSettingsState(
+            String source,
+            EnumSet<ModuleConflictDetector.KnownModule> modules
+    ) {
+        StringBuilder names = new StringBuilder();
+        for (ModuleConflictDetector.KnownModule module : modules) {
+            if (names.length() > 0) {
+                names.append(',');
+            }
+            names.append(module.name());
+        }
+        ModuleLogger.config(
+                "GramSieve",
+                "SettingsState host=" + context.getPackageName()
+                        + " source=" + source
+                        + " modules=" + names
+                        + " background=" + colorHex(backgroundColor)
+                        + " card=" + colorHex(cardColor)
+                        + " primary=" + colorHex(primaryTextColor)
+                        + " secondary=" + colorHex(secondaryTextColor)
+                        + " accent=" + colorHex(accentColor)
+                        + " heroStart=" + colorHex(heroStartColor)
+                        + " heroEnd=" + colorHex(heroEndColor)
+                        + " primaryCard=" + formatRatio(contrastRatio(primaryTextColor, cardColor))
+                        + " secondaryCard=" + formatRatio(contrastRatio(secondaryTextColor, cardColor))
+                        + " heroStartText=" + formatRatio(contrastRatio(Color.WHITE, heroStartColor))
+                        + " heroEndText=" + formatRatio(contrastRatio(Color.WHITE, heroEndColor))
+        );
+    }
+
+    private static String colorHex(int color) {
+        return String.format(Locale.ROOT, "#%08X", color);
+    }
+
+    private static String formatRatio(double ratio) {
+        return String.format(Locale.ROOT, "%.2f", ratio);
+    }
+
+    private static int ensureWhiteTextContrast(int color) {
+        int adjusted = Color.rgb(Color.red(color), Color.green(color), Color.blue(color));
+        for (int i = 0; i < 12 && contrastRatio(Color.WHITE, adjusted) < 4.5d; i++) {
+            adjusted = blend(adjusted, Color.BLACK, 0.08f);
+        }
+        return adjusted;
+    }
+
+    private static double contrastRatio(int foreground, int background) {
+        int opaqueBackground = Color.rgb(
+                Color.red(background),
+                Color.green(background),
+                Color.blue(background)
+        );
+        float alpha = Color.alpha(foreground) / 255f;
+        int composite = Color.rgb(
+                Math.round(Color.red(foreground) * alpha + Color.red(opaqueBackground) * (1f - alpha)),
+                Math.round(Color.green(foreground) * alpha + Color.green(opaqueBackground) * (1f - alpha)),
+                Math.round(Color.blue(foreground) * alpha + Color.blue(opaqueBackground) * (1f - alpha))
+        );
+        double lighter = Math.max(relativeLuminance(composite), relativeLuminance(opaqueBackground));
+        double darker = Math.min(relativeLuminance(composite), relativeLuminance(opaqueBackground));
+        return (lighter + 0.05d) / (darker + 0.05d);
+    }
+
+    private static double relativeLuminance(int color) {
+        return 0.2126d * linearColor(Color.red(color))
+                + 0.7152d * linearColor(Color.green(color))
+                + 0.0722d * linearColor(Color.blue(color));
+    }
+
+    private static double linearColor(int channel) {
+        double value = channel / 255d;
+        return value <= 0.04045d
+                ? value / 12.92d
+                : Math.pow((value + 0.055d) / 1.055d, 2.4d);
     }
 
     private void addConflictRow(LinearLayout card, ModuleConflictDetector.Finding finding) {
@@ -884,6 +1006,7 @@ final class HostConfigPanel {
         }
         FrameLayout panel = overlay;
         overlay = null;
+        moduleProbeGeneration++;
         unregisterSystemBackHandler();
         ViewGroup parent = (ViewGroup) panel.getParent();
         if (parent != null) {

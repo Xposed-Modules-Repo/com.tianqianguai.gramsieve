@@ -98,15 +98,8 @@
     <string name="anti_recall_enabled">启用主动加载与防撤回防修改</string>
     <string name="anti_recall_load_interval">加载间隔（秒）</string>
     <string name="conflict_detection_title">模块冲突检测</string>
-    <string name="conflict_detection_intro">GramSieve 会先申请 root 权限，以只读模式读取 LSPosed 私有数据库，确认模块开关和 Telegram 作用域；读取失败时才退回安装包检测。数据库绝不会被修改。</string>
+    <string name="conflict_detection_intro">GramSieve 在自身进程逐个探测已知模块包；探针无结果时才尝试普通权限只读 LSPosed 数据库，不可读便放弃，绝不申请 root。</string>
     <string name="conflict_detection_disclaimer">检测只能确认模块应用包已安装，不能确认它已在 LSPosed 中启用、已选择 Telegram 作用域，也不能确认模块内部的对应功能已打开。</string>
-    <string name="conflict_detection_db_disclaimer">已通过只读数据库确认 LSPosed 开关和 Telegram 作用域；仍不能确认各模块内部的对应功能开关。</string>
-    <string name="conflict_detection_db_reading">正在以只读模式读取 LSPosed 模块状态…</string>
-    <string name="conflict_detection_db_success">LSPosed 数据库只读读取成功。GramSieve：%1$s。冲突只统计已启用且已勾选 Telegram 的模块。</string>
-    <string name="conflict_detection_db_root_unavailable">无法获得只读 root 权限，已退回安装包检测。</string>
-    <string name="conflict_detection_db_unavailable">未找到 LSPosed 私有数据库，已退回安装包检测。</string>
-    <string name="conflict_detection_db_timeout">LSPosed 只读查询超时，已退回安装包检测。</string>
-    <string name="conflict_detection_db_failed">无法读取 LSPosed 私有数据库，已退回安装包检测。</string>
     <string name="conflict_detection_no_modules">未检测到已知冲突模块包。</string>
     <string name="conflict_detection_modules">检测到的模块：%1$s</string>
     <string name="conflict_detection_no_conflicts">已安装模块包之间未检测到功能组重叠。</string>
