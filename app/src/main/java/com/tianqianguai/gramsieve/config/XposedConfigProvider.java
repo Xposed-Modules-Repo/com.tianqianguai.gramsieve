@@ -14,30 +14,51 @@ import java.lang.reflect.Method;
 public final class XposedConfigProvider {
     private static final String TAG = "GramSieve";
     private static final long RELOAD_THROTTLE_MS = 1500L;
-    private static final Uri CONTENT_URI = ConfigContentProvider.CONTENT_URI;
+    private static final long FAILURE_RETRY_MS = 30_000L;
+    private static final String CONTENT_URI_STRING = "content://" + ConfigContentProvider.AUTHORITY;
 
     private final String modulePackageName;
     private final RemotePreferencesProvider remotePreferencesProvider;
+    private final ElapsedRealtimeProvider elapsedRealtimeProvider;
     private volatile FilterConfig cachedConfig;
     private volatile long lastCheckedAt;
     private volatile long lastLoadedUpdatedAt;
+    private volatile long retryAfterAt;
     private Object xSharedPreferences;
     private Method reloadMethod;
     private Method hasFileChangedMethod;
     private SharedPreferences sharedPreferences;
+    private boolean remotePrefsEmptyLogged;
+    private boolean remotePrefsFailureLogged;
+    private boolean contentProviderUnavailable;
+    private boolean contentProviderFailureLogged;
+    private boolean legacyPrefsUnavailable;
 
     public XposedConfigProvider(
             String modulePackageName,
             RemotePreferencesProvider remotePreferencesProvider
     ) {
+        this(modulePackageName, remotePreferencesProvider, SystemClock::elapsedRealtime);
+    }
+
+    XposedConfigProvider(
+            String modulePackageName,
+            RemotePreferencesProvider remotePreferencesProvider,
+            ElapsedRealtimeProvider elapsedRealtimeProvider
+    ) {
         this.modulePackageName = modulePackageName;
         this.remotePreferencesProvider = remotePreferencesProvider;
+        this.elapsedRealtimeProvider = elapsedRealtimeProvider == null
+                ? SystemClock::elapsedRealtime
+                : elapsedRealtimeProvider;
     }
 
     public synchronized FilterConfig getConfig(Context context) {
-        long now = SystemClock.elapsedRealtime();
-        if (now - lastCheckedAt < RELOAD_THROTTLE_MS && cachedConfig != null) {
-            return cachedConfig;
+        long now = elapsedRealtimeProvider.elapsedRealtime();
+        FilterConfig snapshot = cachedConfig;
+        if (snapshot != null
+                && (now - lastCheckedAt < RELOAD_THROTTLE_MS || now < retryAfterAt)) {
+            return snapshot;
         }
         lastCheckedAt = now;
         FilterConfig remotePrefsConfig = loadFromRemotePreferences();
@@ -45,21 +66,17 @@ public final class XposedConfigProvider {
             if (hasNewerAuthoritativeCache(remotePrefsConfig)) {
                 return cachedConfig;
             }
-            cachedConfig = remotePrefsConfig;
-            lastLoadedUpdatedAt = remotePrefsConfig.updatedAtEpochMs;
-            return cachedConfig;
+            return rememberLoaded(remotePrefsConfig);
         }
         FilterConfig remoteConfig = loadFromContentProvider(context);
         if (remoteConfig != null) {
             if (hasNewerAuthoritativeCache(remoteConfig)) {
                 return cachedConfig;
             }
-            cachedConfig = remoteConfig;
-            lastLoadedUpdatedAt = remoteConfig.updatedAtEpochMs;
-            return cachedConfig;
+            return rememberLoaded(remoteConfig);
         }
         if (!ensureLegacyPrefs()) {
-            return cachedConfig == null ? FilterConfig.createDefault() : cachedConfig;
+            return rememberFailure(now);
         }
         try {
             boolean shouldReload = cachedConfig == null;
@@ -71,11 +88,25 @@ public final class XposedConfigProvider {
                 reloadMethod.invoke(xSharedPreferences);
             }
             cachedConfig = ModuleConfigStore.load(sharedPreferences);
+            retryAfterAt = 0L;
         } catch (ReflectiveOperationException ignored) {
-            if (cachedConfig == null) {
-                cachedConfig = FilterConfig.createDefault();
-            }
+            return rememberFailure(now);
         }
+        return cachedConfig;
+    }
+
+    private FilterConfig rememberLoaded(FilterConfig config) {
+        cachedConfig = (config == null ? FilterConfig.createDefault() : config).sanitize();
+        lastLoadedUpdatedAt = cachedConfig.updatedAtEpochMs;
+        retryAfterAt = 0L;
+        return cachedConfig;
+    }
+
+    private FilterConfig rememberFailure(long now) {
+        if (cachedConfig == null) {
+            cachedConfig = FilterConfig.createDefault().sanitize();
+        }
+        retryAfterAt = now + FAILURE_RETRY_MS;
         return cachedConfig;
     }
 
@@ -89,64 +120,114 @@ public final class XposedConfigProvider {
     public synchronized void replaceCachedConfig(FilterConfig config) {
         cachedConfig = (config == null ? FilterConfig.createDefault() : config).sanitize();
         lastLoadedUpdatedAt = cachedConfig.updatedAtEpochMs;
-        lastCheckedAt = SystemClock.elapsedRealtime();
+        lastCheckedAt = elapsedRealtimeProvider.elapsedRealtime();
+        retryAfterAt = 0L;
     }
 
     public synchronized void invalidate() {
-        lastCheckedAt = 0L;
+        lastCheckedAt = -RELOAD_THROTTLE_MS;
+        retryAfterAt = 0L;
     }
 
     private FilterConfig loadFromRemotePreferences() {
-        SharedPreferences remotePreferences = remotePreferencesProvider == null ? null : remotePreferencesProvider.get();
-        if (remotePreferences == null) {
-            return null;
-        }
-        if (!remotePreferences.contains(ModuleConfigStore.KEY_CONFIG_JSON)) {
-            ModuleLogger.config(TAG, "ConfigProvider: remote prefs empty");
-            return null;
-        }
         try {
+            SharedPreferences remotePreferences = remotePreferencesProvider == null
+                    ? null
+                    : remotePreferencesProvider.get();
+            if (remotePreferences == null) {
+                return null;
+            }
+            if (!remotePreferences.contains(ModuleConfigStore.KEY_CONFIG_JSON)) {
+                if (!remotePrefsEmptyLogged) {
+                    remotePrefsEmptyLogged = true;
+                    ModuleLogger.config(TAG, "ConfigProvider: remote prefs empty; using safe cached defaults");
+                }
+                return null;
+            }
             FilterConfig config = ModuleConfigStore.load(remotePreferences);
-            ModuleLogger.config(TAG,
-                    "ConfigProvider: remote prefs updatedAt=" + config.updatedAtEpochMs
-                            + " debug=" + config.debugLogging
-                            + " globalRules=" + config.globalRules.size()
-            );
+            if (config.updatedAtEpochMs != lastLoadedUpdatedAt) {
+                ModuleLogger.config(TAG,
+                        "ConfigProvider: remote prefs updatedAt=" + config.updatedAtEpochMs
+                                + " debug=" + config.debugLogging
+                                + " globalRules=" + config.globalRules.size()
+                );
+            }
+            remotePrefsEmptyLogged = false;
+            remotePrefsFailureLogged = false;
             return config;
         } catch (RuntimeException exception) {
-            ModuleLogger.configError(TAG, "ConfigProvider: remote prefs load failed", exception);
+            if (!remotePrefsFailureLogged) {
+                remotePrefsFailureLogged = true;
+                ModuleLogger.warn(
+                        ModuleLogger.CAT_CONFIG,
+                        TAG,
+                        "ConfigProvider: remote prefs unavailable; using safe cached defaults: "
+                                + exception.getClass().getSimpleName()
+                );
+            }
             return null;
         }
     }
 
     private FilterConfig loadFromContentProvider(Context context) {
+        if (contentProviderUnavailable) {
+            return null;
+        }
         if (context == null) {
-            ModuleLogger.config(TAG, "ConfigProvider: context=null");
+            if (!contentProviderFailureLogged) {
+                contentProviderFailureLogged = true;
+                ModuleLogger.config(TAG, "ConfigProvider: host context unavailable; using safe cached defaults");
+            }
             return null;
         }
         try {
-            Bundle bundle = context.getContentResolver().call(CONTENT_URI, ConfigContentProvider.METHOD_GET_CONFIG, null, null);
+            Bundle bundle = context.getContentResolver().call(
+                    Uri.parse(CONTENT_URI_STRING),
+                    ConfigContentProvider.METHOD_GET_CONFIG,
+                    null,
+                    null
+            );
             if (bundle == null) {
                 ModuleLogger.config(TAG, "ConfigProvider: bundle=null");
                 return null;
             }
             long updatedAt = bundle.getLong(ConfigContentProvider.KEY_UPDATED_AT_EPOCH_MS, 0L);
             if (cachedConfig != null && updatedAt > 0L && updatedAt == lastLoadedUpdatedAt) {
-                ModuleLogger.config(TAG, "ConfigProvider: using cached config updatedAt=" + updatedAt);
                 return cachedConfig;
             }
             String json = bundle.getString(ConfigContentProvider.KEY_CONFIG_JSON, null);
             FilterConfig config = ModuleConfigStore.fromJson(json);
-            lastLoadedUpdatedAt = config.updatedAtEpochMs;
-            ModuleLogger.config(TAG,
-                    "ConfigProvider: loaded updatedAt=" + updatedAt
-                            + " parsedUpdatedAt=" + config.updatedAtEpochMs
-                            + " debug=" + config.debugLogging
-                            + " globalRules=" + config.globalRules.size()
-            );
+            if (config.updatedAtEpochMs != lastLoadedUpdatedAt) {
+                ModuleLogger.config(TAG,
+                        "ConfigProvider: loaded updatedAt=" + updatedAt
+                                + " parsedUpdatedAt=" + config.updatedAtEpochMs
+                                + " debug=" + config.debugLogging
+                                + " globalRules=" + config.globalRules.size()
+                );
+            }
+            contentProviderFailureLogged = false;
             return config;
+        } catch (IllegalArgumentException exception) {
+            contentProviderUnavailable = true;
+            if (!contentProviderFailureLogged) {
+                contentProviderFailureLogged = true;
+                ModuleLogger.warn(
+                        ModuleLogger.CAT_CONFIG,
+                        TAG,
+                        "ConfigProvider: module provider is not visible from Telegram; using remote preferences"
+                );
+            }
+            return null;
         } catch (RuntimeException exception) {
-            ModuleLogger.configError(TAG, "ConfigProvider: content provider load failed", exception);
+            if (!contentProviderFailureLogged) {
+                contentProviderFailureLogged = true;
+                ModuleLogger.warn(
+                        ModuleLogger.CAT_CONFIG,
+                        TAG,
+                        "ConfigProvider: module provider unavailable; using safe cached defaults: "
+                                + exception.getClass().getSimpleName()
+                );
+            }
             return null;
         }
     }
@@ -154,6 +235,9 @@ public final class XposedConfigProvider {
     private boolean ensureLegacyPrefs() {
         if (sharedPreferences != null) {
             return true;
+        }
+        if (legacyPrefsUnavailable) {
+            return false;
         }
         try {
             Class<?> clazz = Class.forName("de.robv.android.xposed.XSharedPreferences");
@@ -176,12 +260,17 @@ public final class XposedConfigProvider {
             ModuleLogger.config(TAG, "ConfigProvider: using XSharedPreferences fallback");
             return true;
         } catch (ReflectiveOperationException | ClassCastException ignored) {
-            ModuleLogger.config(TAG, "ConfigProvider: XSharedPreferences unavailable");
+            legacyPrefsUnavailable = true;
+            ModuleLogger.config(TAG, "ConfigProvider: legacy preferences unavailable; using safe cached defaults");
             return false;
         }
     }
 
     public interface RemotePreferencesProvider {
         SharedPreferences get();
+    }
+
+    interface ElapsedRealtimeProvider {
+        long elapsedRealtime();
     }
 }
