@@ -1,7 +1,6 @@
 package com.tianqianguai.gramsieve.config;
 
 import android.content.Context;
-import android.os.Bundle;
 import android.util.Log;
 
 import java.io.File;
@@ -300,41 +299,23 @@ public final class ModuleLogger {
             return;
         }
         if (hookProcessMode) {
-            persistViaContentProvider(context, level, category, tag, message, throwableStr);
-        } else {
-            PersistentLogStore.LogEntry entry = new PersistentLogStore.LogEntry();
-            entry.level = level;
-            entry.category = category;
-            entry.tag = tag;
-            entry.message = message;
-            entry.throwable = throwableStr == null ? "" : throwableStr;
-            PersistentLogStore.append(context, entry);
+            // Hook-process logs are already written to Telegram's app-specific files above.
+            // Telegram cannot resolve the module provider because of package visibility, so
+            // retrying the provider for every log entry only creates ActivityThread errors.
+            return;
         }
+        PersistentLogStore.LogEntry entry = new PersistentLogStore.LogEntry();
+        entry.level = level;
+        entry.category = category;
+        entry.tag = tag;
+        entry.message = message;
+        entry.throwable = throwableStr == null ? "" : throwableStr;
+        PersistentLogStore.append(context, entry);
     }
 
     private static void persist(String level, String category, String tag, String message, Throwable throwable) {
         String throwableStr = throwableToString(throwable);
         persist(level, category, tag, message, throwableStr);
-    }
-
-    private static void persistViaContentProvider(Context context, String level, String category, String tag, String message, String throwableStr) {
-        try {
-            PersistentLogStore.LogEntry entry = new PersistentLogStore.LogEntry();
-            entry.level = level;
-            entry.category = category;
-            entry.tag = tag;
-            entry.message = message;
-            entry.throwable = throwableStr == null ? "" : throwableStr;
-            Bundle extras = new Bundle();
-            extras.putString(ConfigContentProvider.KEY_LOG_ENTRY_JSON, PersistentLogStore.entryToJson(entry));
-            context.getContentResolver().call(
-                    ConfigContentProvider.CONTENT_URI,
-                    ConfigContentProvider.METHOD_APPEND_LOG,
-                    null,
-                    extras
-            );
-        } catch (RuntimeException ignored) {
-        }
     }
 
     private static String throwableToString(Throwable throwable) {

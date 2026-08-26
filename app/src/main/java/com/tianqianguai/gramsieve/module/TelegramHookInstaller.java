@@ -460,7 +460,6 @@ final class TelegramHookInstaller {
             info("Hooked ChatMessageCell." + signature);
             return true;
         } catch (NoSuchMethodException ignored) {
-            info("ChatMessageCell." + signature + " not present in this Telegram build");
             return false;
         } catch (Throwable throwable) {
             error("Failed to hook ChatMessageCell." + signature, throwable);
@@ -477,7 +476,6 @@ final class TelegramHookInstaller {
             info("Hooked ChatMessageCell." + signature);
             return true;
         } catch (NoSuchMethodException ignored) {
-            info("ChatMessageCell." + signature + " not present in this Telegram build");
             return false;
         } catch (Throwable throwable) {
             error("Failed to hook ChatMessageCell." + signature, throwable);
@@ -494,7 +492,6 @@ final class TelegramHookInstaller {
             info("Hooked ChatMessageCell." + signature);
             return true;
         } catch (NoSuchMethodException ignored) {
-            info("ChatMessageCell." + signature + " not present in this Telegram build");
             return false;
         } catch (Throwable throwable) {
             error("Failed to hook ChatMessageCell." + signature, throwable);
