@@ -4,6 +4,7 @@ import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.TextPaint;
 import android.view.View;
@@ -33,6 +34,7 @@ import io.github.libxposed.api.XposedModule;
 @SuppressLint({"PrivateApi", "DiscouragedPrivateApi"})
 final class EnhancementHookInstaller {
     private static final String TAG = "GramSieve";
+    private static final long CONFIG_SNAPSHOT_MS = 1500L;
     private static final String[] READ_REQUESTS = {
             "TL_messages_readHistory",
             "TL_messages_readEncryptedHistory",
@@ -61,7 +63,11 @@ final class EnhancementHookInstaller {
     private final Set<Object> affixedRequests = Collections.synchronizedSet(
             Collections.newSetFromMap(new WeakHashMap<>())
     );
+    private final Object configLock = new Object();
     private XposedConfigProvider configProvider;
+    private volatile EnhancementConfig cachedEnhancements = new EnhancementConfig();
+    private volatile long lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
+    private volatile Context applicationContext;
 
     EnhancementHookInstaller(XposedModule module) {
         this.module = module;
@@ -69,6 +75,7 @@ final class EnhancementHookInstaller {
 
     void install(ClassLoader classLoader, XposedConfigProvider configProvider) {
         this.configProvider = configProvider;
+        this.lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
         installNetworkPolicyHooks(classLoader);
         installMessageIdHook(classLoader);
         installContentPolicyHooks(classLoader);
@@ -762,15 +769,30 @@ final class EnhancementHookInstaller {
     }
 
     private EnhancementConfig config() {
-        XposedConfigProvider provider = configProvider;
-        Context context = currentApplication();
-        if (provider == null || context == null) {
-            return new EnhancementConfig();
+        long now = SystemClock.elapsedRealtime();
+        EnhancementConfig snapshot = cachedEnhancements;
+        if (now - lastConfigRefreshAt < CONFIG_SNAPSHOT_MS) {
+            return snapshot;
         }
-        FilterConfig filterConfig = provider.getConfig(context);
-        return filterConfig.enhancements == null
-                ? new EnhancementConfig()
-                : filterConfig.enhancements;
+        synchronized (configLock) {
+            now = SystemClock.elapsedRealtime();
+            snapshot = cachedEnhancements;
+            if (now - lastConfigRefreshAt < CONFIG_SNAPSHOT_MS) {
+                return snapshot;
+            }
+            lastConfigRefreshAt = now;
+            XposedConfigProvider provider = configProvider;
+            Context context = currentApplication();
+            if (provider == null || context == null) {
+                return snapshot;
+            }
+            FilterConfig filterConfig = provider.getConfig(context);
+            EnhancementConfig loaded = filterConfig.enhancements == null
+                    ? new EnhancementConfig()
+                    : filterConfig.enhancements.deepCopy().sanitize();
+            cachedEnhancements = loaded;
+            return loaded;
+        }
     }
 
     private boolean enabled(EnhancementConfig.Feature feature) {
@@ -778,11 +800,21 @@ final class EnhancementHookInstaller {
     }
 
     private Context currentApplication() {
+        Context existing = applicationContext;
+        if (existing != null) {
+            return existing;
+        }
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
             Method currentApplication = activityThread.getDeclaredMethod("currentApplication");
             Object value = currentApplication.invoke(null);
-            return value instanceof Context ? (Context) value : null;
+            if (!(value instanceof Context)) {
+                return null;
+            }
+            Context context = (Context) value;
+            Context appContext = context.getApplicationContext();
+            applicationContext = appContext == null ? context : appContext;
+            return applicationContext;
         } catch (ReflectiveOperationException ignored) {
             return null;
         }
