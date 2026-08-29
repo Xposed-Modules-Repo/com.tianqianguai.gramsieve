@@ -17,6 +17,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.BooleanSupplier;
 
 public final class BackgroundMessageLoader {
     interface LoadedMessagesConsumer {
@@ -32,6 +33,7 @@ public final class BackgroundMessageLoader {
     private final MessageCache messageCache;
     private final AntiRecallConfigStore configStore;
     private final ScheduledExecutorService scheduler;
+    private final BooleanSupplier useExternalAntiRecall;
     private final Set<Long> enabledChats = ConcurrentHashMap.newKeySet();
     private final Map<Long, PendingRequest> pendingRequests = new ConcurrentHashMap<>();
     private final Map<Long, FailureBackoff> failureBackoffs = new ConcurrentHashMap<>();
@@ -47,8 +49,14 @@ public final class BackgroundMessageLoader {
     private volatile LoadedMessagesConsumer loadedMessagesConsumer;
 
     public BackgroundMessageLoader(MessageCache messageCache, AntiRecallConfigStore configStore) {
+        this(messageCache, configStore, () -> false);
+    }
+
+    BackgroundMessageLoader(MessageCache messageCache, AntiRecallConfigStore configStore,
+                            BooleanSupplier useExternalAntiRecall) {
         this.messageCache = messageCache;
         this.configStore = configStore;
+        this.useExternalAntiRecall = useExternalAntiRecall == null ? () -> false : useExternalAntiRecall;
         this.scheduler = Executors.newSingleThreadScheduledExecutor();
         loadEnabledChats();
     }
@@ -140,6 +148,9 @@ public final class BackgroundMessageLoader {
     }
 
     public void triggerImmediateLoad(String reason) {
+        if (usesExternalAntiRecall()) {
+            return;
+        }
         if (enabledChats.isEmpty()) {
             info("BackgroundMessageLoader: immediate load skipped, no enabled chats reason=" + reason);
             return;
@@ -166,7 +177,8 @@ public final class BackgroundMessageLoader {
     }
 
     private void loadMessages() {
-        if (enabledChats.isEmpty() || telegramClassLoader == null || historyApi == null) {
+        if (usesExternalAntiRecall() || enabledChats.isEmpty()
+                || telegramClassLoader == null || historyApi == null) {
             return;
         }
         long now = SystemClock.elapsedRealtime();
@@ -294,6 +306,9 @@ public final class BackgroundMessageLoader {
         if (pending.cancelled) {
             return null;
         }
+        if (usesExternalAntiRecall()) {
+            return null;
+        }
         Object response = args != null && args.length > 0 ? args[0] : null;
         Object error = args != null && args.length > 1 ? args[1] : null;
         if (error != null) {
@@ -368,6 +383,14 @@ public final class BackgroundMessageLoader {
         Object hydratedPeer = Reflect.invokeIfExists(controller, "getInputPeer",
                 new Class<?>[]{long.class}, dialogId);
         return hydratedPeer == null ? peer : hydratedPeer;
+    }
+
+    private boolean usesExternalAntiRecall() {
+        try {
+            return useExternalAntiRecall.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     static boolean isLoadCycleTooSoon(long nowElapsedMs, long lastElapsedMs) {

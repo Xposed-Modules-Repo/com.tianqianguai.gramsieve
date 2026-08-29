@@ -108,6 +108,8 @@ final class HostConfigPanel {
             new EnumMap<>(FilterConfig.RuleTarget.class);
     private final Map<EnhancementConfig.Feature, Switch> enhancementSwitches =
             new EnumMap<>(EnhancementConfig.Feature.class);
+    private final Map<ModuleConflictDetector.KnownModule, Switch> moduleFallbackSwitches =
+            new EnumMap<>(ModuleConflictDetector.KnownModule.class);
 
     private FrameLayout overlay;
     private OnBackInvokedDispatcher backDispatcher;
@@ -501,6 +503,13 @@ final class HostConfigPanel {
         addTitle(card, t("当前聊天主动加载", "Current Chat Proactive Loading"));
         chatAntiRecallSwitch = addSwitch(card, t("为这个聊天启用主动加载/防撤回", "Enable proactive loading for this chat"));
         chatAntiRecallSwitch.setChecked(isChatAntiRecallEnabled());
+        if (baseConfig.enhancements != null
+                && baseConfig.enhancements.yieldsToModule(ModuleConflictDetector.ConflictKind.ANTI_RECALL)) {
+            addInfo(card, t(
+                    "当前由外部模块接管防撤回；此处设置会保留，关闭模块回退后恢复使用。",
+                    "Anti-recall is currently delegated to another module. This setting is preserved and resumes when module fallback is disabled."
+            ));
+        }
         addInfo(card, t("保存后会立即同步到宿主里的后台加载器。", "Saving updates the host background loader immediately."));
     }
 
@@ -510,6 +519,13 @@ final class HostConfigPanel {
         }
         LinearLayout card = addCard(container);
         addTitle(card, t("编辑历史", "Edit History"));
+        if (baseConfig.enhancements != null
+                && baseConfig.enhancements.yieldsToModule(ModuleConflictDetector.ConflictKind.EDIT_HISTORY)) {
+            addInfo(card, t(
+                    "当前由外部模块接管编辑历史；GramSieve 仍保留这些设置，关闭模块回退后恢复使用。",
+                    "Edit history is currently delegated to another module. GramSieve preserves these settings and resumes when module fallback is disabled."
+            ));
+        }
         if (chatMode) {
             addInfo(card, t(
                     "为当前用户或群组设置记录规则；“跟随全局”不会创建单独规则。",
@@ -659,6 +675,7 @@ final class HostConfigPanel {
 
     private void renderModuleState(LinearLayout card, Bundle data) {
         clearConflictCardBody(card);
+        moduleFallbackSwitches.clear();
         EnumSet<ModuleConflictDetector.KnownModule> installed = moduleSet(
                 data.getStringArrayList("installed_modules")
         );
@@ -672,9 +689,20 @@ final class HostConfigPanel {
             return;
         }
 
+        addInfo(card, t(
+                "每个回退开关默认关闭。关闭时使用 GramSieve 方案；开启时 GramSieve 只让出该模块声明的重叠能力。此开关不会替对方模块启用 LSPosed 作用域或内部功能。",
+                "Every fallback is off by default. Off uses GramSieve; on makes GramSieve yield only the overlapping capabilities declared for that module. This does not enable the other module's LSPosed scope or internal switches."
+        ));
         for (ModuleConflictDetector.KnownModule module : installed) {
-            TextView row = addInfo(card, module.displayName + "  ·  " + t("已安装", "installed"));
-            row.setTextColor(primaryTextColor);
+            Switch fallback = addSwitch(card, t(
+                    "采用 " + module.displayName + " 方案（关闭＝GramSieve）",
+                    "Use " + module.displayName + " implementation (off = GramSieve)"
+            ));
+            fallback.setChecked(baseConfig.enhancements != null
+                    && baseConfig.enhancements.isModuleFallbackEnabled(module));
+            moduleFallbackSwitches.put(module, fallback);
+            addInfo(card, t("GramSieve 将让出：", "GramSieve yields: ")
+                    + fallbackCapabilitiesLabel(module));
         }
 
         ModuleConflictDetector.Report report = ModuleConflictDetector.detect(installed, true);
@@ -732,6 +760,7 @@ final class HostConfigPanel {
                 "SettingsState host=" + context.getPackageName()
                         + " source=" + source
                         + " modules=" + names
+                        + " fallbacks=" + enabledFallbackNames()
                         + " background=" + colorHex(backgroundColor)
                         + " card=" + colorHex(cardColor)
                         + " primary=" + colorHex(primaryTextColor)
@@ -748,6 +777,41 @@ final class HostConfigPanel {
 
     private static String colorHex(int color) {
         return String.format(Locale.ROOT, "#%08X", color);
+    }
+
+    private String enabledFallbackNames() {
+        StringBuilder names = new StringBuilder();
+        EnhancementConfig config = baseConfig.enhancements == null
+                ? new EnhancementConfig()
+                : baseConfig.enhancements;
+        for (ModuleConflictDetector.KnownModule module : ModuleConflictDetector.KnownModule.values()) {
+            Switch toggle = moduleFallbackSwitches.get(module);
+            boolean enabled = toggle != null
+                    ? toggle.isChecked()
+                    : config.isModuleFallbackEnabled(module);
+            if (!enabled) {
+                continue;
+            }
+            if (names.length() > 0) {
+                names.append(',');
+            }
+            names.append(module.name());
+        }
+        return names.toString();
+    }
+
+    private String fallbackCapabilitiesLabel(ModuleConflictDetector.KnownModule module) {
+        StringBuilder label = new StringBuilder();
+        for (ModuleConflictDetector.ConflictKind kind : module.conflictKinds()) {
+            if (kind == ModuleConflictDetector.ConflictKind.UI_INJECTION) {
+                continue;
+            }
+            if (label.length() > 0) {
+                label.append(" · ");
+            }
+            label.append(conflictLabel(kind));
+        }
+        return label.length() == 0 ? t("无已映射能力", "no mapped capabilities") : label.toString();
     }
 
     private static String formatRatio(double ratio) {
@@ -959,6 +1023,12 @@ final class HostConfigPanel {
             Switch toggle = enhancementSwitches.get(feature);
             if (feature.isAvailableInCurrentBuild()) {
                 config.setEnabled(feature, toggle != null && toggle.isChecked());
+            }
+        }
+        for (ModuleConflictDetector.KnownModule module : ModuleConflictDetector.KnownModule.values()) {
+            Switch toggle = moduleFallbackSwitches.get(module);
+            if (toggle != null) {
+                config.setModuleFallbackEnabled(module, toggle.isChecked());
             }
         }
         config.downloadParallelism = parseInt(downloadParallelismInput, config.downloadParallelism);

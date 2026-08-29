@@ -35,91 +35,83 @@ public final class ModuleConflictDetector {
         UI_INJECTION
     }
 
-    private enum Capability {
-        ANTI_RECALL,
-        EDIT_HISTORY,
-        DOWNLOAD_ACCELERATION,
-        SECRET_MEDIA,
-        SAVE_RESTRICTION,
-        ADS,
-        STORIES,
-        PRIVACY,
-        UI_INJECTION
-    }
-
     public enum KnownModule {
         TELEGAMI(
                 "Telegami",
                 new String[]{"com.aoya.telegami"},
-                Capability.ANTI_RECALL,
-                Capability.DOWNLOAD_ACCELERATION,
-                Capability.SECRET_MEDIA,
-                Capability.SAVE_RESTRICTION,
-                Capability.ADS,
-                Capability.PRIVACY,
-                Capability.UI_INJECTION
+                ConflictKind.ANTI_RECALL,
+                ConflictKind.DOWNLOAD_ACCELERATION,
+                ConflictKind.SECRET_MEDIA,
+                ConflictKind.SAVE_RESTRICTION,
+                ConflictKind.ADS,
+                ConflictKind.PRIVACY,
+                ConflictKind.UI_INJECTION
         ),
         TELEVIP(
                 "TeleVip",
                 new String[]{"com.my.televip"},
-                Capability.ANTI_RECALL,
-                Capability.EDIT_HISTORY,
-                Capability.DOWNLOAD_ACCELERATION,
-                Capability.SECRET_MEDIA,
-                Capability.SAVE_RESTRICTION,
-                Capability.STORIES,
-                Capability.PRIVACY,
-                Capability.UI_INJECTION
+                ConflictKind.ANTI_RECALL,
+                ConflictKind.EDIT_HISTORY,
+                ConflictKind.DOWNLOAD_ACCELERATION,
+                ConflictKind.SECRET_MEDIA,
+                ConflictKind.SAVE_RESTRICTION,
+                ConflictKind.STORIES,
+                ConflictKind.PRIVACY,
+                ConflictKind.UI_INJECTION
         ),
         RE_TELEGRAM(
                 "Re:Telegram",
                 new String[]{"nep.timeline.re_telegram"},
-                Capability.ANTI_RECALL,
-                Capability.DOWNLOAD_ACCELERATION,
-                Capability.SAVE_RESTRICTION,
-                Capability.ADS,
-                Capability.STORIES
+                ConflictKind.ANTI_RECALL,
+                ConflictKind.DOWNLOAD_ACCELERATION,
+                ConflictKind.SAVE_RESTRICTION,
+                ConflictKind.ADS,
+                ConflictKind.STORIES
         ),
         KILLERGRAM(
                 "Killergram",
                 new String[]{"com.shatyuka.killergram"},
-                Capability.SAVE_RESTRICTION,
-                Capability.ADS
+                ConflictKind.SAVE_RESTRICTION,
+                ConflictKind.ADS
         ),
         TELEGRAM_SPEED_HOOK(
                 "Telegram Speed Hook",
                 new String[]{"Telegram.Speed.Hook"},
-                Capability.DOWNLOAD_ACCELERATION
+                ConflictKind.DOWNLOAD_ACCELERATION
         ),
         TELEGRAM_TWEAKS(
                 "Telegram Tweaks",
                 new String[]{"ru.mike.telegramtweaks", "ru.mike.sidestories"},
-                Capability.STORIES
+                ConflictKind.STORIES
         ),
         TAUXILIARY(
                 "TAuxiliary",
                 new String[]{"org.telegram.auxiliary"},
-                Capability.ANTI_RECALL,
-                Capability.DOWNLOAD_ACCELERATION,
-                Capability.UI_INJECTION
+                ConflictKind.ANTI_RECALL,
+                ConflictKind.DOWNLOAD_ACCELERATION,
+                ConflictKind.UI_INJECTION
         );
 
         public final String displayName;
         public final List<String> packageNames;
-        private final Set<Capability> capabilities;
+        private final Set<ConflictKind> conflictKinds;
 
-        KnownModule(String displayName, String[] packageNames, Capability... capabilities) {
+        KnownModule(String displayName, String[] packageNames, ConflictKind... conflictKinds) {
             this.displayName = displayName;
             List<String> aliases = new ArrayList<>();
             Collections.addAll(aliases, packageNames);
             this.packageNames = Collections.unmodifiableList(aliases);
-            EnumSet<Capability> values = EnumSet.noneOf(Capability.class);
-            Collections.addAll(values, capabilities);
-            this.capabilities = Collections.unmodifiableSet(values);
+            EnumSet<ConflictKind> values = EnumSet.noneOf(ConflictKind.class);
+            Collections.addAll(values, conflictKinds);
+            this.conflictKinds = Collections.unmodifiableSet(values);
         }
 
-        private boolean has(Capability capability) {
-            return capabilities.contains(capability);
+        public boolean has(ConflictKind kind) {
+            return kind != null && conflictKinds.contains(kind);
+        }
+
+        public Set<ConflictKind> conflictKinds() {
+            return conflictKinds;
         }
     }
 
@@ -194,7 +186,7 @@ public final class ModuleConflictDetector {
                 : EnumSet.copyOf(installedModules);
         List<Finding> findings = new ArrayList<>();
 
-        EnumSet<KnownModule> antiRecallModules = matchingModules(installed, Capability.ANTI_RECALL);
+        EnumSet<KnownModule> antiRecallModules = matchingModules(installed, ConflictKind.ANTI_RECALL);
         int antiRecallOwners = antiRecallModules.size() + (gramSieveActiveForTelegram ? 1 : 0);
         if (antiRecallOwners >= 2) {
             findings.add(new Finding(
@@ -219,26 +211,26 @@ public final class ModuleConflictDetector {
             }
         }
 
-        addWhenPresent(findings, installed, Capability.DOWNLOAD_ACCELERATION,
+        addWhenPresent(findings, installed, ConflictKind.DOWNLOAD_ACCELERATION,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.DOWNLOAD_ACCELERATION, Severity.HIGH, gramSieveActiveForTelegram);
-        addWhenPresent(findings, installed, Capability.SECRET_MEDIA,
+        addWhenPresent(findings, installed, ConflictKind.SECRET_MEDIA,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.SECRET_MEDIA, Severity.HIGH, gramSieveActiveForTelegram);
-        addWhenPresent(findings, installed, Capability.SAVE_RESTRICTION,
+        addWhenPresent(findings, installed, ConflictKind.SAVE_RESTRICTION,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.SAVE_RESTRICTION, Severity.LOW, gramSieveActiveForTelegram);
-        addWhenPresent(findings, installed, Capability.ADS,
+        addWhenPresent(findings, installed, ConflictKind.ADS,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.ADS, Severity.LOW, gramSieveActiveForTelegram);
-        addWhenPresent(findings, installed, Capability.STORIES,
+        addWhenPresent(findings, installed, ConflictKind.STORIES,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.STORIES, Severity.MEDIUM, gramSieveActiveForTelegram);
-        addWhenPresent(findings, installed, Capability.PRIVACY,
+        addWhenPresent(findings, installed, ConflictKind.PRIVACY,
                 gramSieveActiveForTelegram ? 1 : 2,
                 ConflictKind.PRIVACY, Severity.MEDIUM, gramSieveActiveForTelegram);
         if (gramSieveActiveForTelegram) {
-            addWhenPresent(findings, installed, Capability.UI_INJECTION, 1,
+            addWhenPresent(findings, installed, ConflictKind.UI_INJECTION, 1,
                     ConflictKind.UI_INJECTION, Severity.MEDIUM, true);
         }
 
@@ -248,25 +240,25 @@ public final class ModuleConflictDetector {
     private static void addWhenPresent(
             List<Finding> findings,
             Set<KnownModule> installed,
-            Capability capability,
+            ConflictKind capabilityKind,
             int minimumCount,
-            ConflictKind kind,
+            ConflictKind findingKind,
             Severity severity,
             boolean includesGramSieve
     ) {
-        EnumSet<KnownModule> matches = matchingModules(installed, capability);
+        EnumSet<KnownModule> matches = matchingModules(installed, capabilityKind);
         if (matches.size() >= minimumCount) {
-            findings.add(new Finding(kind, severity, includesGramSieve, matches));
+            findings.add(new Finding(findingKind, severity, includesGramSieve, matches));
         }
     }
 
     private static EnumSet<KnownModule> matchingModules(
             Set<KnownModule> installed,
-            Capability capability
+            ConflictKind kind
     ) {
         EnumSet<KnownModule> matches = EnumSet.noneOf(KnownModule.class);
         for (KnownModule module : installed) {
-            if (module.has(capability)) {
+            if (module.has(kind)) {
                 matches.add(module);
             }
         }

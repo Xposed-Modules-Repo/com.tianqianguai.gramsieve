@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterConfig;
+import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 import com.tianqianguai.gramsieve.core.RuleTextCodec;
 
 import org.junit.Test;
@@ -36,6 +37,10 @@ public class ModuleConfigStoreTest {
         FilterConfig config = FilterConfig.createDefault();
         config.enhancements.setEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS, true);
         config.enhancements.setEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST, true);
+        config.enhancements.setModuleFallbackEnabled(
+                ModuleConflictDetector.KnownModule.TELEGRAM_SPEED_HOOK,
+                true
+        );
         config.enhancements.downloadParallelism = 12;
         config.enhancements.outgoingPrefix = "[GramSieve]";
 
@@ -43,6 +48,9 @@ public class ModuleConfigStoreTest {
 
         assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS));
         assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST));
+        assertTrue(decoded.enhancements.isModuleFallbackEnabled(
+                ModuleConflictDetector.KnownModule.TELEGRAM_SPEED_HOOK
+        ));
         assertEquals(12, decoded.enhancements.downloadParallelism);
         assertEquals("[GramSieve]", decoded.enhancements.outgoingPrefix);
     }

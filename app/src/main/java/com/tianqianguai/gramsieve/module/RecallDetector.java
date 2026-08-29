@@ -7,6 +7,7 @@ import java.lang.reflect.Method;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -21,6 +22,8 @@ public final class RecallDetector {
     private final EditHistoryPolicyStore editHistoryPolicyStore;
     private final TelegramMessageDatabaseBridge telegramDbBridge;
     private final SelfDeleteTracker selfDeleteTracker;
+    private final BooleanSupplier useExternalAntiRecall;
+    private final BooleanSupplier useExternalEditHistory;
     private volatile ClassLoader telegramClassLoader;
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader) {
@@ -29,30 +32,46 @@ public final class RecallDetector {
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                           MediaPrefetcher mediaPrefetcher) {
-        this(messageCache, loader, mediaPrefetcher, null, new SelfDeleteTracker());
+        this(messageCache, loader, mediaPrefetcher, null,
+                new SelfDeleteTracker(), () -> false, () -> false);
     }
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                           MediaPrefetcher mediaPrefetcher,
                           EditHistoryPolicyStore editHistoryPolicyStore) {
-        this(messageCache, loader, mediaPrefetcher, editHistoryPolicyStore, new SelfDeleteTracker());
-    }
-
-    RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
-                   MediaPrefetcher mediaPrefetcher, SelfDeleteTracker selfDeleteTracker) {
-        this(messageCache, loader, mediaPrefetcher, null, selfDeleteTracker);
+        this(messageCache, loader, mediaPrefetcher, editHistoryPolicyStore,
+                new SelfDeleteTracker(), () -> false, () -> false);
     }
 
     RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
                    MediaPrefetcher mediaPrefetcher,
                    EditHistoryPolicyStore editHistoryPolicyStore,
-                   SelfDeleteTracker selfDeleteTracker) {
+                   BooleanSupplier useExternalAntiRecall,
+                   BooleanSupplier useExternalEditHistory) {
+        this(messageCache, loader, mediaPrefetcher, editHistoryPolicyStore,
+                new SelfDeleteTracker(), useExternalAntiRecall, useExternalEditHistory);
+    }
+
+    RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                   MediaPrefetcher mediaPrefetcher, SelfDeleteTracker selfDeleteTracker) {
+        this(messageCache, loader, mediaPrefetcher, null, selfDeleteTracker,
+                () -> false, () -> false);
+    }
+
+    private RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader,
+                           MediaPrefetcher mediaPrefetcher,
+                           EditHistoryPolicyStore editHistoryPolicyStore,
+                           SelfDeleteTracker selfDeleteTracker,
+                           BooleanSupplier useExternalAntiRecall,
+                           BooleanSupplier useExternalEditHistory) {
         this.messageCache = messageCache;
         this.loader = loader;
         this.mediaPrefetcher = mediaPrefetcher;
         this.editHistoryPolicyStore = editHistoryPolicyStore;
         this.telegramDbBridge = new TelegramMessageDatabaseBridge();
         this.selfDeleteTracker = selfDeleteTracker;
+        this.useExternalAntiRecall = useExternalAntiRecall == null ? () -> false : useExternalAntiRecall;
+        this.useExternalEditHistory = useExternalEditHistory == null ? () -> false : useExternalEditHistory;
     }
 
     boolean toggleCleanupMode(long dialogId, long durationMs) {
@@ -141,17 +160,23 @@ public final class RecallDetector {
         try {
             hook(module, method, chain -> {
                 try {
-                    telegramDbBridge.captureEditsBeforePutMessages(
-                            chain.getThisObject(),
-                            chain.getArgs(),
-                            messageCache,
-                            loader,
-                            editHistoryPolicyStore,
-                            mediaPrefetcher
-                    );
-                    int accountId = TelegramAccountResolver.resolveHost(
-                            chain.getThisObject(), telegramClassLoader);
-                    cacheMessagesFromStorageArgs(accountId, chain.getArgs());
+                    boolean externalAntiRecall = usesExternalAntiRecall();
+                    boolean externalEditHistory = usesExternalEditHistory();
+                    if (!externalEditHistory) {
+                        telegramDbBridge.captureEditsBeforePutMessages(
+                                chain.getThisObject(),
+                                chain.getArgs(),
+                                messageCache,
+                                loader,
+                                editHistoryPolicyStore,
+                                mediaPrefetcher
+                        );
+                    }
+                    if (!externalAntiRecall || !externalEditHistory) {
+                        int accountId = TelegramAccountResolver.resolveHost(
+                                chain.getThisObject(), telegramClassLoader);
+                        cacheMessagesFromStorageArgs(accountId, chain.getArgs());
+                    }
                 } catch (Throwable t) {
                     // Ignore
                 }
@@ -166,6 +191,9 @@ public final class RecallDetector {
     private void hookStorageDeleteMessages(XposedModule module, java.lang.reflect.Method method, String methodName) {
         try {
             hook(module, method, chain -> {
+                if (usesExternalAntiRecall()) {
+                    return chain.proceed();
+                }
                 try {
                     DeletionRequest deletion = deletionFromStorageArgs(chain.getArgs());
                     int accountId = TelegramAccountResolver.resolveHost(
@@ -229,7 +257,7 @@ public final class RecallDetector {
     }
 
     private boolean shouldSuppressDeletionNotification(int accountId, java.util.List<Object> args) {
-        if (loader == null || args == null) {
+        if (usesExternalAntiRecall() || loader == null || args == null) {
             return false;
         }
         for (Object arg : args) {
@@ -322,7 +350,7 @@ public final class RecallDetector {
 
     private boolean shouldSuppressMessagesDeletedEvent(int accountId,
                                                        java.util.List<Object> hookArgs) {
-        if (hookArgs == null) {
+        if (usesExternalAntiRecall() || hookArgs == null) {
             return false;
         }
         Object[] eventArgs = null;
@@ -560,9 +588,13 @@ public final class RecallDetector {
                     }
                     Object result = chain.proceed();
                     if (methodName.equals("editMessage")) {
-                        processEditFromArgs(chain.getThisObject(), args);
+                        if (!usesExternalEditHistory()) {
+                            processEditFromArgs(chain.getThisObject(), args);
+                        }
                     } else if (methodName.equals("processLoadedMessages")) {
-                        processLoadedMessagesFromArgs(chain.getThisObject(), args);
+                        if (!usesExternalAntiRecall() || !usesExternalEditHistory()) {
+                            processLoadedMessagesFromArgs(chain.getThisObject(), args);
+                        }
                     }
                     return result;
                 } catch (Throwable throwable) {
@@ -808,11 +840,27 @@ public final class RecallDetector {
     }
 
     int cacheBackgroundMessages(int accountId, long dialogId, List<?> messages) {
-        if (messages == null || messages.isEmpty() || loader == null
+        if (usesExternalAntiRecall() || messages == null || messages.isEmpty() || loader == null
                 || !loader.isChatEnabled(dialogId)) {
             return 0;
         }
         return cacheLoadedMessages(accountId, dialogId, new ArrayList<>(messages));
+    }
+
+    private boolean usesExternalAntiRecall() {
+        return supplied(useExternalAntiRecall);
+    }
+
+    private boolean usesExternalEditHistory() {
+        return supplied(useExternalEditHistory);
+    }
+
+    private static boolean supplied(BooleanSupplier supplier) {
+        try {
+            return supplier != null && supplier.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private static void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
@@ -890,7 +938,7 @@ public final class RecallDetector {
 
     private void processUpdates(Object messagesController, ArrayList<?> updates) {
         if (messageCache == null || (loader == null && editHistoryPolicyStore == null)
-                || updates == null) {
+                || updates == null || (usesExternalAntiRecall() && usesExternalEditHistory())) {
             return;
         }
         for (Object update : updates) {
@@ -903,7 +951,7 @@ public final class RecallDetector {
                 if (message != null) {
                     int accountId = TelegramAccountResolver.resolveWithFallback(
                             telegramClassLoader, messagesController, message, update);
-                    if (className.contains("Edit")) {
+                    if (className.contains("Edit") && !usesExternalEditHistory()) {
                         // This is an edit update — but Telegram also sends TL_updateEditChannelMessage
                         // for non-content changes (reactions, views, etc.). Only mark as edited
                         // if the message text actually changed.
@@ -924,6 +972,9 @@ public final class RecallDetector {
                 Object deleteMessages = Reflect.field(update, "messages");
                 Object channelId = Reflect.field(update, "channel_id");
                 if (className.contains("Delete") && deleteMessages instanceof ArrayList) {
+                    if (usesExternalAntiRecall()) {
+                        continue;
+                    }
                     int accountId = TelegramAccountResolver.resolveWithFallback(
                             telegramClassLoader, messagesController, update);
                     long dialogId = 0L;
@@ -1031,11 +1082,14 @@ public final class RecallDetector {
     }
 
     private boolean shouldCacheMessage(int accountId, long dialogId) {
-        return (loader != null && loader.isChatEnabled(dialogId))
+        return (!usesExternalAntiRecall() && loader != null && loader.isChatEnabled(dialogId))
                 || shouldRecordEditHistory(accountId, dialogId);
     }
 
     private boolean shouldRecordEditHistory(int accountId, long dialogId) {
+        if (usesExternalEditHistory()) {
+            return false;
+        }
         if (editHistoryPolicyStore != null) {
             return editHistoryPolicyStore.shouldRecord(accountId, dialogId);
         }
@@ -1171,7 +1225,7 @@ public final class RecallDetector {
     }
 
     void processDeletions(int accountId, long dialogId, ArrayList<?> messageIds) {
-        if (messageCache == null || loader == null || messageIds == null) {
+        if (usesExternalAntiRecall() || messageCache == null || loader == null || messageIds == null) {
             return;
         }
         boolean enabled = isDeletionEnabled(accountId, dialogId, messageIds);
@@ -1296,7 +1350,8 @@ public final class RecallDetector {
     }
 
     void processEdit(int accountId, long dialogId, int messageId, String newText) {
-        if (messageCache == null || (loader == null && editHistoryPolicyStore == null)) {
+        if (usesExternalEditHistory() || messageCache == null
+                || (loader == null && editHistoryPolicyStore == null)) {
             return;
         }
         boolean enabled = shouldRecordEditHistory(accountId, dialogId);
