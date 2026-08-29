@@ -743,8 +743,8 @@ public final class RecallDetector {
         }
     }
 
-    private void cacheLoadedMessages(int accountId, long dialogId, ArrayList<?> messages) {
-        if (messageCache == null) return;
+    private int cacheLoadedMessages(int accountId, long dialogId, ArrayList<?> messages) {
+        if (messageCache == null) return 0;
         int cached = 0;
         for (Object msgObj : messages) {
             try {
@@ -800,17 +800,19 @@ public final class RecallDetector {
                 // Skip individual message errors
             }
         }
+        return cached;
     }
 
-    void cacheBackgroundMessages(long dialogId, List<?> messages) {
-        cacheBackgroundMessages(0, dialogId, messages);
+    int cacheBackgroundMessages(long dialogId, List<?> messages) {
+        return cacheBackgroundMessages(0, dialogId, messages);
     }
 
-    void cacheBackgroundMessages(int accountId, long dialogId, List<?> messages) {
-        if (messages == null || messages.isEmpty() || !loader.isChatEnabled(dialogId)) {
-            return;
+    int cacheBackgroundMessages(int accountId, long dialogId, List<?> messages) {
+        if (messages == null || messages.isEmpty() || loader == null
+                || !loader.isChatEnabled(dialogId)) {
+            return 0;
         }
-        cacheLoadedMessages(accountId, dialogId, new ArrayList<>(messages));
+        return cacheLoadedMessages(accountId, dialogId, new ArrayList<>(messages));
     }
 
     private static void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {

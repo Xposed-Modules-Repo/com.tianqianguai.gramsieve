@@ -20,7 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class BackgroundMessageLoader {
     interface LoadedMessagesConsumer {
-        void onLoadedMessages(long dialogId, List<?> messages);
+        int onLoadedMessages(long dialogId, List<?> messages);
     }
 
     private static final String TAG = "GramSieve";
@@ -325,7 +325,16 @@ public final class BackgroundMessageLoader {
             return null;
         }
         try {
-            consumer.onLoadedMessages(dialogId, messages);
+            int cached = consumer.onLoadedMessages(dialogId, messages);
+            LoadedRange range = inspectLoadedRange(messages);
+            info("BackgroundMessageLoader: isolated getHistory completed dialog=" + dialogId
+                    + " peer=" + pending.peerType
+                    + " returned=" + range.count
+                    + " cached=" + cached
+                    + " minId=" + range.minId
+                    + " maxId=" + range.maxId
+                    + " minDate=" + range.minDate
+                    + " maxDate=" + range.maxDate);
         } catch (Throwable throwable) {
             error("BackgroundMessageLoader: failed to cache isolated history for dialog "
                     + dialogId, throwable);
