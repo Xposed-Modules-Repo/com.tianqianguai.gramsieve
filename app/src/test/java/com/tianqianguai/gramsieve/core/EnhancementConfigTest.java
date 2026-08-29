@@ -50,4 +50,43 @@ public final class EnhancementConfigTest {
 
         assertFalse(config.isEnabled(EnhancementConfig.Feature.LOCAL_GROUP_MEMBER_LIST));
     }
+
+    @Test
+    public void moduleFallbacksAreDisabledByDefaultAndSanitizedByKnownModule() {
+        EnhancementConfig config = new EnhancementConfig();
+        config.moduleFallbacks.put("unknown", true);
+        config.setModuleFallbackEnabled(ModuleConflictDetector.KnownModule.TELEGAMI, true);
+
+        config.sanitize();
+
+        assertTrue(config.isModuleFallbackEnabled(ModuleConflictDetector.KnownModule.TELEGAMI));
+        assertFalse(config.moduleFallbacks.containsKey("unknown"));
+        assertFalse(config.isModuleFallbackEnabled(ModuleConflictDetector.KnownModule.TELEVIP));
+    }
+
+    @Test
+    public void enabledModuleFallbackYieldsOnlyDeclaredCapabilities() {
+        EnhancementConfig config = new EnhancementConfig();
+        config.setModuleFallbackEnabled(ModuleConflictDetector.KnownModule.TELEGAMI, true);
+
+        assertTrue(config.yieldsToModule(ModuleConflictDetector.ConflictKind.ANTI_RECALL));
+        assertTrue(config.yieldsToModule(ModuleConflictDetector.ConflictKind.DOWNLOAD_ACCELERATION));
+        assertFalse(config.yieldsToModule(ModuleConflictDetector.ConflictKind.EDIT_HISTORY));
+        assertFalse(config.yieldsToModule(ModuleConflictDetector.ConflictKind.STORIES));
+    }
+
+    @Test
+    public void featureFallbackPreservesSwitchButYieldsRuntimeOwnership() {
+        EnhancementConfig config = new EnhancementConfig();
+        config.setEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST, true);
+        config.setEnabled(EnhancementConfig.Feature.UPLOAD_BOOST, true);
+        config.setModuleFallbackEnabled(
+                ModuleConflictDetector.KnownModule.TELEGRAM_SPEED_HOOK,
+                true
+        );
+
+        assertTrue(config.isEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST));
+        assertFalse(config.isEnabledForGramSieve(EnhancementConfig.Feature.DOWNLOAD_BOOST));
+        assertTrue(config.isEnabledForGramSieve(EnhancementConfig.Feature.UPLOAD_BOOST));
+    }
 }

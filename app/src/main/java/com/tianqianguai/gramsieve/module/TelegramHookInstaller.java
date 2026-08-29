@@ -9,6 +9,7 @@ import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.util.Base64;
 import android.view.MotionEvent;
 import android.view.View;
@@ -37,6 +38,7 @@ import com.tianqianguai.gramsieve.core.FilterDecision;
 import com.tianqianguai.gramsieve.core.FilterEngine;
 import com.tianqianguai.gramsieve.core.MessageRuleFactory;
 import com.tianqianguai.gramsieve.core.MessageSnapshot;
+import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
@@ -75,6 +77,7 @@ final class TelegramHookInstaller {
     private static final int MENU_ID_RELOAD_MESSAGE = 0x4753001C;
     private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
     private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
+    private static final long MODULE_FALLBACK_SNAPSHOT_MS = 1500L;
     private ViewGroup downloadPageFragmentView = null;
     private MessageCache messageCache;
     private MediaCache mediaCache;
@@ -97,6 +100,10 @@ final class TelegramHookInstaller {
     private final XposedModule module;
     private final EnhancementHookInstaller enhancementHooks;
     private XposedConfigProvider configProvider;
+    private volatile Context hostApplicationContext;
+    private final Object moduleFallbackLock = new Object();
+    private volatile EnhancementConfig moduleFallbackSnapshot = new EnhancementConfig();
+    private volatile long moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
     private final FilterEngine filterEngine = new FilterEngine();
     private final DecisionCache decisionCache = new DecisionCache();
     private final AtomicInteger bindingProbeBudget = new AtomicInteger(12);
@@ -126,7 +133,11 @@ final class TelegramHookInstaller {
 
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
-        this.reliableDownloadHooks = new ReliableDownloadHooks(module, downloadCancellationRegistry);
+        this.reliableDownloadHooks = new ReliableDownloadHooks(
+                module,
+                downloadCancellationRegistry,
+                () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.DOWNLOAD_ACCELERATION)
+        );
         this.enhancementHooks = new EnhancementHookInstaller(module);
     }
 
@@ -223,6 +234,9 @@ final class TelegramHookInstaller {
     }
 
     private void doInitAntiRecall(Context context, ClassLoader classLoader) {
+        hostApplicationContext = context.getApplicationContext() != null
+                ? context.getApplicationContext()
+                : context;
         ModuleLogger.init(context);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         messageMarkStore = new MessageMarkStore(context);
@@ -249,9 +263,16 @@ final class TelegramHookInstaller {
         messageCache = new MessageCache(new SerializedMessageStore(databaseHelper));
         mediaCache = new MediaCache(context);
         mediaPrefetcher = new MediaPrefetcher(messageCache, mediaCache, downloadCancellationRegistry);
-        backgroundMessageLoader = new BackgroundMessageLoader(messageCache, antiRecallConfigStore);
+        backgroundMessageLoader = new BackgroundMessageLoader(
+                messageCache,
+                antiRecallConfigStore,
+                () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL)
+        );
         recallDetector = new RecallDetector(messageCache, backgroundMessageLoader,
-                mediaPrefetcher, editHistoryPolicyStore);
+                mediaPrefetcher,
+                editHistoryPolicyStore,
+                () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL),
+                () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY));
         backgroundMessageLoader.setLoadedMessagesConsumer(recallDetector::cacheBackgroundMessages);
         if (classLoader != null) {
             mediaPrefetcher.setTelegramClassLoader(classLoader);
@@ -361,11 +382,61 @@ final class TelegramHookInstaller {
             java.lang.reflect.Method currentApplication = activityThreadClass.getDeclaredMethod("currentApplication");
             currentApplication.setAccessible(true);
             Object app = currentApplication.invoke(null);
-            return app instanceof Context ? (Context) app : null;
+            if (!(app instanceof Context)) {
+                return null;
+            }
+            Context context = (Context) app;
+            Context appContext = context.getApplicationContext();
+            hostApplicationContext = appContext == null ? context : appContext;
+            return hostApplicationContext;
         } catch (Throwable throwable) {
             info("Anti-recall: ActivityThread.currentApplication() unavailable");
             return null;
         }
+    }
+
+    private boolean usesModuleFallback(ModuleConflictDetector.ConflictKind kind) {
+        if (kind == null) {
+            return false;
+        }
+        long now = SystemClock.elapsedRealtime();
+        EnhancementConfig snapshot = moduleFallbackSnapshot;
+        if (now - moduleFallbackCheckedAt < MODULE_FALLBACK_SNAPSHOT_MS) {
+            return snapshot.yieldsToModule(kind);
+        }
+        synchronized (moduleFallbackLock) {
+            now = SystemClock.elapsedRealtime();
+            snapshot = moduleFallbackSnapshot;
+            if (now - moduleFallbackCheckedAt < MODULE_FALLBACK_SNAPSHOT_MS) {
+                return snapshot.yieldsToModule(kind);
+            }
+            moduleFallbackCheckedAt = now;
+            XposedConfigProvider provider = configProvider;
+            if (provider == null) {
+                return snapshot.yieldsToModule(kind);
+            }
+            Context context = hostApplicationContext;
+            if (context == null) {
+                context = resolveHostApplication();
+            }
+            if (context == null) {
+                return snapshot.yieldsToModule(kind);
+            }
+            try {
+                FilterConfig config = provider.getConfig(context);
+                EnhancementConfig loaded = config.enhancements == null
+                        ? new EnhancementConfig()
+                        : config.enhancements.deepCopy().sanitize();
+                moduleFallbackSnapshot = loaded;
+                return loaded.yieldsToModule(kind);
+            } catch (RuntimeException ignored) {
+                return snapshot.yieldsToModule(kind);
+            }
+        }
+    }
+
+    private void invalidateModuleFallbackSnapshot() {
+        moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
     }
 
     private void hookTaggedViewMeasure() {
@@ -2697,8 +2768,10 @@ final class TelegramHookInstaller {
             int accountId = TelegramAccountResolver.resolveWithFallback(
                     savedClassLoader, messageObject, owner);
             boolean antiRecallEnabled = backgroundMessageLoader != null
+                    && !usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL)
                     && backgroundMessageLoader.isChatEnabled(dialogId);
             boolean editHistoryEnabled = editHistoryPolicyStore != null
+                    && !usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY)
                     && editHistoryPolicyStore.shouldRecord(accountId, dialogId);
             if (count <= 10 || count % 200 == 0) {
                 info("cacheAndApply #" + count + " account=" + accountId + " dialogId="
@@ -4089,7 +4162,8 @@ final class TelegramHookInstaller {
                 markSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
             });
         }
-        View editHistoryItem = resolveSelectedEditHistory(chatActivity, selectedMessageObject) != null
+        View editHistoryItem = !usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY)
+                && resolveSelectedEditHistory(chatActivity, selectedMessageObject) != null
                 ? createEditHistoryMenuItem(((View) contentView).getContext(), chatActivity)
                 : null;
         if (editHistoryItem != null) {
@@ -4415,10 +4489,14 @@ final class TelegramHookInstaller {
                 ? context.getApplicationContext()
                 : context;
         FilterConfig config = configProvider.getConfig(appContext);
-        return config.enhancements != null && config.enhancements.isEnabled(feature);
+        return config.enhancements != null
+                && config.enhancements.isEnabledForGramSieve(feature);
     }
 
     private void showSelectedMessageEditHistory(View anchor, Object chatActivity, Object messageObject) {
+        if (usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY)) {
+            return;
+        }
         MessageCache.CachedMessage cached = resolveSelectedEditHistory(chatActivity, messageObject);
         if (cached == null) {
             Toast.makeText(anchor.getContext(), localizedNoEditHistory(anchor.getContext()), Toast.LENGTH_SHORT).show();
@@ -5172,6 +5250,7 @@ final class TelegramHookInstaller {
         }
         persistToModuleProcess(hostContext, updated);
         configProvider.replaceCachedConfig(updated);
+        invalidateModuleFallbackSnapshot();
         return updated;
     }
 
@@ -5602,6 +5681,9 @@ final class TelegramHookInstaller {
     }
 
     private void injectAntiRecallMenu(Object chatActivity, Object headerItem) {
+        if (usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL)) {
+            return;
+        }
         if (backgroundMessageLoader == null) {
             // Try deferred initialization with chat context
             initAntiRecallFromChat(chatActivity);
@@ -5679,6 +5761,9 @@ final class TelegramHookInstaller {
     }
 
     private void injectCleanupModeMenu(Object chatActivity, Object headerItem) {
+        if (usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL)) {
+            return;
+        }
         if (recallDetector == null) {
             initAntiRecallFromChat(chatActivity);
         }

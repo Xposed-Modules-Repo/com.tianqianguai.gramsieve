@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.function.BooleanSupplier;
 
 /** Keeps explicitly requested Telegram video downloads alive until completion or an explicit X click. */
 final class ReliableVideoDownloadManager {
@@ -27,6 +28,7 @@ final class ReliableVideoDownloadManager {
     private final Map<String, Long> lastForcedCancelAt = new ConcurrentHashMap<>();
     private final Map<String, Long> lastVideoStateClearAt = new ConcurrentHashMap<>();
     private final DownloadCancellationRegistry cancellationRegistry;
+    private final BooleanSupplier useExternalDownload;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
         Thread thread = new Thread(r, "GramSieve-ReliableDownload");
         thread.setDaemon(true);
@@ -35,7 +37,13 @@ final class ReliableVideoDownloadManager {
     private volatile ClassLoader classLoader;
 
     ReliableVideoDownloadManager(DownloadCancellationRegistry cancellationRegistry) {
+        this(cancellationRegistry, () -> false);
+    }
+
+    ReliableVideoDownloadManager(DownloadCancellationRegistry cancellationRegistry,
+                                 BooleanSupplier useExternalDownload) {
         this.cancellationRegistry = cancellationRegistry;
+        this.useExternalDownload = useExternalDownload == null ? () -> false : useExternalDownload;
         scheduler.scheduleWithFixedDelay(this::scanForStalls,
                 WATCHDOG_INTERVAL_MS, WATCHDOG_INTERVAL_MS, TimeUnit.MILLISECONDS);
     }
@@ -319,6 +327,11 @@ final class ReliableVideoDownloadManager {
     }
 
     private void scanForStalls() {
+        if (usesExternalDownload()) {
+            jobs.clear();
+            userStarted.clear();
+            return;
+        }
         long now = System.currentTimeMillis();
         for (Job job : jobs.values()) {
             long generation = job.state.generation();
@@ -333,6 +346,10 @@ final class ReliableVideoDownloadManager {
     }
 
     private void scheduleRestart(Job job, String reason, boolean cancelFirst) {
+        if (usesExternalDownload()) {
+            jobs.remove(job.key, job);
+            return;
+        }
         synchronized (job) {
             if (job.recovering) {
                 return;
@@ -357,6 +374,10 @@ final class ReliableVideoDownloadManager {
     }
 
     private void restart(Job job, long generation) {
+        if (usesExternalDownload()) {
+            jobs.remove(job.key, job);
+            return;
+        }
         if (cancellationRegistry.isCancelled(job.key)) {
             ModuleLogger.hook(TAG, "restart dropped after explicit-cancel "
                     + targetDescription(job.account, job.key, job.args[0])
@@ -403,6 +424,14 @@ final class ReliableVideoDownloadManager {
             }
         } catch (Throwable t) {
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG, "stuck operation cancel failed: " + t.getMessage());
+        }
+    }
+
+    private boolean usesExternalDownload() {
+        try {
+            return useExternalDownload.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
         }
     }
 

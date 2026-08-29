@@ -51,6 +51,7 @@ switch ($Command) {
             Host = Get-StateValue $state "host"
             Source = Get-StateValue $state "source"
             Modules = Get-StateValue $state "modules"
+            Fallbacks = Get-StateValue $state "fallbacks"
             Background = Get-StateValue $state "background"
             Card = Get-StateValue $state "card"
             Primary = Get-StateValue $state "primary"
@@ -72,10 +73,12 @@ switch ($Command) {
         }
         $source = if ($state -match " source=([^ ]+)") { $Matches[1] } else { "unknown" }
         $modules = if ($state -match " modules=([^ ]*)") { $Matches[1] } else { "" }
+        $fallbacks = if ($state -match " fallbacks=([^ ]*)") { $Matches[1] } else { "" }
         [pscustomobject]@{
             Device = $Device
             Source = $source
             Modules = $modules
+            Fallbacks = $fallbacks
         }
     }
     "logs" {

@@ -55,6 +55,34 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void externalAntiRecallFallbackLeavesDeleteUpdateToOtherModule() {
+        RecallDetector fallbackDetector = new RecallDetector(
+                cache, loader, null, null, () -> true, () -> false);
+        cache.put(-123, 7, "kept", null, 1);
+        loader.enableChat(-123);
+        FakeDeleteChannelUpdate update = new FakeDeleteChannelUpdate(123, 7);
+        ArrayList<Object> updates = new ArrayList<>();
+        updates.add(update);
+
+        fallbackDetector.processUpdates(updates);
+
+        assertFalse(cache.get(-123, 7).isRecalled);
+        assertEquals(1, update.messages.size());
+    }
+
+    @Test
+    public void externalEditHistoryFallbackPreservesOurSavedSettingWithoutRecording() {
+        RecallDetector fallbackDetector = new RecallDetector(
+                cache, loader, null, null, () -> false, () -> true);
+        cache.put(100, 1, "before", null, 42);
+        loader.enableChat(100);
+
+        fallbackDetector.processEdit(100, 1, "after");
+
+        assertFalse(cache.get(100, 1).isEdited);
+    }
+
+    @Test
     public void testProcessDeletionsSkipsDisabledChat() {
         cache.put(200, 1, "hello", null, 42);
 

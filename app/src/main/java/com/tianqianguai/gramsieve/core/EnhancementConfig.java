@@ -11,6 +11,7 @@ import java.util.Map;
  */
 public final class EnhancementConfig {
     public Map<String, Boolean> enabled = new LinkedHashMap<>();
+    public Map<String, Boolean> moduleFallbacks = new LinkedHashMap<>();
     public int downloadParallelism = 8;
     public int uploadParallelism = 4;
     public String outgoingPrefix = "";
@@ -31,6 +32,88 @@ public final class EnhancementConfig {
         }
     }
 
+    public boolean isModuleFallbackEnabled(ModuleConflictDetector.KnownModule module) {
+        return module != null && moduleFallbacks != null
+                && Boolean.TRUE.equals(moduleFallbacks.get(module.name()));
+    }
+
+    public void setModuleFallbackEnabled(ModuleConflictDetector.KnownModule module, boolean value) {
+        if (module == null) {
+            return;
+        }
+        if (moduleFallbacks == null) {
+            moduleFallbacks = new LinkedHashMap<>();
+        }
+        if (value) {
+            moduleFallbacks.put(module.name(), true);
+        } else {
+            moduleFallbacks.remove(module.name());
+        }
+    }
+
+    public boolean yieldsToModule(ModuleConflictDetector.ConflictKind kind) {
+        if (kind == null) {
+            return false;
+        }
+        for (ModuleConflictDetector.KnownModule module : ModuleConflictDetector.KnownModule.values()) {
+            if (isModuleFallbackEnabled(module) && module.has(kind)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public boolean isEnabledForGramSieve(Feature feature) {
+        if (!isEnabled(feature)) {
+            return false;
+        }
+        switch (feature) {
+            case DISABLE_TYPING_STATUS:
+            case HIDE_PRIVATE_READ_STATUS:
+            case HIDE_GROUP_READ_STATUS:
+            case HIDE_PHONE_NUMBER:
+            case SHOW_EXACT_LAST_SEEN:
+                return !yieldsToModule(ModuleConflictDetector.ConflictKind.PRIVACY);
+            case HIDE_STORY_VIEW_STATUS:
+                return !yieldsToAny(
+                        ModuleConflictDetector.ConflictKind.PRIVACY,
+                        ModuleConflictDetector.ConflictKind.STORIES
+                );
+            case DISABLE_PERSONALIZED_ADS:
+            case HIDE_SPONSORED_MESSAGES:
+                return !yieldsToModule(ModuleConflictDetector.ConflictKind.ADS);
+            case ALLOW_COPY:
+            case ALLOW_FORWARD:
+            case SAVE_VOICE_MESSAGES:
+                return !yieldsToModule(ModuleConflictDetector.ConflictKind.SAVE_RESTRICTION);
+            case SAVE_SECRET_MEDIA:
+                return !yieldsToAny(
+                        ModuleConflictDetector.ConflictKind.SECRET_MEDIA,
+                        ModuleConflictDetector.ConflictKind.SAVE_RESTRICTION
+                );
+            case SAVE_STORIES:
+            case HIDE_SERVICE_STORIES:
+            case HIDE_PREMIUM_STICKER_TAB:
+                return !yieldsToModule(ModuleConflictDetector.ConflictKind.STORIES);
+            case DOWNLOAD_BOOST:
+                return !yieldsToModule(ModuleConflictDetector.ConflictKind.DOWNLOAD_ACCELERATION);
+            default:
+                return true;
+        }
+    }
+
+    private boolean yieldsToAny(ModuleConflictDetector.ConflictKind... kinds) {
+        if (kinds == null) {
+            return false;
+        }
+        for (ModuleConflictDetector.ConflictKind kind : kinds) {
+            if (yieldsToModule(kind)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public EnhancementConfig sanitize() {
         if (enabled == null) {
             enabled = new LinkedHashMap<>();
@@ -42,6 +125,16 @@ public final class EnhancementConfig {
             }
         }
         enabled = known;
+        if (moduleFallbacks == null) {
+            moduleFallbacks = new LinkedHashMap<>();
+        }
+        Map<String, Boolean> knownFallbacks = new LinkedHashMap<>();
+        for (ModuleConflictDetector.KnownModule module : ModuleConflictDetector.KnownModule.values()) {
+            if (Boolean.TRUE.equals(moduleFallbacks.get(module.name()))) {
+                knownFallbacks.put(module.name(), true);
+            }
+        }
+        moduleFallbacks = knownFallbacks;
         downloadParallelism = clamp(downloadParallelism, 2, 32);
         uploadParallelism = clamp(uploadParallelism, 1, 16);
         outgoingPrefix = normalizeAffix(outgoingPrefix);
@@ -51,7 +144,12 @@ public final class EnhancementConfig {
 
     public EnhancementConfig deepCopy() {
         EnhancementConfig copy = new EnhancementConfig();
-        copy.enabled.putAll(enabled);
+        if (enabled != null) {
+            copy.enabled.putAll(enabled);
+        }
+        if (moduleFallbacks != null) {
+            copy.moduleFallbacks.putAll(moduleFallbacks);
+        }
         copy.downloadParallelism = downloadParallelism;
         copy.uploadParallelism = uploadParallelism;
         copy.outgoingPrefix = outgoingPrefix;

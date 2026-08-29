@@ -4,6 +4,7 @@ import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import java.lang.reflect.Method;
 import java.util.List;
+import java.util.function.BooleanSupplier;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -14,15 +15,22 @@ final class ReliableDownloadHooks {
 
     private final XposedModule module;
     private final DownloadCancellationRegistry cancellationRegistry;
+    private final BooleanSupplier useExternalDownload;
     private ReliableVideoDownloadManager downloadManager;
 
     ReliableDownloadHooks(XposedModule module, DownloadCancellationRegistry cancellationRegistry) {
+        this(module, cancellationRegistry, () -> false);
+    }
+
+    ReliableDownloadHooks(XposedModule module, DownloadCancellationRegistry cancellationRegistry,
+                          BooleanSupplier useExternalDownload) {
         this.module = module;
         this.cancellationRegistry = cancellationRegistry;
+        this.useExternalDownload = useExternalDownload == null ? () -> false : useExternalDownload;
     }
 
     void install(ClassLoader classLoader) {
-        downloadManager = new ReliableVideoDownloadManager(cancellationRegistry);
+        downloadManager = new ReliableVideoDownloadManager(cancellationRegistry, useExternalDownload);
         downloadManager.setClassLoader(classLoader);
         hookDownloadButton(classLoader);
         hookDownloadMiniButton(classLoader);
@@ -36,6 +44,9 @@ final class ReliableDownloadHooks {
             Method method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
             deoptimize(method, "ChatMessageCell.didPressButton(boolean, boolean)");
             hook(method, chain -> {
+                if (usesExternalDownload()) {
+                    return chain.proceed();
+                }
                 Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
                 downloadManager.onUserButton(chain.getThisObject(), buttonArgs);
                 Object result = chain.proceed();
@@ -54,6 +65,9 @@ final class ReliableDownloadHooks {
             Method method = Reflect.method(cellClass, "didPressMiniButton", boolean.class);
             deoptimize(method, "ChatMessageCell.didPressMiniButton(boolean)");
             hook(method, chain -> {
+                if (usesExternalDownload()) {
+                    return chain.proceed();
+                }
                 Object[] buttonArgs = chain.getArgs().toArray(new Object[0]);
                 downloadManager.onUserMiniButton(chain.getThisObject(), buttonArgs);
                 Object result = chain.proceed();
@@ -79,6 +93,9 @@ final class ReliableDownloadHooks {
                 }
                 deoptimize(method, "FileLoader.loadFile(Document, Object, int, int)");
                 hook(method, chain -> {
+                    if (usesExternalDownload()) {
+                        return chain.proceed();
+                    }
                     Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
                     if (!downloadManager.onLoadFile(chain.getThisObject(), loadArgs)) {
                         return null;
@@ -111,6 +128,9 @@ final class ReliableDownloadHooks {
                 }
                 deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
                 hook(method, chain -> {
+                    if (usesExternalDownload()) {
+                        return chain.proceed();
+                    }
                     Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
                     if (!downloadManager.onLoadStreamFile(chain.getThisObject(), loadArgs)) {
                         // AnimatedFileDrawableStream and FileStreamLoadOperation accept a null
@@ -142,6 +162,9 @@ final class ReliableDownloadHooks {
                 }
                 deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
                 hook(method, chain -> {
+                    if (usesExternalDownload()) {
+                        return chain.proceed();
+                    }
                     Object[] loadArgs = chain.getArgs().toArray(new Object[0]);
                     if (!downloadManager.onLoadFileInternal(chain.getThisObject(), loadArgs)) {
                         // This is the FileLoader queue's operation-creation point. Returning null
@@ -173,6 +196,9 @@ final class ReliableDownloadHooks {
                 }
                 deoptimize(method, "FileLoader.isLoadingFile(String)");
                 hook(method, chain -> {
+                    if (usesExternalDownload()) {
+                        return chain.proceed();
+                    }
                     Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
                     if (!downloadManager.onIsLoadingFile(chain.getThisObject(), queryArgs)) {
                         // ChatMessageCell derives the mini X directly from this query. Returning
@@ -206,6 +232,9 @@ final class ReliableDownloadHooks {
                         && method.getReturnType() == boolean.class) {
                     deoptimize(method, "FileLoader.isLoadingVideo(Document, boolean)");
                     hook(method, chain -> {
+                        if (usesExternalDownload()) {
+                            return chain.proceed();
+                        }
                         Object[] queryArgs = chain.getArgs().toArray(new Object[0]);
                         if (!downloadManager.onIsLoadingVideo(chain.getThisObject(), queryArgs)) {
                             return false;
@@ -219,6 +248,9 @@ final class ReliableDownloadHooks {
                         && method.getReturnType() == void.class) {
                     deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
                     hook(method, chain -> {
+                        if (usesExternalDownload()) {
+                            return chain.proceed();
+                        }
                         Object[] stateArgs = chain.getArgs().toArray(new Object[0]);
                         if (!downloadManager.onSetLoadingVideo(
                                 chain.getThisObject(), stateArgs, method.getName())) {
@@ -249,6 +281,9 @@ final class ReliableDownloadHooks {
             Method method = Reflect.method(notificationClass, "postNotificationName", int.class, Object[].class);
             hook(method, chain -> {
                 Object result = chain.proceed();
+                if (usesExternalDownload()) {
+                    return result;
+                }
                 List<Object> hookArgs = chain.getArgs();
                 if (hookArgs != null && hookArgs.size() >= 2 && hookArgs.get(1) instanceof Object[]) {
                     downloadManager.onNotification(
@@ -272,6 +307,14 @@ final class ReliableDownloadHooks {
                 .setPriority(XposedInterface.PRIORITY_LOWEST)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
                 .intercept(hooker);
+    }
+
+    private boolean usesExternalDownload() {
+        try {
+            return useExternalDownload.getAsBoolean();
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private void deoptimize(Method method, String label) {

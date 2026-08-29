@@ -796,7 +796,7 @@ final class EnhancementHookInstaller {
     }
 
     private boolean enabled(EnhancementConfig.Feature feature) {
-        return config().isEnabled(feature);
+        return config().isEnabledForGramSieve(feature);
     }
 
     private Context currentApplication() {
