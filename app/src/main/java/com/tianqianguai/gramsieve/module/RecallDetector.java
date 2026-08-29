@@ -78,6 +78,17 @@ public final class RecallDetector {
         return selfDeleteTracker != null && selfDeleteTracker.toggleCleanupMode(dialogId, durationMs);
     }
 
+    boolean setCleanupMode(long dialogId, boolean enabled, long durationMs) {
+        if (selfDeleteTracker == null) {
+            return false;
+        }
+        if (enabled) {
+            return selfDeleteTracker.enableCleanupMode(dialogId, durationMs);
+        }
+        selfDeleteTracker.disableCleanupMode(dialogId);
+        return false;
+    }
+
     boolean isCleanupModeActive(long dialogId) {
         return selfDeleteTracker != null && selfDeleteTracker.isCleanupModeActive(dialogId);
     }
