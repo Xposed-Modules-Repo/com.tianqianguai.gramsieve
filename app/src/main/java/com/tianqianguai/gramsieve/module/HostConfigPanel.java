@@ -363,7 +363,7 @@ final class HostConfigPanel {
             buildChatAntiRecallCard(container);
         } else {
             buildConflictCard(container);
-            buildEnhancementCards(container);
+            buildUntestedFeaturesEntry(container);
         }
         buildEditHistoryCard(container);
         buildRulesCard(container);
@@ -437,7 +437,7 @@ final class HostConfigPanel {
         TextView summary = new TextView(context);
         summary.setText(chatMode
                 ? t("规则、防撤回与标记仍按聊天独立管理。", "Rules, anti-recall, and marks stay scoped to this chat.")
-                : t("隐私、消息、媒体、界面与传输设置统一收纳；所有功能默认关闭，不替你做决定。", "Privacy, messages, media, interface, and transfer controls in one place. Every enhancement is opt-in."));
+                : t("核心设置保持直接可见；未经逐项验证的增强统一收纳并默认关闭。", "Core settings stay visible. Enhancements without per-feature verification are grouped separately and remain opt-in."));
         summary.setTextColor(adjustAlpha(Color.WHITE, 0.88f));
         summary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         addView(hero, summary, 0);
@@ -588,6 +588,37 @@ final class HostConfigPanel {
                 ));
             }
         }
+    }
+
+    private void buildUntestedFeaturesEntry(LinearLayout container) {
+        LinearLayout entry = addCard(container);
+        addTitle(entry, t("未测试功能", "Untested features"));
+        addInfo(entry, t(
+                "隐私、消息、媒体、界面、传输和工具增强尚未逐项完成设备验证。现有开关和配置会完整保留。",
+                "Privacy, messaging, media, interface, transfer, and tool enhancements have not completed per-feature device verification. Existing switches and configuration are preserved."
+        ));
+        TextView action = addInfo(entry, t("点击展开  ›", "Tap to expand  ›"));
+        action.setTextColor(accentColor);
+        action.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        entry.setClickable(true);
+        entry.setFocusable(true);
+
+        LinearLayout features = new LinearLayout(context);
+        features.setOrientation(LinearLayout.VERTICAL);
+        features.setVisibility(View.GONE);
+        container.addView(features, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        buildEnhancementCards(features);
+
+        entry.setOnClickListener(view -> {
+            boolean expand = features.getVisibility() != View.VISIBLE;
+            features.setVisibility(expand ? View.VISIBLE : View.GONE);
+            action.setText(expand
+                    ? t("点击收起  ‹", "Tap to collapse  ‹")
+                    : t("点击展开  ›", "Tap to expand  ›"));
+        });
     }
 
     private void buildConflictCard(LinearLayout container) {
