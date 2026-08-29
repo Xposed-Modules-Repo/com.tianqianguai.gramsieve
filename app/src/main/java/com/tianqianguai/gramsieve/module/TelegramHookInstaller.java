@@ -389,7 +389,7 @@ final class TelegramHookInstaller {
                 try {
                     JSONObject response = handleCliCommand(receiverContext, intent, command);
                     setResultCode(Activity.RESULT_OK);
-                    setResultData(encodeCliResponse(response));
+                    setResultData(cliResponseData(response));
                     info("CLI command completed command=" + command);
                 } catch (Throwable throwable) {
                     JSONObject response = new JSONObject();
@@ -403,7 +403,7 @@ final class TelegramHookInstaller {
                         // JSONObject with three primitive fields cannot fail in normal operation.
                     }
                     setResultCode(Activity.RESULT_CANCELED);
-                    setResultData(encodeCliResponse(response));
+                    setResultData(cliResponseData(response));
                     info("CLI command rejected command=" + command + " reason="
                             + (throwable.getMessage() == null
                             ? throwable.getClass().getSimpleName()
@@ -427,7 +427,7 @@ final class TelegramHookInstaller {
         try {
             JSONObject response = handleCliCommand(context, intent, command);
             pendingResult.setResultCode(Activity.RESULT_OK);
-            pendingResult.setResultData(encodeCliResponse(response));
+            pendingResult.setResultData(cliResponseData(response));
             info("CLI command completed command=" + command);
         } catch (Throwable throwable) {
             JSONObject response = new JSONObject();
@@ -441,7 +441,7 @@ final class TelegramHookInstaller {
                 // JSONObject with three primitive fields cannot fail in normal operation.
             }
             pendingResult.setResultCode(Activity.RESULT_CANCELED);
-            pendingResult.setResultData(encodeCliResponse(response));
+            pendingResult.setResultData(cliResponseData(response));
             info("CLI command rejected command=" + command + " reason="
                     + (throwable.getMessage() == null
                     ? throwable.getClass().getSimpleName()
@@ -458,6 +458,8 @@ final class TelegramHookInstaller {
         }
         JSONObject response = cliSuccess(command);
         switch (command) {
+            case "help":
+                return cliHelp(response);
             case "ping":
                 response.put("protocolVersion", CLI_PROTOCOL_VERSION);
                 response.put("package", context.getPackageName());
@@ -468,7 +470,8 @@ final class TelegramHookInstaller {
             case "modules.scan":
                 return cliModuleScan(response, context);
             case "config.get":
-                response.put("configJson", ModuleConfigStore.toJson(currentCliConfig(context)));
+                response.put("config", new JSONObject(
+                        ModuleConfigStore.toJson(currentCliConfig(context))));
                 return response;
             case "config.set":
                 return cliSetConfig(response, context, intent);
@@ -536,6 +539,32 @@ final class TelegramHookInstaller {
         }
     }
 
+    private JSONObject cliHelp(JSONObject response) throws Exception {
+        response.put("protocolVersion", CLI_PROTOCOL_VERSION);
+        response.put(
+                "adbTemplate",
+                "adb -s <device> shell am broadcast -a " + CLI_ACTION
+                        + " -p org.telegram.messenger --receiver-registered-only"
+                        + " --es command <command> [--es name <name>] [--es value <value>]"
+                        + " [--es dialog_id <id>] [--es account_id <id>]"
+                        + " [--es message_id <id>] [--es limit <n>] [--es preview <text>]"
+        );
+        response.put("commands", new JSONArray(Arrays.asList(
+                "help", "ping", "state", "modules.scan", "config.get", "config.set",
+                "feature.list", "feature.get", "feature.set",
+                "fallback.list", "fallback.get", "fallback.set",
+                "anti-recall.list", "anti-recall.get", "anti-recall.set",
+                "edit-history.get", "edit-history.set", "load.trigger",
+                "mark.list", "mark.set", "mark.clear",
+                "read-position.get", "read-position.set", "read-position.clear",
+                "message.get", "message.recalled", "message.edited", "message.history",
+                "cleanup.get", "cleanup.set", "ui.state", "ui.jump-mark", "ui.scroll"
+        )));
+        response.put("configSetExtras", new JSONArray(Arrays.asList("config_json", "config_b64")));
+        response.put("result", "JSON is returned directly in am broadcast result data");
+        return response;
+    }
+
     private JSONObject cliState(JSONObject response, Context context) throws Exception {
         FilterConfig config = currentCliConfig(context);
         JSONArray enabledFeatures = new JSONArray();
@@ -577,15 +606,18 @@ final class TelegramHookInstaller {
     }
 
     private JSONObject cliSetConfig(JSONObject response, Context context, Intent intent) throws Exception {
-        String encoded = requireExtra(intent, "config_b64");
-        String json = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+        String json = stringExtra(intent, "config_json");
+        if (json.isBlank()) {
+            String encoded = requireExtra(intent, "config_b64");
+            json = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+        }
         new JSONObject(json);
         FilterConfig updated = ModuleConfigStore.fromJson(json).deepCopy().sanitize();
         updated.updatedAtEpochMs = System.currentTimeMillis();
         FilterConfig saved = saveUpdatedConfig(context, updated);
         decisionCache.clear();
         response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
-        response.put("configJson", ModuleConfigStore.toJson(saved));
+        response.put("config", new JSONObject(ModuleConfigStore.toJson(saved)));
         return response;
     }
 
@@ -955,11 +987,8 @@ final class TelegramHookInstaller {
         return response;
     }
 
-    private String encodeCliResponse(JSONObject response) {
-        return Base64.encodeToString(
-                response.toString().getBytes(StandardCharsets.UTF_8),
-                Base64.NO_WRAP
-        );
+    private String cliResponseData(JSONObject response) {
+        return response.toString();
     }
 
     private String requireExtra(Intent intent, String name) {

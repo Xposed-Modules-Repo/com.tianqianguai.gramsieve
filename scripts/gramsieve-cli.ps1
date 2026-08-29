@@ -94,16 +94,21 @@ function Invoke-HostCli {
     if ($LASTEXITCODE -ne 0) {
         throw "Telegram host CLI broadcast failed: $($broadcastOutput -join [Environment]::NewLine)"
     }
-    $resultLine = $broadcastOutput | Select-String -Pattern 'Broadcast completed: result=(-?\d+), data="([^"]*)"' | Select-Object -Last 1
+    $resultLine = $broadcastOutput | Select-String -Pattern 'Broadcast completed: result=(-?\d+), data="(.*)"' | Select-Object -Last 1
     if ($null -eq $resultLine) {
         throw "Telegram host CLI did not respond. Restart Telegram after installing the current GramSieve build."
     }
-    $encoded = $resultLine.Matches[0].Groups[2].Value
+    $payload = $resultLine.Matches[0].Groups[2].Value
     try {
-        $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+        $json = if ($payload.Contains('\"')) { [Regex]::Unescape($payload) } else { $payload }
         $response = $json | ConvertFrom-Json
     } catch {
-        throw "Telegram host CLI returned an invalid response: $encoded"
+        try {
+            $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payload))
+            $response = $json | ConvertFrom-Json
+        } catch {
+            throw "Telegram host CLI returned an invalid response: $payload"
+        }
     }
     if (-not $response.ok) {
         throw "Telegram host CLI rejected '$HostCommand': $($response.error)"
@@ -165,15 +170,16 @@ switch ($Command) {
             $response = Invoke-HostCli "config.get"
             if (-not [string]::IsNullOrWhiteSpace($Path)) {
                 $resolvedPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($Path)
-                [IO.File]::WriteAllText($resolvedPath, [string]$response.configJson, (New-Object Text.UTF8Encoding($false)))
+                $configJson = $response.config | ConvertTo-Json -Depth 100
+                [IO.File]::WriteAllText($resolvedPath, $configJson, (New-Object Text.UTF8Encoding($false)))
                 [pscustomobject]@{
                     Ok = $true
                     Command = "config.export"
                     Path = $resolvedPath
-                    UpdatedAtEpochMs = ($response.configJson | ConvertFrom-Json).updatedAtEpochMs
+                    UpdatedAtEpochMs = $response.config.updatedAtEpochMs
                 }
             } else {
-                $response.configJson | ConvertFrom-Json
+                $response.config
             }
         } elseif ($configAction -eq "set" -or $configAction -eq "apply" -or $configAction -eq "import") {
             if ([string]::IsNullOrWhiteSpace($Path)) {
