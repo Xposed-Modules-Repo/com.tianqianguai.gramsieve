@@ -6,6 +6,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import android.content.Context;
 import android.content.SharedPreferences;
 
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
@@ -17,6 +18,61 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 public final class XposedConfigProviderTest {
+    @Test
+    public void newerTelegramHostPreferencesOverrideOlderRemotePreferences() {
+        FilterConfig hostConfig = FilterConfig.createDefault();
+        hostConfig.updatedAtEpochMs = 20L;
+        hostConfig.enhancements.setEnabled(EnhancementConfig.Feature.SHOW_MESSAGE_ID, true);
+        SharedPreferences hostPreferences = preferencesWith(hostConfig);
+
+        FilterConfig remoteConfig = FilterConfig.createDefault();
+        remoteConfig.updatedAtEpochMs = 10L;
+        SharedPreferences remotePreferences = preferencesWith(remoteConfig);
+
+        Context context = mock(Context.class);
+        when(context.getSharedPreferences("gramsieve_host_rules", Context.MODE_PRIVATE))
+                .thenReturn(hostPreferences);
+        XposedConfigProvider provider = new XposedConfigProvider(
+                "com.tianqianguai.gramsieve",
+                () -> remotePreferences,
+                () -> 1_000L
+        );
+
+        FilterConfig loaded = provider.getConfig(context);
+
+        assertTrue(loaded.enhancements.isEnabled(EnhancementConfig.Feature.SHOW_MESSAGE_ID));
+        assertTrue(loaded.updatedAtEpochMs == 20L);
+    }
+
+    @Test
+    public void persistsCompleteSnapshotInsideTelegramHostPreferences() {
+        FilterConfig config = FilterConfig.createDefault();
+        config.updatedAtEpochMs = 50L;
+        config.enhancements.setEnabled(EnhancementConfig.Feature.SHOW_MESSAGE_ID, true);
+        String json = ModuleConfigStore.toJson(config);
+
+        SharedPreferences preferences = mock(SharedPreferences.class);
+        SharedPreferences.Editor editor = mock(SharedPreferences.Editor.class);
+        when(preferences.edit()).thenReturn(editor);
+        when(editor.putString(ModuleConfigStore.KEY_CONFIG_JSON, json)).thenReturn(editor);
+        when(editor.commit()).thenReturn(true);
+        when(preferences.getString(ModuleConfigStore.KEY_CONFIG_JSON, null)).thenReturn(json);
+        Context context = mock(Context.class);
+        when(context.getSharedPreferences("gramsieve_host_rules", Context.MODE_PRIVATE))
+                .thenReturn(preferences);
+        XposedConfigProvider provider = new XposedConfigProvider(
+                "com.tianqianguai.gramsieve",
+                () -> null,
+                () -> 1_000L
+        );
+
+        FilterConfig saved = provider.persistHostConfig(context, config);
+
+        assertTrue(saved != null);
+        assertTrue(saved.updatedAtEpochMs == 50L);
+        assertTrue(saved.enhancements.isEnabled(EnhancementConfig.Feature.SHOW_MESSAGE_ID));
+    }
+
     @Test
     public void failedSourcesCacheSafeDefaultsUntilRetryWindow() {
         SharedPreferences remotePreferences = mock(SharedPreferences.class);
@@ -68,5 +124,13 @@ public final class XposedConfigProviderTest {
 
         assertTrue(loaded.enhancements.isEnabled(EnhancementConfig.Feature.SHOW_MESSAGE_ID));
         assertFalse(loaded.enhancements.enabled.isEmpty());
+    }
+
+    private SharedPreferences preferencesWith(FilterConfig config) {
+        SharedPreferences preferences = mock(SharedPreferences.class);
+        when(preferences.contains(ModuleConfigStore.KEY_CONFIG_JSON)).thenReturn(true);
+        when(preferences.getString(ModuleConfigStore.KEY_CONFIG_JSON, null))
+                .thenReturn(ModuleConfigStore.toJson(config));
+        return preferences;
     }
 }

@@ -1,11 +1,14 @@
 package com.tianqianguai.gramsieve.module;
 
+import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.pm.ApplicationInfo;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
 import android.os.Bundle;
@@ -31,6 +34,7 @@ import com.tianqianguai.gramsieve.config.DiagnosticLogStore;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
+import com.tianqianguai.gramsieve.config.RuntimeModuleProbe;
 import com.tianqianguai.gramsieve.config.XposedConfigProvider;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
@@ -40,6 +44,10 @@ import com.tianqianguai.gramsieve.core.MessageRuleFactory;
 import com.tianqianguai.gramsieve.core.MessageSnapshot;
 import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
@@ -78,6 +86,8 @@ final class TelegramHookInstaller {
     private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
     private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
     private static final long MODULE_FALLBACK_SNAPSHOT_MS = 1500L;
+    private static final String CLI_ACTION = MODULE_PACKAGE + ".action.CLI";
+    private static final int CLI_PROTOCOL_VERSION = 1;
     private ViewGroup downloadPageFragmentView = null;
     private MessageCache messageCache;
     private MediaCache mediaCache;
@@ -101,6 +111,8 @@ final class TelegramHookInstaller {
     private final EnhancementHookInstaller enhancementHooks;
     private XposedConfigProvider configProvider;
     private volatile Context hostApplicationContext;
+    private volatile BroadcastReceiver cliReceiver;
+    private volatile WeakReference<Object> activeChatActivity = new WeakReference<>(null);
     private final Object moduleFallbackLock = new Object();
     private volatile EnhancementConfig moduleFallbackSnapshot = new EnhancementConfig();
     private volatile long moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
@@ -279,6 +291,7 @@ final class TelegramHookInstaller {
             recallDetector.install(classLoader, module);
             backgroundMessageLoader.setTelegramClassLoader(classLoader);
         }
+        registerCliBridge(hostApplicationContext);
         info("Anti-recall components initialized");
     }
 
@@ -355,6 +368,676 @@ final class TelegramHookInstaller {
         } catch (Throwable throwable) {
             error("Anti-recall: push-triggered load failed reason=" + reason, throwable);
         }
+    }
+
+    private synchronized void registerCliBridge(Context context) {
+        if (context == null || cliReceiver != null) {
+            return;
+        }
+        BroadcastReceiver receiver = new BroadcastReceiver() {
+            @Override
+            public void onReceive(Context receiverContext, Intent intent) {
+                String command = intent == null ? "" : stringExtra(intent, "command");
+                if ("modules.scan".equalsIgnoreCase(command)) {
+                    PendingResult pendingResult = goAsync();
+                    new Thread(
+                            () -> completeAsyncCliCommand(receiverContext, intent, command, pendingResult),
+                            "GramSieve-cli-module-scan"
+                    ).start();
+                    return;
+                }
+                try {
+                    JSONObject response = handleCliCommand(receiverContext, intent, command);
+                    setResultCode(Activity.RESULT_OK);
+                    setResultData(encodeCliResponse(response));
+                    info("CLI command completed command=" + command);
+                } catch (Throwable throwable) {
+                    JSONObject response = new JSONObject();
+                    try {
+                        response.put("ok", false);
+                        response.put("command", command);
+                        response.put("error", throwable.getMessage() == null
+                                ? throwable.getClass().getSimpleName()
+                                : throwable.getMessage());
+                    } catch (Throwable ignored) {
+                        // JSONObject with three primitive fields cannot fail in normal operation.
+                    }
+                    setResultCode(Activity.RESULT_CANCELED);
+                    setResultData(encodeCliResponse(response));
+                    info("CLI command rejected command=" + command + " reason="
+                            + (throwable.getMessage() == null
+                            ? throwable.getClass().getSimpleName()
+                            : throwable.getMessage()));
+                }
+            }
+        };
+        context.registerReceiver(
+                receiver,
+                new IntentFilter(CLI_ACTION),
+                Manifest.permission.DUMP,
+                null,
+                Context.RECEIVER_EXPORTED
+        );
+        cliReceiver = receiver;
+        info("CLI bridge registered action=" + CLI_ACTION + " permission=android.permission.DUMP");
+    }
+
+    private void completeAsyncCliCommand(Context context, Intent intent, String command,
+                                         BroadcastReceiver.PendingResult pendingResult) {
+        try {
+            JSONObject response = handleCliCommand(context, intent, command);
+            pendingResult.setResultCode(Activity.RESULT_OK);
+            pendingResult.setResultData(encodeCliResponse(response));
+            info("CLI command completed command=" + command);
+        } catch (Throwable throwable) {
+            JSONObject response = new JSONObject();
+            try {
+                response.put("ok", false);
+                response.put("command", command);
+                response.put("error", throwable.getMessage() == null
+                        ? throwable.getClass().getSimpleName()
+                        : throwable.getMessage());
+            } catch (Throwable ignored) {
+                // JSONObject with three primitive fields cannot fail in normal operation.
+            }
+            pendingResult.setResultCode(Activity.RESULT_CANCELED);
+            pendingResult.setResultData(encodeCliResponse(response));
+            info("CLI command rejected command=" + command + " reason="
+                    + (throwable.getMessage() == null
+                    ? throwable.getClass().getSimpleName()
+                    : throwable.getMessage()));
+        } finally {
+            pendingResult.finish();
+        }
+    }
+
+    private JSONObject handleCliCommand(Context context, Intent intent, String rawCommand) throws Exception {
+        String command = rawCommand == null ? "" : rawCommand.trim().toLowerCase(Locale.ROOT);
+        if (command.isBlank()) {
+            throw new IllegalArgumentException("Missing command");
+        }
+        JSONObject response = cliSuccess(command);
+        switch (command) {
+            case "ping":
+                response.put("protocolVersion", CLI_PROTOCOL_VERSION);
+                response.put("package", context.getPackageName());
+                response.put("trackedDialogId", trackedDialogId);
+                return response;
+            case "state":
+                return cliState(response, context);
+            case "modules.scan":
+                return cliModuleScan(response, context);
+            case "config.get":
+                response.put("configJson", ModuleConfigStore.toJson(currentCliConfig(context)));
+                return response;
+            case "config.set":
+                return cliSetConfig(response, context, intent);
+            case "feature.list":
+                return cliFeatureList(response, context);
+            case "feature.get":
+                return cliFeatureGet(response, context, requireExtra(intent, "name"));
+            case "feature.set":
+                return cliFeatureSet(response, context, intent);
+            case "fallback.list":
+                return cliFallbackList(response, context);
+            case "fallback.get":
+                return cliFallbackGet(response, context, requireExtra(intent, "name"));
+            case "fallback.set":
+                return cliFallbackSet(response, context, intent);
+            case "anti-recall.get":
+                return cliAntiRecall(response, intent, false);
+            case "anti-recall.set":
+                return cliAntiRecall(response, intent, true);
+            case "anti-recall.list":
+                return cliAntiRecallList(response);
+            case "edit-history.get":
+                return cliEditHistory(response, intent, false);
+            case "edit-history.set":
+                return cliEditHistory(response, intent, true);
+            case "load.trigger":
+                backgroundMessageLoader.triggerImmediateLoad("cli");
+                response.put("accepted", true);
+                response.put("enabledChats", backgroundMessageLoader.enabledChatIdsSnapshot().size());
+                response.put("externalFallback", usesModuleFallback(
+                        ModuleConflictDetector.ConflictKind.ANTI_RECALL));
+                return response;
+            case "mark.list":
+                return cliMarks(response, intent, "list");
+            case "mark.set":
+                return cliMarks(response, intent, "set");
+            case "mark.clear":
+                return cliMarks(response, intent, "clear");
+            case "read-position.get":
+                return cliReadPosition(response, context, intent, "get");
+            case "read-position.set":
+                return cliReadPosition(response, context, intent, "set");
+            case "read-position.clear":
+                return cliReadPosition(response, context, intent, "clear");
+            case "message.get":
+                return cliMessages(response, intent, "get");
+            case "message.recalled":
+                return cliMessages(response, intent, "recalled");
+            case "message.edited":
+                return cliMessages(response, intent, "edited");
+            case "message.history":
+                return cliMessages(response, intent, "history");
+            case "cleanup.get":
+                return cliCleanup(response, intent, false);
+            case "cleanup.set":
+                return cliCleanup(response, intent, true);
+            case "ui.state":
+                return cliUiState(response);
+            case "ui.jump-mark":
+                return cliUiJump(response, context, intent);
+            case "ui.scroll":
+                return cliUiScroll(response, context, intent);
+            default:
+                throw new IllegalArgumentException("Unsupported command: " + command);
+        }
+    }
+
+    private JSONObject cliState(JSONObject response, Context context) throws Exception {
+        FilterConfig config = currentCliConfig(context);
+        JSONArray enabledFeatures = new JSONArray();
+        for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+            if (config.enhancements.isEnabled(feature)) {
+                enabledFeatures.put(feature.name());
+            }
+        }
+        JSONArray enabledFallbacks = new JSONArray();
+        for (ModuleConflictDetector.KnownModule knownModule
+                : ModuleConflictDetector.KnownModule.values()) {
+            if (config.enhancements.isModuleFallbackEnabled(knownModule)) {
+                enabledFallbacks.put(knownModule.name());
+            }
+        }
+        response.put("protocolVersion", CLI_PROTOCOL_VERSION);
+        response.put("updatedAtEpochMs", config.updatedAtEpochMs);
+        response.put("enabledFeatures", enabledFeatures);
+        response.put("enabledFallbacks", enabledFallbacks);
+        response.put("antiRecallChats", backgroundMessageLoader.enabledChatIdsSnapshot().size());
+        response.put("antiRecallDialogIds", longArray(
+                backgroundMessageLoader.enabledChatIdsSnapshot()));
+        response.put("trackedDialogId", trackedDialogId);
+        response.put("activeChat", activeChatActivity.get() != null);
+        response.put("selectedAccount", resolveSelectedTelegramAccount(savedClassLoader));
+        return response;
+    }
+
+    private JSONObject cliModuleScan(JSONObject response, Context context) throws Exception {
+        RuntimeModuleProbe.Result result = RuntimeModuleProbe.scan(context, module);
+        response.put("source", result.source);
+        JSONArray modules = new JSONArray();
+        for (ModuleConflictDetector.KnownModule knownModule : result.modules) {
+            JSONObject item = fallbackJson(currentCliConfig(context).enhancements, knownModule);
+            modules.put(item);
+        }
+        response.put("modules", modules);
+        return response;
+    }
+
+    private JSONObject cliSetConfig(JSONObject response, Context context, Intent intent) throws Exception {
+        String encoded = requireExtra(intent, "config_b64");
+        String json = new String(Base64.decode(encoded, Base64.DEFAULT), StandardCharsets.UTF_8);
+        new JSONObject(json);
+        FilterConfig updated = ModuleConfigStore.fromJson(json).deepCopy().sanitize();
+        updated.updatedAtEpochMs = System.currentTimeMillis();
+        FilterConfig saved = saveUpdatedConfig(context, updated);
+        decisionCache.clear();
+        response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
+        response.put("configJson", ModuleConfigStore.toJson(saved));
+        return response;
+    }
+
+    private JSONObject cliFeatureList(JSONObject response, Context context) throws Exception {
+        FilterConfig config = currentCliConfig(context);
+        JSONArray features = new JSONArray();
+        for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+            features.put(featureJson(config.enhancements, feature));
+        }
+        response.put("features", features);
+        return response;
+    }
+
+    private JSONObject cliFeatureGet(JSONObject response, Context context, String name) throws Exception {
+        FilterConfig config = currentCliConfig(context);
+        response.put("feature", featureJson(config.enhancements, parseFeature(name)));
+        return response;
+    }
+
+    private JSONObject cliFeatureSet(JSONObject response, Context context, Intent intent) throws Exception {
+        EnhancementConfig.Feature feature = parseFeature(requireExtra(intent, "name"));
+        if (!feature.isAvailableInCurrentBuild()) {
+            throw new IllegalArgumentException("Feature is not available in this build: " + feature.name());
+        }
+        boolean value = parseBoolean(requireExtra(intent, "value"));
+        FilterConfig updated = currentCliConfig(context).deepCopy();
+        updated.enhancements.setEnabled(feature, value);
+        updated.updatedAtEpochMs = System.currentTimeMillis();
+        FilterConfig saved = saveUpdatedConfig(context, updated);
+        decisionCache.clear();
+        response.put("feature", featureJson(saved.enhancements, feature));
+        response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
+        return response;
+    }
+
+    private JSONObject featureJson(EnhancementConfig config, EnhancementConfig.Feature feature)
+            throws Exception {
+        JSONObject result = new JSONObject();
+        result.put("name", feature.name());
+        result.put("key", feature.key);
+        result.put("category", feature.category.name());
+        result.put("available", feature.isAvailableInCurrentBuild());
+        result.put("enabled", config.isEnabled(feature));
+        result.put("effective", config.isEnabledForGramSieve(feature));
+        return result;
+    }
+
+    private JSONObject cliFallbackList(JSONObject response, Context context) throws Exception {
+        FilterConfig config = currentCliConfig(context);
+        JSONArray fallbacks = new JSONArray();
+        for (ModuleConflictDetector.KnownModule knownModule
+                : ModuleConflictDetector.KnownModule.values()) {
+            fallbacks.put(fallbackJson(config.enhancements, knownModule));
+        }
+        response.put("fallbacks", fallbacks);
+        return response;
+    }
+
+    private JSONObject cliFallbackGet(JSONObject response, Context context, String name) throws Exception {
+        FilterConfig config = currentCliConfig(context);
+        response.put("fallback", fallbackJson(config.enhancements, parseKnownModule(name)));
+        return response;
+    }
+
+    private JSONObject cliFallbackSet(JSONObject response, Context context, Intent intent) throws Exception {
+        ModuleConflictDetector.KnownModule knownModule = parseKnownModule(requireExtra(intent, "name"));
+        boolean value = parseBoolean(requireExtra(intent, "value"));
+        FilterConfig updated = currentCliConfig(context).deepCopy();
+        updated.enhancements.setModuleFallbackEnabled(knownModule, value);
+        updated.updatedAtEpochMs = System.currentTimeMillis();
+        FilterConfig saved = saveUpdatedConfig(context, updated);
+        decisionCache.clear();
+        response.put("fallback", fallbackJson(saved.enhancements, knownModule));
+        response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
+        return response;
+    }
+
+    private JSONObject fallbackJson(EnhancementConfig config,
+                                    ModuleConflictDetector.KnownModule knownModule) throws Exception {
+        JSONObject result = new JSONObject();
+        result.put("name", knownModule.name());
+        result.put("displayName", knownModule.displayName);
+        result.put("enabled", config.isModuleFallbackEnabled(knownModule));
+        JSONArray capabilities = new JSONArray();
+        for (ModuleConflictDetector.ConflictKind kind : knownModule.conflictKinds()) {
+            capabilities.put(kind.name());
+        }
+        result.put("capabilities", capabilities);
+        return result;
+    }
+
+    private JSONObject cliAntiRecall(JSONObject response, Intent intent, boolean mutate) throws Exception {
+        long dialogId = requireDialogId(intent);
+        if (mutate) {
+            boolean value = parseBoolean(requireExtra(intent, "value"));
+            if (value) {
+                backgroundMessageLoader.enableChat(dialogId);
+            } else {
+                backgroundMessageLoader.disableChat(dialogId);
+            }
+        }
+        response.put("dialogId", dialogId);
+        response.put("enabled", backgroundMessageLoader.isChatEnabled(dialogId));
+        response.put("effective", backgroundMessageLoader.isChatEnabled(dialogId)
+                && !usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL));
+        return response;
+    }
+
+    private JSONObject cliAntiRecallList(JSONObject response) throws Exception {
+        response.put("dialogIds", longArray(backgroundMessageLoader.enabledChatIdsSnapshot()));
+        response.put("externalFallback", usesModuleFallback(
+                ModuleConflictDetector.ConflictKind.ANTI_RECALL));
+        return response;
+    }
+
+    private JSONArray longArray(Set<Long> values) {
+        List<Long> ordered = new ArrayList<>(values == null ? Collections.emptySet() : values);
+        Collections.sort(ordered);
+        JSONArray result = new JSONArray();
+        for (Long value : ordered) {
+            if (value != null) {
+                result.put(value);
+            }
+        }
+        return result;
+    }
+
+    private JSONObject cliEditHistory(JSONObject response, Intent intent, boolean mutate) throws Exception {
+        int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+        long dialogId = longExtra(intent, "dialog_id", 0L);
+        if (mutate) {
+            String setting = requireExtra(intent, "name").trim().toLowerCase(Locale.ROOT);
+            String value = requireExtra(intent, "value").trim();
+            switch (setting) {
+                case "enabled":
+                    editHistoryPolicyStore.setEnabled(accountId, parseBoolean(value));
+                    break;
+                case "mode":
+                    editHistoryPolicyStore.setMode(accountId,
+                            EditHistoryPolicyStore.Mode.valueOf(value.toUpperCase(Locale.ROOT)));
+                    break;
+                case "dialog":
+                    if (dialogId == 0L) {
+                        throw new IllegalArgumentException("dialog_id is required for dialog policy");
+                    }
+                    if ("follow".equalsIgnoreCase(value) || "default".equalsIgnoreCase(value)) {
+                        editHistoryPolicyStore.clearDialogRule(accountId, dialogId);
+                    } else if ("record".equalsIgnoreCase(value) || parseBoolean(value)) {
+                        editHistoryPolicyStore.setDialogRecorded(accountId, dialogId, true);
+                    } else {
+                        editHistoryPolicyStore.setDialogRecorded(accountId, dialogId, false);
+                    }
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported edit-history setting: " + setting);
+            }
+        }
+        response.put("accountId", accountId);
+        response.put("enabled", editHistoryPolicyStore.isEnabled(accountId));
+        response.put("mode", editHistoryPolicyStore.getMode(accountId).name());
+        response.put("externalFallback", usesModuleFallback(
+                ModuleConflictDetector.ConflictKind.EDIT_HISTORY));
+        if (dialogId != 0L) {
+            Boolean rule = editHistoryPolicyStore.getDialogRule(accountId, dialogId);
+            response.put("dialogId", dialogId);
+            response.put("dialogRule", rule == null ? JSONObject.NULL : rule);
+            response.put("effective", editHistoryPolicyStore.shouldRecord(accountId, dialogId)
+                    && !usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY));
+        }
+        return response;
+    }
+
+    private JSONObject cliMarks(JSONObject response, Intent intent, String action) throws Exception {
+        int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+        long dialogId = requireDialogId(intent);
+        if ("set".equals(action)) {
+            int messageId = intExtra(intent, "message_id", 0);
+            if (messageId <= 0) {
+                throw new IllegalArgumentException("message_id must be positive");
+            }
+            messageMarkStore.add(accountId, dialogId, messageId, stringExtra(intent, "preview"));
+        } else if ("clear".equals(action)) {
+            messageMarkStore.clear(accountId, dialogId);
+        }
+        List<MessageMarkStore.Mark> marks = messageMarkStore.list(accountId, dialogId);
+        JSONArray items = new JSONArray();
+        for (MessageMarkStore.Mark mark : marks) {
+            JSONObject item = new JSONObject();
+            item.put("messageId", mark.messageId);
+            item.put("preview", mark.preview);
+            item.put("savedAtEpochMs", mark.savedAtEpochMs);
+            items.put(item);
+        }
+        response.put("accountId", accountId);
+        response.put("dialogId", dialogId);
+        response.put("marks", items);
+        return response;
+    }
+
+    private JSONObject cliReadPosition(JSONObject response, Context context, Intent intent,
+                                       String action) throws Exception {
+        long dialogId = requireDialogId(intent);
+        if ("set".equals(action)) {
+            int messageId = intExtra(intent, "message_id", 0);
+            if (messageId <= 0) {
+                throw new IllegalArgumentException("message_id must be positive");
+            }
+            ChatReadPositionStore.save(context, dialogId, messageId);
+        } else if ("clear".equals(action)) {
+            ChatReadPositionStore.remove(context, dialogId);
+        }
+        ChatReadPositionStore.ReadPosition position = ChatReadPositionStore.load(context, dialogId);
+        response.put("dialogId", dialogId);
+        if (position == null) {
+            response.put("position", JSONObject.NULL);
+        } else {
+            JSONObject item = new JSONObject();
+            item.put("messageId", position.messageId);
+            item.put("timestampEpochMs", position.timestampEpochMs);
+            response.put("position", item);
+        }
+        return response;
+    }
+
+    private JSONObject cliMessages(JSONObject response, Intent intent, String action) throws Exception {
+        int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+        long dialogId = requireDialogId(intent);
+        int messageId = intExtra(intent, "message_id", 0);
+        int limit = Math.max(1, Math.min(200, intExtra(intent, "limit", 50)));
+        List<MessageCache.CachedMessage> messages;
+        switch (action) {
+            case "get":
+                if (messageId <= 0) {
+                    throw new IllegalArgumentException("message_id must be positive");
+                }
+                MessageCache.CachedMessage message = messageCache.get(accountId, dialogId, messageId);
+                messages = message == null
+                        ? Collections.emptyList()
+                        : Collections.singletonList(message);
+                break;
+            case "recalled":
+                messages = messageCache.getRecalledMessages(accountId, dialogId);
+                break;
+            case "edited":
+                messages = messageCache.getEditedMessages(accountId, dialogId);
+                break;
+            case "history":
+                if (messageId <= 0) {
+                    throw new IllegalArgumentException("message_id must be positive");
+                }
+                messages = messageCache.getEditHistory(accountId, dialogId, messageId);
+                break;
+            default:
+                throw new IllegalArgumentException("Unsupported message action: " + action);
+        }
+        JSONArray items = new JSONArray();
+        int count = Math.min(limit, messages == null ? 0 : messages.size());
+        for (int i = 0; i < count; i++) {
+            items.put(cachedMessageJson(messages.get(i)));
+        }
+        response.put("accountId", accountId);
+        response.put("dialogId", dialogId);
+        response.put("messageId", messageId > 0 ? messageId : JSONObject.NULL);
+        response.put("total", messages == null ? 0 : messages.size());
+        response.put("returned", count);
+        response.put("messages", items);
+        return response;
+    }
+
+    private JSONObject cachedMessageJson(MessageCache.CachedMessage message) throws Exception {
+        JSONObject item = new JSONObject();
+        item.put("accountId", message.accountId);
+        item.put("dialogId", message.dialogId);
+        item.put("messageId", message.messageId);
+        item.put("senderId", message.senderId);
+        item.put("text", message.text == null ? "" : message.text);
+        item.put("caption", message.caption == null ? "" : message.caption);
+        item.put("timestamp", message.timestamp);
+        item.put("mediaType", message.mediaType == null ? "" : message.mediaType);
+        item.put("mediaId", message.mediaId == null ? "" : message.mediaId);
+        item.put("cachedMediaPath", message.cachedMediaPath == null ? "" : message.cachedMediaPath);
+        item.put("rawMessageBytes", message.rawMessageBlob == null ? 0 : message.rawMessageBlob.length);
+        item.put("recalled", message.isRecalled);
+        item.put("edited", message.isEdited);
+        item.put("editedText", message.editedText == null ? "" : message.editedText);
+        return item;
+    }
+
+    private JSONObject cliCleanup(JSONObject response, Intent intent, boolean mutate) throws Exception {
+        long dialogId = requireDialogId(intent);
+        if (mutate) {
+            recallDetector.setCleanupMode(
+                    dialogId,
+                    parseBoolean(requireExtra(intent, "value")),
+                    CLEANUP_MODE_DURATION_MS
+            );
+        }
+        response.put("dialogId", dialogId);
+        response.put("enabled", recallDetector.isCleanupModeActive(dialogId));
+        response.put("durationMs", CLEANUP_MODE_DURATION_MS);
+        return response;
+    }
+
+    private JSONObject cliUiState(JSONObject response) throws Exception {
+        Object chatActivity = activeChatActivity.get();
+        response.put("activeChat", chatActivity != null);
+        response.put("trackedDialogId", trackedDialogId);
+        response.put("selectedMessage", chatActivity != null
+                && Reflect.field(chatActivity, "selectedObject") != null);
+        response.put("directActions", new JSONArray(Arrays.asList("jump-mark", "scroll")));
+        return response;
+    }
+
+    private JSONObject cliUiJump(JSONObject response, Context context, Intent intent) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        int messageId = intExtra(intent, "message_id", 0);
+        if (messageId <= 0) {
+            int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+            List<MessageMarkStore.Mark> marks = messageMarkStore.list(accountId, trackedDialogId);
+            if (marks.isEmpty()) {
+                throw new IllegalStateException("No marked message for active dialog");
+            }
+            messageId = marks.get(0).messageId;
+        }
+        boolean invoked = invokeScrollToMessageId(chatActivity, messageId);
+        if (!invoked) {
+            throw new IllegalStateException("Telegram scrollToMessageId is unavailable");
+        }
+        response.put("dialogId", trackedDialogId);
+        response.put("messageId", messageId);
+        response.put("invoked", true);
+        return response;
+    }
+
+    private JSONObject cliUiScroll(JSONObject response, Context context, Intent intent) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        scrollChatToTop(chatActivity, context);
+        response.put("dialogId", trackedDialogId);
+        response.put("invoked", true);
+        return response;
+    }
+
+    private Object requireActiveChat(Intent intent) {
+        Object chatActivity = activeChatActivity.get();
+        if (chatActivity == null || trackedDialogId == 0L) {
+            throw new IllegalStateException("No resumed Telegram chat");
+        }
+        long requestedDialogId = longExtra(intent, "dialog_id", 0L);
+        if (requestedDialogId != 0L && requestedDialogId != trackedDialogId) {
+            throw new IllegalStateException("Active dialog is " + trackedDialogId
+                    + ", requested " + requestedDialogId);
+        }
+        return chatActivity;
+    }
+
+    private FilterConfig currentCliConfig(Context context) {
+        if (configProvider == null || context == null) {
+            throw new IllegalStateException("Configuration provider is unavailable");
+        }
+        return configProvider.getConfig(context).deepCopy().sanitize();
+    }
+
+    private JSONObject cliSuccess(String command) throws Exception {
+        JSONObject response = new JSONObject();
+        response.put("ok", true);
+        response.put("command", command);
+        return response;
+    }
+
+    private String encodeCliResponse(JSONObject response) {
+        return Base64.encodeToString(
+                response.toString().getBytes(StandardCharsets.UTF_8),
+                Base64.NO_WRAP
+        );
+    }
+
+    private String requireExtra(Intent intent, String name) {
+        String value = stringExtra(intent, name);
+        if (value.isBlank()) {
+            throw new IllegalArgumentException("Missing " + name);
+        }
+        return value;
+    }
+
+    private String stringExtra(Intent intent, String name) {
+        String value = intent == null ? null : intent.getStringExtra(name);
+        return value == null ? "" : value;
+    }
+
+    private long requireDialogId(Intent intent) {
+        long dialogId = longExtra(intent, "dialog_id", 0L);
+        if (dialogId == 0L) {
+            throw new IllegalArgumentException("dialog_id must be non-zero");
+        }
+        return dialogId;
+    }
+
+    private int intExtra(Intent intent, String name, int defaultValue) {
+        String value = stringExtra(intent, name).trim();
+        if (value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(name + " is not an integer: " + value);
+        }
+    }
+
+    private long longExtra(Intent intent, String name, long defaultValue) {
+        String value = stringExtra(intent, name).trim();
+        if (value.isBlank()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value);
+        } catch (NumberFormatException exception) {
+            throw new IllegalArgumentException(name + " is not a long: " + value);
+        }
+    }
+
+    private boolean parseBoolean(String raw) {
+        String value = raw == null ? "" : raw.trim().toLowerCase(Locale.ROOT);
+        if ("true".equals(value) || "1".equals(value) || "on".equals(value)
+                || "yes".equals(value) || "record".equals(value)) {
+            return true;
+        }
+        if ("false".equals(value) || "0".equals(value) || "off".equals(value)
+                || "no".equals(value) || "skip".equals(value)) {
+            return false;
+        }
+        throw new IllegalArgumentException("Expected boolean, got: " + raw);
+    }
+
+    private EnhancementConfig.Feature parseFeature(String raw) {
+        for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+            if (feature.name().equalsIgnoreCase(raw) || feature.key.equalsIgnoreCase(raw)) {
+                return feature;
+            }
+        }
+        throw new IllegalArgumentException("Unknown feature: " + raw);
+    }
+
+    private ModuleConflictDetector.KnownModule parseKnownModule(String raw) {
+        for (ModuleConflictDetector.KnownModule knownModule
+                : ModuleConflictDetector.KnownModule.values()) {
+            if (knownModule.name().equalsIgnoreCase(raw)
+                    || knownModule.displayName.equalsIgnoreCase(raw)) {
+                return knownModule;
+            }
+        }
+        throw new IllegalArgumentException("Unknown module fallback: " + raw);
     }
 
     private String describeHookArgs(List<Object> args) {
@@ -609,6 +1292,7 @@ final class TelegramHookInstaller {
                 Object result = chain.proceed();
                 try {
                     Object chatActivity = chain.getThisObject();
+                    activeChatActivity = new WeakReference<>(chatActivity);
                     refreshChatActivityFiltering(chatActivity);
                     beginReadPositionTracking(chatActivity);
                 } catch (Throwable throwable) {
@@ -631,6 +1315,10 @@ final class TelegramHookInstaller {
                     Object chatActivity = chain.getThisObject();
                     flushReadPosition(chatActivity);
                     markLoadedFilteredMessagesAsRead(chatActivity);
+                    Object active = activeChatActivity.get();
+                    if (active == chatActivity) {
+                        activeChatActivity.clear();
+                    }
                 } catch (Throwable throwable) {
                     error("ChatActivity pause flush failed", throwable);
                 }
@@ -5241,17 +5929,29 @@ final class TelegramHookInstaller {
     }
 
     private FilterConfig saveUpdatedConfig(Context hostContext, FilterConfig updated) {
-        FilterConfig saved = saveToRemotePreferences(updated);
+        FilterConfig saved = configProvider.persistHostConfig(hostContext, updated);
         if (saved == null) {
+            saved = saveToRemotePreferences(updated);
+        }
+        if (saved == null && isModuleProviderVisible(hostContext)) {
             saved = saveToContentProvider(hostContext, updated);
         }
         if (saved != null) {
             updated = saved;
+        } else {
+            persistToModuleProcess(hostContext, updated);
         }
-        persistToModuleProcess(hostContext, updated);
         configProvider.replaceCachedConfig(updated);
         invalidateModuleFallbackSnapshot();
         return updated;
+    }
+
+    private boolean isModuleProviderVisible(Context hostContext) {
+        return hostContext != null
+                && hostContext.getPackageManager().resolveContentProvider(
+                ConfigContentProvider.AUTHORITY,
+                0
+        ) != null;
     }
 
     private void persistToModuleProcess(Context hostContext, FilterConfig updated) {
