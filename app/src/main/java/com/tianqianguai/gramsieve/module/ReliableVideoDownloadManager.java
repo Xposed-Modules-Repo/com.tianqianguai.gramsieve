@@ -19,6 +19,7 @@ final class ReliableVideoDownloadManager {
     private static final long WATCHDOG_INTERVAL_MS = 5_000L;
     private static final long STALL_TIMEOUT_MS = 30_000L;
     private static final long RESTART_DELAY_MS = 750L;
+    private static final ThreadLocal<String> CANCEL_ORIGIN = new ThreadLocal<>();
 
     private final Map<String, Job> jobs = new ConcurrentHashMap<>();
     private final Set<String> userStarted = ConcurrentHashMap.newKeySet();
@@ -50,6 +51,10 @@ final class ReliableVideoDownloadManager {
 
     void setClassLoader(ClassLoader classLoader) {
         this.classLoader = classLoader;
+    }
+
+    static String currentCancelOrigin() {
+        return CANCEL_ORIGIN.get();
     }
 
     void onUserButton(Object cell, Object[] buttonArgs) {
@@ -304,15 +309,45 @@ final class ReliableVideoDownloadManager {
         if (job == null) {
             return;
         }
-        if (id == progressId && args.length >= 2 && args[1] instanceof Number) {
-            long bytes = ((Number) args[1]).longValue();
-            if (job.state.progress(bytes, System.currentTimeMillis())) {
+        if (id == progressId) {
+            long nowMs = System.currentTimeMillis();
+            Long bytes = args.length >= 2 && args[1] instanceof Number
+                    ? ((Number) args[1]).longValue() : null;
+            Long totalBytes = args.length >= 3 && args[2] instanceof Number
+                    ? ((Number) args[2]).longValue() : null;
+            long elapsedSinceRestartMs = bytes == null ? -1L
+                    : job.consumePostRestartProgress(nowMs);
+            ReliableDownloadDiagnostics.ProgressMetadata progress = job.recordProgress(
+                    bytes, totalBytes, nowMs, Thread.currentThread().getName());
+            ModuleLogger.hook(TAG, "progress observed "
+                    + targetDescription(account, key, job.args[0])
+                    + " notificationId=" + id
+                    + " argsShape=" + ReliableDownloadDiagnostics.argumentShape(args)
+                    + " currentBytes=" + (progress.currentBytesKnown ? progress.currentBytes : "unknown")
+                    + " totalBytes=" + (progress.totalBytesKnown ? progress.totalBytes : "unknown")
+                    + " deltaBytes=" + (progress.deltaBytes == Long.MIN_VALUE
+                    ? "unknown" : progress.deltaBytes)
+                    + " elapsedSincePreviousMs=" + progress.elapsedSincePreviousMs
+                    + " eventCount=" + progress.eventCount
+                    + " advanced=" + progress.advanced
+                    + " postRestartProgress=" + (elapsedSinceRestartMs >= 0L)
+                    + " elapsedSinceRestartMs=" + elapsedSinceRestartMs
+                    + " thread=" + progress.threadName);
+            if (bytes != null && job.state.progress(bytes, nowMs)) {
                 job.recovering = false;
                 job.retryCount = 0;
             }
         } else if (id == loadedId) {
             complete(job, "completed");
         } else if (id == failedId) {
+            ModuleLogger.hook(TAG, "failure observed "
+                    + targetDescription(account, key, job.args[0])
+                    + " notificationId=" + id
+                    + " argsShape=" + ReliableDownloadDiagnostics.argumentShape(args)
+                    + " rawArgs=" + ReliableDownloadDiagnostics.argumentSummary(args)
+                    + " reason=" + (args.length >= 2
+                    ? ReliableDownloadDiagnostics.argumentSummary(new Object[]{args[1]}) : "unknown")
+                    + " thread=" + Thread.currentThread().getName());
             if (cancellationRegistry.isCancelled(key)) {
                 ModuleLogger.hook(TAG, "cancellation failure ignored "
                         + targetDescription(account, key, job.args[0]));
@@ -326,6 +361,45 @@ final class ReliableVideoDownloadManager {
         }
     }
 
+    void onCancelLoadFileInvocation(Object fileLoader, Object[] args, String overloadShape,
+                                    String origin) {
+        if (args == null || args.length == 0) {
+            return;
+        }
+        Object attachment = args[0];
+        int account = resolveAccount(null, fileLoader);
+        String file = attachment instanceof String ? (String) attachment : fileName(attachment);
+        String key = attachment instanceof String
+                ? account + ":" + attachment : key(account, attachment);
+        boolean tracked = key != null && (jobs.containsKey(key)
+                || userStarted.contains(key) || cancellationRegistry.isCancelled(key));
+        boolean video = attachment instanceof String
+                ? tracked || isVideoMetadata("", file)
+                : isVideoDocument(attachment);
+        if (!video) {
+            return;
+        }
+        boolean explicitCancel = key != null && cancellationRegistry.isCancelled(key);
+        String source = ReliableDownloadDiagnostics.cancelSource(origin, explicitCancel);
+        StringBuilder message = new StringBuilder("cancel observed source=")
+                .append(source)
+                .append(" externalMode=").append(usesExternalDownload())
+                .append(" account=").append(account)
+                .append(" key=").append(key == null ? "unknown" : key)
+                .append(" file=").append(file == null ? "unknown" : file)
+                .append(" overload=").append(overloadShape == null ? "unknown" : overloadShape)
+                .append(" argsShape=").append(ReliableDownloadDiagnostics.argumentShape(args))
+                .append(" args=").append(ReliableDownloadDiagnostics.argumentSummary(args))
+                .append(" thread=").append(Thread.currentThread().getName())
+                .append(" origin=").append(origin == null ? "none" : origin);
+        if (ReliableDownloadDiagnostics.SOURCE_UNKNOWN.equals(source)) {
+            message.append(" stack=")
+                    .append(ReliableDownloadDiagnostics.filteredStackSummary(
+                            Thread.currentThread().getStackTrace()));
+        }
+        ModuleLogger.hook(TAG, message.toString());
+    }
+
     private void scanForStalls() {
         if (usesExternalDownload()) {
             jobs.clear();
@@ -336,7 +410,7 @@ final class ReliableVideoDownloadManager {
         for (Job job : jobs.values()) {
             long generation = job.state.generation();
             if (job.state.shouldRecover(generation, now, STALL_TIMEOUT_MS)) {
-                scheduleRestart(job, "stalled bytes=" + job.state.downloadedBytes());
+                scheduleRestart(job, "stalled " + job.stallDiagnostics(now));
             }
         }
     }
@@ -365,8 +439,15 @@ final class ReliableVideoDownloadManager {
         long delayMs = cancelFirst
                 ? Math.min(15_000L, RESTART_DELAY_MS << Math.min(job.retryCount++, 4))
                 : 0L;
+        String cancelInitiator = cancelFirst
+                ? (reason.startsWith("stalled")
+                ? ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY
+                : "GramSieve failure recovery")
+                : "none";
         ModuleLogger.hook(TAG, "recovering " + reason + " account=" + job.account
-                + " file=" + fileName(job.args[0]) + " delayMs=" + delayMs);
+                + " file=" + fileName(job.args[0]) + " delayMs=" + delayMs
+                + " cancelInitiator=" + cancelInitiator
+                + " progressState=" + job.stallDiagnostics(System.currentTimeMillis()));
         if (cancelFirst) {
             cancelNative(job);
         }
@@ -394,9 +475,12 @@ final class ReliableVideoDownloadManager {
             }
             method.setAccessible(true);
             method.invoke(job.fileLoader, job.args);
-            job.state.markAttempt(generation, System.currentTimeMillis());
+            long restartedAtMs = System.currentTimeMillis();
+            job.state.markAttempt(generation, restartedAtMs);
+            job.markRestarted(restartedAtMs);
             job.recovering = false;
-            ModuleLogger.hook(TAG, "restarted " + targetDescription(job.account, job.key, job.args[0]));
+            ModuleLogger.hook(TAG, "restarted loadFileReturn=true firstProgressPending=true "
+                    + targetDescription(job.account, job.key, job.args[0]));
         } catch (Throwable t) {
             job.recovering = false;
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG, "restart failed: " + t.getMessage());
@@ -414,10 +498,12 @@ final class ReliableVideoDownloadManager {
             }
             if (method != null) {
                 method.setAccessible(true);
-                method.invoke(job.fileLoader, args);
+                invokeCancelWithOrigin(method, job.fileLoader, args,
+                        ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY);
                 ModuleLogger.hook(TAG, "native cancel invoked "
                         + targetDescription(job.account, job.key, job.args[0])
-                        + " overloadArgs=" + args.length);
+                        + " overloadArgs=" + args.length
+                        + " cancelInitiator=" + ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY);
             } else {
                 ModuleLogger.hook(TAG, "native cancel unavailable "
                         + targetDescription(job.account, job.key, job.args[0]));
@@ -432,6 +518,21 @@ final class ReliableVideoDownloadManager {
             return useExternalDownload.getAsBoolean();
         } catch (RuntimeException ignored) {
             return false;
+        }
+    }
+
+    private void invokeCancelWithOrigin(Method method, Object target, Object[] args,
+                                        String origin) throws Throwable {
+        String previous = CANCEL_ORIGIN.get();
+        CANCEL_ORIGIN.set(origin);
+        try {
+            method.invoke(target, args);
+        } finally {
+            if (previous == null) {
+                CANCEL_ORIGIN.remove();
+            } else {
+                CANCEL_ORIGIN.set(previous);
+            }
         }
     }
 
@@ -540,7 +641,12 @@ final class ReliableVideoDownloadManager {
             }
             if (method != null) {
                 method.setAccessible(true);
-                method.invoke(fileLoader, cancelArgs);
+                invokeCancelWithOrigin(method, fileLoader, cancelArgs,
+                        ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL);
+                ModuleLogger.hook(TAG, "native cancel invoked source="
+                        + ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL + " account=" + account
+                        + " key=" + key + " file=" + fileName(document)
+                        + " overloadArgs=" + cancelArgs.length);
             }
         } catch (Throwable throwable) {
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
@@ -604,9 +710,11 @@ final class ReliableVideoDownloadManager {
                 return;
             }
             method.setAccessible(true);
-            method.invoke(fileLoader, fileName);
+            invokeCancelWithOrigin(method, fileLoader, new Object[]{fileName},
+                    ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL);
             ModuleLogger.hook(TAG, "loading-state native cancel reinforced account=" + account
-                    + " key=" + key + " file=" + fileName);
+                    + " key=" + key + " file=" + fileName
+                    + " cancelInitiator=" + ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL);
         } catch (Throwable throwable) {
             ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
                     "loading-state cancel reinforcement failed: " + throwable.getMessage());
@@ -728,22 +836,92 @@ final class ReliableVideoDownloadManager {
         final String key;
         final int account;
         final ReliableDownloadState state = new ReliableDownloadState();
+        final long startedAtMs;
         volatile Object fileLoader;
         volatile Object[] args;
         volatile boolean recovering;
         volatile int retryCount;
+        private long lastProgressBytes;
+        private boolean lastProgressBytesKnown;
+        private long lastProgressAtMs;
+        private long lastProgressTotalBytes;
+        private boolean lastProgressTotalKnown;
+        private int progressEventCount;
+        private String lastProgressThread;
+        private boolean awaitingPostRestartProgress;
+        private long lastRestartAtMs;
 
         Job(String key, int account, Object fileLoader, Object[] args) {
             this.key = key;
             this.account = account;
             this.fileLoader = fileLoader;
             this.args = args;
-            state.start(System.currentTimeMillis());
+            startedAtMs = System.currentTimeMillis();
+            state.start(startedAtMs);
+            lastProgressBytes = 0L;
+            lastProgressBytesKnown = true;
+            lastProgressAtMs = startedAtMs;
+            lastProgressTotalBytes = 0L;
+            lastProgressTotalKnown = false;
+            progressEventCount = 0;
+            lastProgressThread = "none";
+            awaitingPostRestartProgress = false;
+            lastRestartAtMs = -1L;
         }
 
         void update(Object fileLoader, Object[] args) {
             this.fileLoader = fileLoader;
             this.args = args.clone();
+        }
+
+        synchronized ReliableDownloadDiagnostics.ProgressMetadata recordProgress(
+                Long currentBytes, Long totalBytes, long nowMs, String threadName) {
+            ReliableDownloadDiagnostics.ProgressMetadata metadata =
+                    ReliableDownloadDiagnostics.observeProgress(
+                            lastProgressBytes,
+                            lastProgressBytesKnown,
+                            lastProgressAtMs,
+                            progressEventCount,
+                            currentBytes,
+                            totalBytes,
+                            nowMs,
+                            threadName
+                    );
+            if (currentBytes != null) {
+                lastProgressBytes = currentBytes;
+                lastProgressBytesKnown = true;
+            }
+            if (totalBytes != null) {
+                lastProgressTotalBytes = totalBytes;
+                lastProgressTotalKnown = true;
+            }
+            lastProgressAtMs = nowMs;
+            progressEventCount = metadata.eventCount;
+            lastProgressThread = metadata.threadName;
+            return metadata;
+        }
+
+        synchronized void markRestarted(long nowMs) {
+            awaitingPostRestartProgress = true;
+            lastRestartAtMs = nowMs;
+        }
+
+        synchronized long consumePostRestartProgress(long nowMs) {
+            if (!awaitingPostRestartProgress) {
+                return -1L;
+            }
+            awaitingPostRestartProgress = false;
+            return Math.max(0L, nowMs - lastRestartAtMs);
+        }
+
+        synchronized String stallDiagnostics(long nowMs) {
+            long ageMs = Math.max(0L, nowMs - lastProgressAtMs);
+            return "lastProgressAgeMs=" + ageMs
+                    + " progressEventCount=" + progressEventCount
+                    + " lastProgressThread=" + lastProgressThread
+                    + " currentBytes=" + (lastProgressBytesKnown ? lastProgressBytes : "unknown")
+                    + " totalBytes=" + (lastProgressTotalKnown ? lastProgressTotalBytes : "unknown")
+                    + " firstProgressPending=" + awaitingPostRestartProgress;
         }
     }
 

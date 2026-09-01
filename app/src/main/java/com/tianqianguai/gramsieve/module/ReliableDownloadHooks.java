@@ -108,12 +108,47 @@ final class ReliableDownloadHooks {
                 throw new NoSuchMethodException("FileLoader.loadFile(Document,Object,int,int)");
             }
             info("ReliableDownload: hooked FileLoader video download transport");
+            hookDownloadCancelTransport(fileLoaderClass);
             hookDownloadStreamTransport(fileLoaderClass);
             hookDownloadInternalTransport(fileLoaderClass);
             hookDownloadLoadingQuery(fileLoaderClass);
             hookDownloadVideoLoadingState(fileLoaderClass);
         } catch (Throwable throwable) {
             error("ReliableDownload: failed to hook FileLoader", throwable);
+        }
+    }
+
+    private void hookDownloadCancelTransport(Class<?> fileLoaderClass) {
+        int hooked = 0;
+        try {
+            for (Method method : fileLoaderClass.getDeclaredMethods()) {
+                Class<?>[] parameters = method.getParameterTypes();
+                if (!"cancelLoadFile".equals(method.getName()) || parameters.length == 0) {
+                    continue;
+                }
+                String label = "FileLoader.cancelLoadFile" + signatureOf(parameters);
+                deoptimize(method, label);
+                hook(method, chain -> {
+                    Object[] cancelArgs = chain.getArgs().toArray(new Object[0]);
+                    // Capture the marker before proceed(): reflective GramSieve cancellation
+                    // invokes this hook while its origin ThreadLocal is still active.
+                    String origin = ReliableVideoDownloadManager.currentCancelOrigin();
+                    try {
+                        return chain.proceed();
+                    } finally {
+                        try {
+                            downloadManager.onCancelLoadFileInvocation(
+                                    chain.getThisObject(), cancelArgs, label, origin);
+                        } catch (Throwable diagnosticsFailure) {
+                            error("ReliableDownload: cancel diagnostics failed", diagnosticsFailure);
+                        }
+                    }
+                });
+                hooked++;
+            }
+            info("ReliableDownload: hooked FileLoader cancel overloads=" + hooked);
+        } catch (Throwable throwable) {
+            error("ReliableDownload: failed to hook FileLoader cancel transport", throwable);
         }
     }
 
