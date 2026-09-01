@@ -55,13 +55,22 @@ public class ReliableDownloadDiagnosticsTest {
         assertEquals(ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY,
                 ReliableDownloadDiagnostics.cancelSource(
                         ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY, true));
+        assertEquals(ReliableDownloadDiagnostics.ORIGIN_FAILURE_RECOVERY,
+                ReliableDownloadDiagnostics.cancelSource(
+                        ReliableDownloadDiagnostics.ORIGIN_FAILURE_RECOVERY, false));
         assertEquals(ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL,
                 ReliableDownloadDiagnostics.cancelSource(
                         ReliableDownloadDiagnostics.ORIGIN_EXPLICIT_CANCEL, false));
-        assertEquals(ReliableDownloadDiagnostics.SOURCE_TELEGRAM_AFTER_X,
+        assertEquals(ReliableDownloadDiagnostics.SOURCE_AFTER_X_UNATTRIBUTED,
                 ReliableDownloadDiagnostics.cancelSource(null, true));
         assertEquals(ReliableDownloadDiagnostics.SOURCE_UNKNOWN,
                 ReliableDownloadDiagnostics.cancelSource(null, false));
+        assertTrue(ReliableDownloadDiagnostics.isUnattributedSource(
+                ReliableDownloadDiagnostics.SOURCE_AFTER_X_UNATTRIBUTED));
+        assertTrue(ReliableDownloadDiagnostics.isUnattributedSource(
+                ReliableDownloadDiagnostics.SOURCE_UNKNOWN));
+        assertFalse(ReliableDownloadDiagnostics.isUnattributedSource(
+                ReliableDownloadDiagnostics.ORIGIN_FAILURE_RECOVERY));
     }
 
     @Test
