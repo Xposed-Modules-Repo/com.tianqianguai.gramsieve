@@ -8,9 +8,6 @@ import android.os.SystemClock;
 
 import com.tianqianguai.gramsieve.core.FilterConfig;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.Method;
-
 public final class XposedConfigProvider {
     private static final String TAG = "GramSieve";
     private static final long RELOAD_THROTTLE_MS = 1500L;
@@ -18,22 +15,16 @@ public final class XposedConfigProvider {
     private static final String CONTENT_URI_STRING = "content://" + ConfigContentProvider.AUTHORITY;
     private static final String HOST_PREFS_NAME = "gramsieve_host_rules";
 
-    private final String modulePackageName;
     private final RemotePreferencesProvider remotePreferencesProvider;
     private final ElapsedRealtimeProvider elapsedRealtimeProvider;
     private volatile FilterConfig cachedConfig;
     private volatile long lastCheckedAt;
     private volatile long lastLoadedUpdatedAt;
     private volatile long retryAfterAt;
-    private Object xSharedPreferences;
-    private Method reloadMethod;
-    private Method hasFileChangedMethod;
-    private SharedPreferences sharedPreferences;
     private boolean remotePrefsEmptyLogged;
     private boolean remotePrefsFailureLogged;
     private boolean contentProviderUnavailable;
     private boolean contentProviderFailureLogged;
-    private boolean legacyPrefsUnavailable;
     private long lastHostPrefsLoggedAt;
 
     public XposedConfigProvider(
@@ -48,7 +39,6 @@ public final class XposedConfigProvider {
             RemotePreferencesProvider remotePreferencesProvider,
             ElapsedRealtimeProvider elapsedRealtimeProvider
     ) {
-        this.modulePackageName = modulePackageName;
         this.remotePreferencesProvider = remotePreferencesProvider;
         this.elapsedRealtimeProvider = elapsedRealtimeProvider == null
                 ? SystemClock::elapsedRealtime
@@ -79,24 +69,7 @@ public final class XposedConfigProvider {
             }
             return rememberLoaded(remoteConfig);
         }
-        if (!ensureLegacyPrefs()) {
-            return rememberFailure(now);
-        }
-        try {
-            boolean shouldReload = cachedConfig == null;
-            if (hasFileChangedMethod != null) {
-                Object changed = hasFileChangedMethod.invoke(xSharedPreferences);
-                shouldReload = shouldReload || Boolean.TRUE.equals(changed);
-            }
-            if (shouldReload && reloadMethod != null) {
-                reloadMethod.invoke(xSharedPreferences);
-            }
-            cachedConfig = ModuleConfigStore.load(sharedPreferences);
-            retryAfterAt = 0L;
-        } catch (ReflectiveOperationException ignored) {
-            return rememberFailure(now);
-        }
-        return cachedConfig;
+        return rememberFailure(now);
     }
 
     private FilterConfig rememberLoaded(FilterConfig config) {
@@ -329,40 +302,6 @@ public final class XposedConfigProvider {
                 );
             }
             return null;
-        }
-    }
-
-    private boolean ensureLegacyPrefs() {
-        if (sharedPreferences != null) {
-            return true;
-        }
-        if (legacyPrefsUnavailable) {
-            return false;
-        }
-        try {
-            Class<?> clazz = Class.forName("de.robv.android.xposed.XSharedPreferences");
-            Constructor<?> constructor = clazz.getConstructor(String.class, String.class);
-            xSharedPreferences = constructor.newInstance(modulePackageName, ModuleConfigStore.PREFS_NAME);
-            sharedPreferences = (SharedPreferences) xSharedPreferences;
-            try {
-                reloadMethod = clazz.getMethod("reload");
-            } catch (NoSuchMethodException ignored) {
-                reloadMethod = null;
-            }
-            try {
-                hasFileChangedMethod = clazz.getMethod("hasFileChanged");
-            } catch (NoSuchMethodException ignored) {
-                hasFileChangedMethod = null;
-            }
-            if (reloadMethod != null) {
-                reloadMethod.invoke(xSharedPreferences);
-            }
-            ModuleLogger.config(TAG, "ConfigProvider: using XSharedPreferences fallback");
-            return true;
-        } catch (ReflectiveOperationException | ClassCastException ignored) {
-            legacyPrefsUnavailable = true;
-            ModuleLogger.config(TAG, "ConfigProvider: legacy preferences unavailable; using safe cached defaults");
-            return false;
         }
     }
 

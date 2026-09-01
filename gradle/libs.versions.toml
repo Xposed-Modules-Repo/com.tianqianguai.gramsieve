@@ -7,8 +7,8 @@ espressoCore = "3.7.0"
 appcompat = "1.7.1"
 material = "1.13.0"
 gson = "2.13.1"
-libxposedApi = "101.0.1"
-libxposedService = "101.0.0"
+libxposedApi = "102.0.0"
+libxposedService = "102.0.0"
 mockito = "5.14.2"
 
 [libraries]
