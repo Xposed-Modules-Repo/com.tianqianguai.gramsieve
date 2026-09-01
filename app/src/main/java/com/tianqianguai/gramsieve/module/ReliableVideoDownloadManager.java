@@ -315,6 +315,12 @@ final class ReliableVideoDownloadManager {
                     ? ((Number) args[1]).longValue() : null;
             Long totalBytes = args.length >= 3 && args[2] instanceof Number
                     ? ((Number) args[2]).longValue() : null;
+            boolean watchdogAdvanced = bytes != null && job.state.progress(bytes, nowMs);
+            if (watchdogAdvanced) {
+                job.markWatchdogAccepted(nowMs, bytes);
+                job.recovering = false;
+                job.retryCount = 0;
+            }
             long elapsedSinceRestartMs = bytes == null ? -1L
                     : job.consumePostRestartProgress(nowMs);
             ReliableDownloadDiagnostics.ProgressMetadata progress = job.recordProgress(
@@ -325,18 +331,16 @@ final class ReliableVideoDownloadManager {
                     + " argsShape=" + ReliableDownloadDiagnostics.argumentShape(args)
                     + " currentBytes=" + (progress.currentBytesKnown ? progress.currentBytes : "unknown")
                     + " totalBytes=" + (progress.totalBytesKnown ? progress.totalBytes : "unknown")
-                    + " deltaBytes=" + (progress.deltaBytes == Long.MIN_VALUE
+                    + " eventDeltaBytes=" + (progress.deltaBytes == Long.MIN_VALUE
                     ? "unknown" : progress.deltaBytes)
+                    + " eventAdvanced=" + progress.advanced
+                    + " watchdogAdvanced=" + watchdogAdvanced
                     + " elapsedSincePreviousMs=" + progress.elapsedSincePreviousMs
                     + " eventCount=" + progress.eventCount
-                    + " advanced=" + progress.advanced
+                    + " lastWatchdogAcceptedAgeMs=" + job.watchdogAcceptedAgeMs(nowMs)
                     + " postRestartProgress=" + (elapsedSinceRestartMs >= 0L)
                     + " elapsedSinceRestartMs=" + elapsedSinceRestartMs
                     + " thread=" + progress.threadName);
-            if (bytes != null && job.state.progress(bytes, nowMs)) {
-                job.recovering = false;
-                job.retryCount = 0;
-            }
         } else if (id == loadedId) {
             complete(job, "completed");
         } else if (id == failedId) {
@@ -392,7 +396,7 @@ final class ReliableVideoDownloadManager {
                 .append(" args=").append(ReliableDownloadDiagnostics.argumentSummary(args))
                 .append(" thread=").append(Thread.currentThread().getName())
                 .append(" origin=").append(origin == null ? "none" : origin);
-        if (ReliableDownloadDiagnostics.SOURCE_UNKNOWN.equals(source)) {
+        if (ReliableDownloadDiagnostics.isUnattributedSource(source)) {
             message.append(" stack=")
                     .append(ReliableDownloadDiagnostics.filteredStackSummary(
                             Thread.currentThread().getStackTrace()));
@@ -442,14 +446,14 @@ final class ReliableVideoDownloadManager {
         String cancelInitiator = cancelFirst
                 ? (reason.startsWith("stalled")
                 ? ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY
-                : "GramSieve failure recovery")
+                : ReliableDownloadDiagnostics.ORIGIN_FAILURE_RECOVERY)
                 : "none";
         ModuleLogger.hook(TAG, "recovering " + reason + " account=" + job.account
                 + " file=" + fileName(job.args[0]) + " delayMs=" + delayMs
                 + " cancelInitiator=" + cancelInitiator
                 + " progressState=" + job.stallDiagnostics(System.currentTimeMillis()));
         if (cancelFirst) {
-            cancelNative(job);
+            cancelNative(job, cancelInitiator);
         }
         scheduler.schedule(() -> restart(job, generation), delayMs, TimeUnit.MILLISECONDS);
     }
@@ -487,7 +491,7 @@ final class ReliableVideoDownloadManager {
         }
     }
 
-    private void cancelNative(Job job) {
+    private void cancelNative(Job job, String cancelOrigin) {
         try {
             Method method = findCompatibleMethod(job.fileLoader.getClass(), "cancelLoadFile",
                     new Object[]{job.args[0], true});
@@ -499,11 +503,11 @@ final class ReliableVideoDownloadManager {
             if (method != null) {
                 method.setAccessible(true);
                 invokeCancelWithOrigin(method, job.fileLoader, args,
-                        ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY);
+                        cancelOrigin);
                 ModuleLogger.hook(TAG, "native cancel invoked "
                         + targetDescription(job.account, job.key, job.args[0])
                         + " overloadArgs=" + args.length
-                        + " cancelInitiator=" + ReliableDownloadDiagnostics.ORIGIN_STALL_RECOVERY);
+                        + " cancelInitiator=" + cancelOrigin);
             } else {
                 ModuleLogger.hook(TAG, "native cancel unavailable "
                         + targetDescription(job.account, job.key, job.args[0]));
@@ -848,6 +852,9 @@ final class ReliableVideoDownloadManager {
         private boolean lastProgressTotalKnown;
         private int progressEventCount;
         private String lastProgressThread;
+        private long lastWatchdogAcceptedAtMs;
+        private long lastWatchdogAcceptedBytes;
+        private boolean lastWatchdogAcceptedKnown;
         private boolean awaitingPostRestartProgress;
         private long lastRestartAtMs;
 
@@ -865,6 +872,9 @@ final class ReliableVideoDownloadManager {
             lastProgressTotalKnown = false;
             progressEventCount = 0;
             lastProgressThread = "none";
+            lastWatchdogAcceptedAtMs = startedAtMs;
+            lastWatchdogAcceptedBytes = 0L;
+            lastWatchdogAcceptedKnown = false;
             awaitingPostRestartProgress = false;
             lastRestartAtMs = -1L;
         }
@@ -901,6 +911,16 @@ final class ReliableVideoDownloadManager {
             return metadata;
         }
 
+        synchronized void markWatchdogAccepted(long nowMs, long bytes) {
+            lastWatchdogAcceptedAtMs = nowMs;
+            lastWatchdogAcceptedBytes = bytes;
+            lastWatchdogAcceptedKnown = true;
+        }
+
+        synchronized long watchdogAcceptedAgeMs(long nowMs) {
+            return Math.max(0L, nowMs - lastWatchdogAcceptedAtMs);
+        }
+
         synchronized void markRestarted(long nowMs) {
             awaitingPostRestartProgress = true;
             lastRestartAtMs = nowMs;
@@ -915,12 +935,16 @@ final class ReliableVideoDownloadManager {
         }
 
         synchronized String stallDiagnostics(long nowMs) {
-            long ageMs = Math.max(0L, nowMs - lastProgressAtMs);
-            return "lastProgressAgeMs=" + ageMs
+            long eventAgeMs = Math.max(0L, nowMs - lastProgressAtMs);
+            long watchdogAgeMs = Math.max(0L, nowMs - lastWatchdogAcceptedAtMs);
+            return "lastEventAgeMs=" + eventAgeMs
+                    + " lastWatchdogAcceptedAgeMs=" + watchdogAgeMs
                     + " progressEventCount=" + progressEventCount
                     + " lastProgressThread=" + lastProgressThread
                     + " currentBytes=" + (lastProgressBytesKnown ? lastProgressBytes : "unknown")
                     + " totalBytes=" + (lastProgressTotalKnown ? lastProgressTotalBytes : "unknown")
+                    + " lastWatchdogAcceptedBytes="
+                    + (lastWatchdogAcceptedKnown ? lastWatchdogAcceptedBytes : "unknown")
                     + " firstProgressPending=" + awaitingPostRestartProgress;
         }
     }

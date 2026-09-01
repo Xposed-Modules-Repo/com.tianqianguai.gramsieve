@@ -6,8 +6,9 @@ import java.util.List;
 /** Pure formatting and attribution helpers for reliable-download diagnostics. */
 final class ReliableDownloadDiagnostics {
     static final String ORIGIN_STALL_RECOVERY = "GramSieve stall recovery";
+    static final String ORIGIN_FAILURE_RECOVERY = "GramSieve failure recovery";
     static final String ORIGIN_EXPLICIT_CANCEL = "GramSieve explicit-cancel reinforcement";
-    static final String SOURCE_TELEGRAM_AFTER_X = "Telegram after explicit user X";
+    static final String SOURCE_AFTER_X_UNATTRIBUTED = "unattributed after explicit user X";
     static final String SOURCE_UNKNOWN = "unknown Telegram/external";
 
     private static final int MAX_VALUE_LENGTH = 96;
@@ -46,7 +47,14 @@ final class ReliableDownloadDiagnostics {
         if (ORIGIN_EXPLICIT_CANCEL.equals(origin)) {
             return ORIGIN_EXPLICIT_CANCEL;
         }
-        return explicitlyCancelled ? SOURCE_TELEGRAM_AFTER_X : SOURCE_UNKNOWN;
+        if (ORIGIN_FAILURE_RECOVERY.equals(origin)) {
+            return ORIGIN_FAILURE_RECOVERY;
+        }
+        return explicitlyCancelled ? SOURCE_AFTER_X_UNATTRIBUTED : SOURCE_UNKNOWN;
+    }
+
+    static boolean isUnattributedSource(String source) {
+        return SOURCE_UNKNOWN.equals(source) || SOURCE_AFTER_X_UNATTRIBUTED.equals(source);
     }
 
     static String argumentShape(Object[] args) {
