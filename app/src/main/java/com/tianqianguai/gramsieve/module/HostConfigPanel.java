@@ -2,6 +2,8 @@ package com.tianqianguai.gramsieve.module;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
@@ -34,6 +36,7 @@ import android.widget.Toast;
 
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
+import com.tianqianguai.gramsieve.config.LogFileSupport;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.RuntimeModuleProbe;
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
@@ -115,6 +118,7 @@ final class HostConfigPanel {
     private OnBackInvokedDispatcher backDispatcher;
     private OnBackInvokedCallback backCallback;
     private int moduleProbeGeneration;
+    private int logConsoleGeneration;
     private Switch enabledSwitch;
     private Switch debugLoggingSwitch;
     private Switch excludeChatSwitch;
@@ -128,6 +132,8 @@ final class HostConfigPanel {
     private EditText uploadParallelismInput;
     private EditText outgoingPrefixInput;
     private EditText outgoingSuffixInput;
+    private TextView logConsoleStatus;
+    private TextView logConsoleOutput;
 
     private HostConfigPanel(
             Context context,
@@ -368,6 +374,7 @@ final class HostConfigPanel {
             buildUntestedFeaturesEntry(container);
         }
         buildEditHistoryCard(container);
+        buildLogCard(container);
         buildRulesCard(container);
 
         root.addView(overlay, new ViewGroup.LayoutParams(
@@ -635,6 +642,180 @@ final class HostConfigPanel {
                     ? t("点击收起  ‹", "Tap to collapse  ‹")
                     : t("点击展开  ›", "Tap to expand  ›"));
         });
+    }
+
+    private void buildLogCard(LinearLayout container) {
+        LinearLayout card = addCard(container);
+        addTitle(card, t("日志控制台", "Log console"));
+        addInfo(card, t(
+                "读取 Telegram 宿主的 app-specific gramsieve.log；显示和复制只取有界尾部。",
+                "Reads Telegram's app-specific gramsieve.log; display and copy use a bounded tail."
+        ));
+
+        LinearLayout terminal = new LinearLayout(context);
+        terminal.setOrientation(LinearLayout.VERTICAL);
+        terminal.setPadding(dp(12), dp(10), dp(12), dp(10));
+        terminal.setBackground(rounded(Color.BLACK, dp(12), Color.rgb(44, 68, 48)));
+
+        TextView terminalHeader = new TextView(context);
+        terminalHeader.setText("$ gramsieve log.tail --limit " + LogFileSupport.DEFAULT_TAIL_LINES);
+        terminalHeader.setTextColor(Color.rgb(124, 255, 146));
+        terminalHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        terminalHeader.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        terminal.addView(terminalHeader, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        logConsoleStatus = new TextView(context);
+        logConsoleStatus.setText(t("正在读取…", "Reading…"));
+        logConsoleStatus.setTextColor(Color.rgb(150, 190, 155));
+        logConsoleStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 10f);
+        logConsoleStatus.setTypeface(Typeface.MONOSPACE);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        statusParams.topMargin = dp(4);
+        statusParams.bottomMargin = dp(8);
+        terminal.addView(logConsoleStatus, statusParams);
+
+        logConsoleOutput = new TextView(context);
+        logConsoleOutput.setTextColor(Color.rgb(224, 255, 226));
+        logConsoleOutput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        logConsoleOutput.setTypeface(Typeface.MONOSPACE);
+        logConsoleOutput.setGravity(Gravity.TOP | Gravity.START);
+        logConsoleOutput.setTextIsSelectable(true);
+        logConsoleOutput.setHorizontallyScrolling(true);
+        logConsoleOutput.setPadding(dp(2), dp(2), dp(12), dp(2));
+
+        ScrollView vertical = new ScrollView(context);
+        vertical.setFillViewport(false);
+        vertical.setBackgroundColor(Color.BLACK);
+        vertical.addView(logConsoleOutput, new ScrollView.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        HorizontalScrollView horizontal = new HorizontalScrollView(context);
+        horizontal.setFillViewport(true);
+        horizontal.setBackgroundColor(Color.BLACK);
+        horizontal.addView(vertical, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+        ));
+        terminal.addView(horizontal, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(260)
+        ));
+        addView(card, terminal, 8);
+
+        LinearLayout actions = new LinearLayout(context);
+        actions.setOrientation(LinearLayout.HORIZONTAL);
+        actions.setGravity(Gravity.CENTER_VERTICAL);
+        Button refresh = toolbarButton(t("刷新", "Refresh"));
+        Button copy = toolbarButton(t("复制", "Copy"));
+        Button export = toolbarButton(t("导出", "Export"));
+        actions.addView(refresh, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(copy, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        actions.addView(export, new LinearLayout.LayoutParams(0, dp(44), 1f));
+        card.addView(actions, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+
+        refresh.setOnClickListener(view -> refreshLogConsole());
+        copy.setOnClickListener(view -> copyLogConsole());
+        export.setOnClickListener(view -> exportLogConsole());
+        refreshLogConsole();
+    }
+
+    private void refreshLogConsole() {
+        if (logConsoleOutput == null || logConsoleStatus == null) {
+            return;
+        }
+        final int generation = ++logConsoleGeneration;
+        logConsoleStatus.setText(t("正在读取…", "Reading…"));
+        logConsoleOutput.setText("");
+        Context appContext = context.getApplicationContext() == null
+                ? context
+                : context.getApplicationContext();
+        new Thread(() -> {
+            LogFileSupport.TailResult result = LogFileSupport.readTail(
+                    appContext,
+                    LogFileSupport.DEFAULT_TAIL_LINES,
+                    LogFileSupport.DEFAULT_TAIL_BYTES
+            );
+            logConsoleOutput.post(() -> {
+                if (generation != logConsoleGeneration || overlay == null) {
+                    return;
+                }
+                logConsoleOutput.setText(result.text);
+                if (!result.available) {
+                    logConsoleStatus.setText(t(
+                            "读取失败：" + result.error,
+                            "Read failed: " + result.error
+                    ));
+                    return;
+                }
+                logConsoleStatus.setText(
+                        "source=" + result.sourcePath
+                                + "  bytes=" + result.totalBytes
+                                + "  returned=" + result.returnedBytes
+                                + "  lines=" + result.lineCount
+                                + (result.truncated ? "  [truncated]" : "")
+                );
+            });
+        }, "GramSieve-log-tail").start();
+    }
+
+    private void copyLogConsole() {
+        if (logConsoleOutput == null || logConsoleOutput.getText() == null
+                || logConsoleOutput.getText().length() == 0) {
+            Toast.makeText(context, t("暂无可复制日志", "No log tail to copy"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            Toast.makeText(context, t("系统剪贴板不可用", "System clipboard unavailable"), Toast.LENGTH_SHORT).show();
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText("GramSieve log", logConsoleOutput.getText()));
+        Toast.makeText(context, t("日志尾部已复制", "Log tail copied"), Toast.LENGTH_SHORT).show();
+    }
+
+    private void exportLogConsole() {
+        if (logConsoleStatus == null) {
+            return;
+        }
+        final int generation = ++logConsoleGeneration;
+        logConsoleStatus.setText(t("正在导出完整日志…", "Exporting complete log…"));
+        Context appContext = context.getApplicationContext() == null
+                ? context
+                : context.getApplicationContext();
+        new Thread(() -> {
+            LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(appContext);
+            logConsoleStatus.post(() -> {
+                if (generation != logConsoleGeneration || overlay == null) {
+                    return;
+                }
+                if (!result.exported) {
+                    logConsoleStatus.setText(t(
+                            "导出失败：" + result.error,
+                            "Export failed: " + result.error
+                    ));
+                    Toast.makeText(context, t("导出失败：" + result.error,
+                            "Export failed: " + result.error), Toast.LENGTH_LONG).show();
+                    return;
+                }
+                String location = result.uri == null ? result.displayName : result.uri.toString();
+                logConsoleStatus.setText(t(
+                        "已导出：" + result.displayName + "  " + location,
+                        "Exported: " + result.displayName + "  " + location
+                ));
+                Toast.makeText(context, t("日志已导出：" + result.displayName,
+                        "Log exported: " + result.displayName), Toast.LENGTH_LONG).show();
+            });
+        }, "GramSieve-log-export").start();
     }
 
     private void buildConflictCard(LinearLayout container) {
@@ -1108,6 +1289,7 @@ final class HostConfigPanel {
         FrameLayout panel = overlay;
         overlay = null;
         moduleProbeGeneration++;
+        logConsoleGeneration++;
         unregisterSystemBackHandler();
         ViewGroup parent = (ViewGroup) panel.getParent();
         if (parent != null) {

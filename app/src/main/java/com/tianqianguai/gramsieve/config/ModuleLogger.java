@@ -25,8 +25,8 @@ public final class ModuleLogger {
     public static final String CAT_ERROR = "error";
     public static final String CAT_DECISION = "decision";
 
-    private static final String LOG_DIR = "GramSieve";
-    private static final String LOG_FILE = "gramsieve.log";
+    private static final String LOG_DIR = LogFileSupport.LOG_DIRECTORY;
+    private static final String LOG_FILE = LogFileSupport.LOG_FILE_NAME;
     private static final int MAX_PENDING_FILE_LINES = 200;
     private static final long MAX_LOG_FILE_BYTES = 8L * 1024L * 1024L;
     private static final SimpleDateFormat DATE_FORMAT = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.US);
