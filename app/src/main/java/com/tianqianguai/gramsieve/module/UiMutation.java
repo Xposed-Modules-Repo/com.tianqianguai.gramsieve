@@ -69,8 +69,12 @@ final class UiMutation {
             restore(view, state);
             clearState(view);
         } else if (state != null && transition == MutationTransition.REBASED) {
-            // Telegram changed a value owned by this mutation. The host's current values are the
-            // new baseline; restoring the old baseline would overwrite a recycled bind.
+            // Telegram changed at least one value owned by this mutation. Selectively restore
+            // the values that still equal GramSieve's applied state while keeping host-changed
+            // values intact, then capture that merged host state as the new baseline. Skipping
+            // this step could accidentally preserve an old height=0 after only visibility was
+            // rebound by Telegram.
+            restore(view, state);
             clearState(view);
         }
 
