@@ -14,6 +14,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.text.TextUtils;
+import android.text.method.ScrollingMovementMethod;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -687,23 +688,13 @@ final class HostConfigPanel {
         logConsoleOutput.setGravity(Gravity.TOP | Gravity.START);
         logConsoleOutput.setTextIsSelectable(true);
         logConsoleOutput.setHorizontallyScrolling(true);
+        logConsoleOutput.setVerticalScrollBarEnabled(true);
+        logConsoleOutput.setMovementMethod(ScrollingMovementMethod.getInstance());
         logConsoleOutput.setPadding(dp(2), dp(2), dp(12), dp(2));
 
-        ScrollView vertical = new ScrollView(context);
-        vertical.setFillViewport(false);
-        vertical.setBackgroundColor(Color.BLACK);
-        vertical.addView(logConsoleOutput, new ScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT
-        ));
-        HorizontalScrollView horizontal = new HorizontalScrollView(context);
-        horizontal.setFillViewport(true);
-        horizontal.setBackgroundColor(Color.BLACK);
-        horizontal.addView(vertical, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT
-        ));
-        terminal.addView(horizontal, new LinearLayout.LayoutParams(
+        // Use TextView's own scrolling movement instead of nesting a second ScrollView inside
+        // the settings ScrollView; this keeps vertical gestures predictable on Telegram web.
+        terminal.addView(logConsoleOutput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(260)
         ));

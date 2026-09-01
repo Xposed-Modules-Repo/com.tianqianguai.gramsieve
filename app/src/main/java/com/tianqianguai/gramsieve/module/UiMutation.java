@@ -18,7 +18,8 @@ import java.lang.reflect.Method;
  * layout callback. Telegram's media-group cells calculate their outer bubble and caption widths
  * in several passes; those unconditional restores could therefore mix two different geometry
  * passes. A baseline now exists only while GramSieve owns a mutation, and the same key/action is a
- * strict no-op.</p>
+ * strict no-op while the host still reflects our captured state; a host rebind establishes a new
+ * baseline instead.</p>
  */
 final class UiMutation {
     private static final Method SET_MEASURED_DIMENSION_METHOD = lookupSetMeasuredDimensionMethod();
@@ -41,7 +42,8 @@ final class UiMutation {
                 state == null ? null : state.action,
                 requestedKey,
                 requestedAction,
-                matched
+                matched,
+                state == null || state.isApplied(view)
         );
 
         if (!matched) {
@@ -61,11 +63,14 @@ final class UiMutation {
             return MutationResult.noop();
         }
 
-        boolean switched = transition == MutationTransition.SWITCHED;
         String previousKey = state == null ? "" : state.messageKey;
         FilterConfig.Action previousAction = state == null ? null : state.action;
-        if (state != null) {
+        if (state != null && transition == MutationTransition.SWITCHED) {
             restore(view, state);
+            clearState(view);
+        } else if (state != null && transition == MutationTransition.REBASED) {
+            // Telegram changed a value owned by this mutation. The host's current values are the
+            // new baseline; restoring the old baseline would overwrite a recycled bind.
             clearState(view);
         }
 
@@ -75,7 +80,7 @@ final class UiMutation {
         view.setTag(R.id.gramsieve_last_decision_action, requestedAction);
         boolean changed = mutate(view, fresh, requestedAction);
         return MutationResult.applied(
-                switched ? MutationTransition.SWITCHED : MutationTransition.APPLIED,
+                transition,
                 previousKey,
                 requestedKey,
                 previousAction,
@@ -144,7 +149,14 @@ final class UiMutation {
         if (layoutParams == null) {
             return false;
         }
-        boolean changed = layoutParams.height != 0;
+        boolean changed = layoutParams.height != targetHeightFor(
+                FilterConfig.Action.HIDE,
+                layoutParams.height,
+                0
+        );
+        if (changed) {
+            layoutParams.height = 0;
+        }
         changed |= setMarginsIfNeeded(layoutParams, 0, 0, 0, 0);
         if (changed) {
             view.setLayoutParams(layoutParams);
@@ -158,10 +170,15 @@ final class UiMutation {
             return false;
         }
         int collapsedHeight = collapsedHeight(view);
-        int targetHeight = state.originalHeight > 0
-                ? Math.min(state.originalHeight, collapsedHeight)
-                : collapsedHeight;
+        int targetHeight = targetHeightFor(
+                FilterConfig.Action.COLLAPSE,
+                state.originalHeight,
+                collapsedHeight
+        );
         boolean changed = layoutParams.height != targetHeight;
+        if (changed) {
+            layoutParams.height = targetHeight;
+        }
         int top = Math.min(state.originalTopMargin, dp(view, 2));
         int bottom = Math.min(state.originalBottomMargin, dp(view, 2));
         changed |= setMarginsIfNeeded(layoutParams, top, bottom,
@@ -371,13 +388,43 @@ final class UiMutation {
             FilterConfig.Action nextAction,
             boolean matched
     ) {
+        return transitionFor(
+                hasState,
+                previousKey,
+                previousAction,
+                nextKey,
+                nextAction,
+                matched,
+                true
+        );
+    }
+
+    static MutationTransition transitionFor(
+            boolean hasState,
+            String previousKey,
+            FilterConfig.Action previousAction,
+            String nextKey,
+            FilterConfig.Action nextAction,
+            boolean matched,
+            boolean appliedStateIntact
+    ) {
         if (!matched) {
             return hasState ? MutationTransition.RESTORED : MutationTransition.NOOP;
         }
         if (hasState && safeEquals(previousKey, nextKey) && previousAction == nextAction) {
-            return MutationTransition.NOOP;
+            return appliedStateIntact ? MutationTransition.NOOP : MutationTransition.REBASED;
         }
         return hasState ? MutationTransition.SWITCHED : MutationTransition.APPLIED;
+    }
+
+    static int targetHeightFor(FilterConfig.Action action, int originalHeight, int collapsedHeight) {
+        if (action == FilterConfig.Action.HIDE) {
+            return 0;
+        }
+        if (action == FilterConfig.Action.COLLAPSE) {
+            return originalHeight > 0 ? Math.min(originalHeight, collapsedHeight) : collapsedHeight;
+        }
+        return originalHeight;
     }
 
     private static boolean safeEquals(String first, String second) {
@@ -388,6 +435,7 @@ final class UiMutation {
         NOOP,
         APPLIED,
         SWITCHED,
+        REBASED,
         RESTORED
     }
 
@@ -509,6 +557,32 @@ final class UiMutation {
             } else {
                 hasAppliedMargins = false;
             }
+        }
+
+        boolean isApplied(View view) {
+            ViewGroup.LayoutParams layoutParams = view.getLayoutParams();
+            if (appliedHeight != NOT_CAPTURED
+                    && (layoutParams == null || layoutParams.height != appliedHeight)) {
+                return false;
+            }
+            if (hasAppliedMargins) {
+                if (!(layoutParams instanceof MarginLayoutParams)) {
+                    return false;
+                }
+                MarginLayoutParams margins = (MarginLayoutParams) layoutParams;
+                if (margins.topMargin != appliedTopMargin
+                        || margins.bottomMargin != appliedBottomMargin
+                        || margins.leftMargin != appliedLeftMargin
+                        || margins.rightMargin != appliedRightMargin) {
+                    return false;
+                }
+            }
+            return view.getMinimumHeight() == appliedMinimumHeight
+                    && view.getVisibility() == appliedVisibility
+                    && Float.compare(view.getAlpha(), appliedAlpha) == 0
+                    && view.isClickable() == appliedClickable
+                    && view.isLongClickable() == appliedLongClickable
+                    && view.isEnabled() == appliedEnabled;
         }
     }
 }
