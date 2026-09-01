@@ -31,11 +31,7 @@ val hasReleaseSigning = listOf(
 
 android {
     namespace = "com.tianqianguai.gramsieve"
-    compileSdk {
-        version = release(36) {
-            minorApiLevel = 1
-        }
-    }
+    compileSdk = 37
 
     signingConfigs {
         create("release") {
@@ -77,8 +73,8 @@ android {
         }
     }
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_11
-        targetCompatibility = JavaVersion.VERSION_11
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     packaging {
