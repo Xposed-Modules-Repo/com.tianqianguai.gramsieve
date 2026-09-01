@@ -31,6 +31,22 @@ public class UiMutationTest {
     }
 
     @Test
+    public void sameKeyRebasesWhenHostCoveredAppliedState() {
+        assertEquals(
+                UiMutation.MutationTransition.REBASED,
+                UiMutation.transitionFor(
+                        true,
+                        "group:42",
+                        FilterConfig.Action.COLLAPSE,
+                        "group:42",
+                        FilterConfig.Action.COLLAPSE,
+                        true,
+                        false
+                )
+        );
+    }
+
+    @Test
     public void newMessageSwitchesAnExistingMutation() {
         assertEquals(
                 UiMutation.MutationTransition.SWITCHED,
@@ -58,5 +74,12 @@ public class UiMutationTest {
                         false
                 )
         );
+    }
+
+    @Test
+    public void filterActionsProduceConcreteHeights() {
+        assertEquals(0, UiMutation.targetHeightFor(FilterConfig.Action.HIDE, 480, 24));
+        assertEquals(24, UiMutation.targetHeightFor(FilterConfig.Action.COLLAPSE, 480, 24));
+        assertEquals(12, UiMutation.targetHeightFor(FilterConfig.Action.COLLAPSE, 12, 24));
     }
 }

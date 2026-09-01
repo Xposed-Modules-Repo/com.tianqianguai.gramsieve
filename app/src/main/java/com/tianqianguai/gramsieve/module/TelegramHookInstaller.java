@@ -144,6 +144,7 @@ final class TelegramHookInstaller {
             return size() > 256;
         }
     };
+    private final UiTraceRateLimiter uiTraceRateLimiter = new UiTraceRateLimiter();
     private boolean installed;
     private boolean persistentDiagnosticsUnavailable;
     private volatile long trackedDialogId;
@@ -4013,17 +4014,41 @@ final class TelegramHookInstaller {
         if (cell.getWidth() <= 0 || cell.getHeight() <= 0) {
             return false;
         }
-        Object old = cell.getTag(R.id.gramsieve_view_state);
-        if (old instanceof android.graphics.drawable.Drawable) {
-            cell.getOverlay().remove((android.graphics.drawable.Drawable) old);
-        }
+        removeCachedMediaOverlay(cell);
         android.graphics.drawable.Drawable drawable = createCenterCropDrawable(bitmap);
         int inset = dp(cell.getContext(), 6f);
         drawable.setBounds(inset, inset, Math.max(inset, cell.getWidth() - inset), Math.max(inset, cell.getHeight() - inset));
         cell.getOverlay().add(drawable);
-        cell.setTag(R.id.gramsieve_view_state, drawable);
+        cell.setTag(R.id.gramsieve_cached_media_overlay, drawable);
         cell.invalidate();
         return true;
+    }
+
+    private void removeCachedMediaOverlay(View cell) {
+        if (cell == null) {
+            return;
+        }
+        Object tagged = cell.getTag(R.id.gramsieve_cached_media_overlay);
+        boolean removed = false;
+        if (tagged instanceof android.graphics.drawable.Drawable) {
+            cell.getOverlay().remove((android.graphics.drawable.Drawable) tagged);
+            removed = true;
+        }
+        if (tagged != null) {
+            cell.setTag(R.id.gramsieve_cached_media_overlay, null);
+            removed = true;
+        }
+        // Versions before the dedicated tag used the filtering state key for this drawable.
+        // Remove that legacy value without touching a real UiMutation.ViewState.
+        Object legacy = cell.getTag(R.id.gramsieve_view_state);
+        if (legacy instanceof android.graphics.drawable.Drawable) {
+            cell.getOverlay().remove((android.graphics.drawable.Drawable) legacy);
+            cell.setTag(R.id.gramsieve_view_state, null);
+            removed = true;
+        }
+        if (removed) {
+            cell.invalidate();
+        }
     }
 
     private android.graphics.drawable.Drawable createCenterCropDrawable(android.graphics.Bitmap bitmap) {
@@ -4148,6 +4173,7 @@ final class TelegramHookInstaller {
     }
 
     private void clearAntiRecallCellVisualState(View cell) {
+        removeCachedMediaOverlay(cell);
         Object mark = cell.getTag(R.id.gramsieve_menu_item_id);
         if (!(mark instanceof String)) {
             return;
@@ -4495,37 +4521,54 @@ final class TelegramHookInstaller {
                 ? groupedMessagesFromArgs(null, messageView, messageObject)
                 : explicitGroupedMessages;
         GroupInfo groupInfo = resolveGroupInfo(groupedMessages, messageObject);
-        DecisionContext current = evaluateSingleDecisionContext(messageView, messageObject, groupInfo);
         if (!groupInfo.grouped || groupInfo.messages.isEmpty()) {
-            return current;
+            return evaluateSingleDecisionContext(messageView, messageObject, groupInfo, true);
         }
-        if (current.decision.matched) {
-            return current;
-        }
-        // A grouped media row is one visual unit. Evaluate its members for a single row decision
-        // rather than allowing each recycled member to mutate the same outer cell independently.
+
+        List<DecisionContext> memberContexts = new ArrayList<>();
+        boolean currentIncluded = false;
         for (Object member : groupInfo.messages) {
-            if (member == null || member == messageObject) {
+            if (member == null) {
                 continue;
             }
-            DecisionContext memberContext = evaluateSingleDecisionContext(messageView, member, groupInfo);
-            if (memberContext.decision.matched) {
-                return memberContext;
+            if (member == messageObject) {
+                currentIncluded = true;
             }
+            memberContexts.add(evaluateSingleDecisionContext(messageView, member, groupInfo, false));
         }
-        return current;
+        if (!currentIncluded && messageObject != null) {
+            memberContexts.add(evaluateSingleDecisionContext(messageView, messageObject, groupInfo, false));
+        }
+        List<FilterDecision> decisions = new ArrayList<>();
+        for (DecisionContext memberContext : memberContexts) {
+            decisions.add(memberContext.decision);
+        }
+        GroupedDecisionSelector.Selection selection = GroupedDecisionSelector.select(decisions);
+        DecisionContext selected = selection.index >= 0 && selection.index < memberContexts.size()
+                ? memberContexts.get(selection.index)
+                : (memberContexts.isEmpty()
+                ? DecisionContext.allow(groupInfo)
+                : memberContexts.get(0));
+        // Read marking is deliberately delayed until the group-level precedence decision is
+        // known. An exclusion keeps the entire group and must not mark an earlier match read.
+        if (selected.decision.matched && !selected.decision.excluded) {
+            markFilteredMessageRead(selected.messageObject, selected.snapshot, selected.decision);
+        }
+        return selected;
     }
 
     private DecisionContext evaluateSingleDecisionContext(View messageView, Object messageObject,
-                                                          GroupInfo groupInfo) {
+                                                          GroupInfo groupInfo, boolean markRead) {
         MessageSnapshot snapshot = TelegramMessageNormalizer.normalize(messageView, messageObject);
         if (snapshot == null) {
-            return DecisionContext.allow(groupInfo);
+            return DecisionContext.allow(groupInfo, messageObject);
         }
         FilterConfig config = configProvider.getConfig(messageView.getContext().getApplicationContext());
         FilterDecision decision = decisionCache.get(config, snapshot, () -> filterEngine.evaluate(config, snapshot));
-        markFilteredMessageRead(messageObject, snapshot, decision);
-        return new DecisionContext(config, snapshot, decision, groupInfo);
+        if (markRead) {
+            markFilteredMessageRead(messageObject, snapshot, decision);
+        }
+        return new DecisionContext(config, snapshot, decision, groupInfo, messageObject);
     }
 
     private Object groupedMessagesFromArgs(List<?> args, View cell) {
@@ -4615,12 +4658,20 @@ final class TelegramHookInstaller {
                 : context.groupInfo;
         FilterDecision decision = context == null ? null : context.decision;
         String stableKey = context == null ? "" : context.stableKey;
-        String action = decision != null && decision.matched && decision.action != null
+        String action = decision != null && decision.excluded
+                ? "EXCLUDED"
+                : decision != null && decision.matched && decision.action != null
                 ? decision.action.name()
                 : "ALLOW";
+        if (!group.grouped
+                && result.transition == UiMutation.MutationTransition.APPLIED
+                && (context == null || context.config == null || !context.config.debugLogging)) {
+            return;
+        }
         String dedupKey = "mutation|" + System.identityHashCode(view)
                 + "|" + result.transition + "|" + result.key + "|" + action;
-        if (!shouldEmitUiTrace(dedupKey)) {
+        UiTraceRateLimiter.Permit permit = acquireUiTracePermit(dedupKey);
+        if (permit == null || !permit.emit) {
             return;
         }
         info("FilterUiTrace mutation transition=" + result.transition
@@ -4633,7 +4684,8 @@ final class TelegramHookInstaller {
                 + " stableKey=" + stableKey
                 + " decision=" + (decision == null ? "ALLOW" : decision.reason)
                 + " action=" + action
-                + " size=" + view.getWidth() + "x" + view.getHeight());
+                + " size=" + view.getWidth() + "x" + view.getHeight()
+                + suppressedSummary(permit));
     }
 
     private void emitCellMeasureTrace(View view, DecisionContext context,
@@ -4658,11 +4710,14 @@ final class TelegramHookInstaller {
         String dedupKey = "measure|" + System.identityHashCode(view)
                 + "|" + measuredWidthBefore + "x" + measuredHeightBefore
                 + "|" + measuredWidthAfter + "x" + measuredHeightAfter;
-        if (!shouldEmitUiTrace(dedupKey)) {
+        UiTraceRateLimiter.Permit permit = acquireUiTracePermit(dedupKey);
+        if (permit == null || !permit.emit) {
             return;
         }
         FilterDecision decision = context == null ? null : context.decision;
-        String action = decision != null && decision.matched && decision.action != null
+        String action = decision != null && decision.excluded
+                ? "EXCLUDED"
+                : decision != null && decision.matched && decision.action != null
                 ? decision.action.name()
                 : "ALLOW";
         info("FilterUiTrace measure-anomaly view=" + view.getClass().getSimpleName()
@@ -4676,18 +4731,23 @@ final class TelegramHookInstaller {
                 + " action=" + action
                 + " measuredBefore=" + measuredWidthBefore + "x" + measuredHeightBefore
                 + " measuredAfter=" + measuredWidthAfter + "x" + measuredHeightAfter
-                + " viewSize=" + viewWidth + "x" + view.getHeight());
+                + " viewSize=" + viewWidth + "x" + view.getHeight()
+                + suppressedSummary(permit));
     }
 
-    private boolean shouldEmitUiTrace(String key) {
+    private String suppressedSummary(UiTraceRateLimiter.Permit permit) {
+        return permit.suppressed > 0 ? " suppressed=" + permit.suppressed : "";
+    }
+
+    private UiTraceRateLimiter.Permit acquireUiTracePermit(String key) {
         long now = System.currentTimeMillis();
         synchronized (recentUiTraceKeys) {
             Long previous = recentUiTraceKeys.get(key);
             if (previous != null && now - previous < 10_000L) {
-                return false;
+                return null;
             }
             recentUiTraceKeys.put(key, now);
-            return true;
+            return uiTraceRateLimiter.acquire(now);
         }
     }
 
@@ -5190,14 +5250,16 @@ final class TelegramHookInstaller {
         final FilterDecision decision;
         final String stableKey;
         final GroupInfo groupInfo;
+        final Object messageObject;
 
         DecisionContext(FilterConfig config, MessageSnapshot snapshot, FilterDecision decision,
-                        GroupInfo groupInfo) {
+                        GroupInfo groupInfo, Object messageObject) {
             this.config = config;
             this.snapshot = snapshot;
             this.decision = decision;
             this.stableKey = snapshot == null ? "" : snapshot.stableKey();
             this.groupInfo = groupInfo == null ? GroupInfo.NONE : groupInfo;
+            this.messageObject = messageObject;
         }
 
         static DecisionContext allow() {
@@ -5205,7 +5267,11 @@ final class TelegramHookInstaller {
         }
 
         static DecisionContext allow(GroupInfo groupInfo) {
-            return new DecisionContext(null, null, FilterDecision.allow(), groupInfo);
+            return allow(groupInfo, null);
+        }
+
+        static DecisionContext allow(GroupInfo groupInfo, Object messageObject) {
+            return new DecisionContext(null, null, FilterDecision.allow(), groupInfo, messageObject);
         }
 
         String mutationKey() {
