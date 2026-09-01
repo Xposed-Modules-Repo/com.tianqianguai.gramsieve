@@ -4,6 +4,8 @@ Telegram 本地增强 LSPosed 模块，提供消息过滤、宿主设置集成�
 
 An LSPosed module for local Telegram enhancements, including message filtering, host-settings integration, browsing position redirection, anti-recall, anti-edit/edit interception, multi-version edit-history viewing, and original media preview.
 
+[![Telegram 官方群](https://img.shields.io/badge/Telegram-%E5%AE%98%E6%96%B9%E7%BE%A4-26A5E4?logo=telegram&logoColor=white)](https://t.me/Gramsieve_Offical)
+
 ## 功能 Features
 
 - **仅本地过滤** — 所有过滤在设备上完成，无网络请求，数据不离开手机
