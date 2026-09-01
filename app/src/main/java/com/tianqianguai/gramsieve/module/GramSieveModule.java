@@ -6,7 +6,6 @@ import io.github.libxposed.api.XposedModule;
 import io.github.libxposed.api.XposedModuleInterface;
 
 public final class GramSieveModule extends XposedModule {
-    private static final String TELEGRAM_PACKAGE = "org.telegram.messenger";
     private static final String TAG = "GramSieve";
 
     private final TelegramHookInstaller hookInstaller = new TelegramHookInstaller(this);
@@ -19,7 +18,7 @@ public final class GramSieveModule extends XposedModule {
 
     @Override
     public void onPackageLoaded(XposedModuleInterface.PackageLoadedParam param) {
-        if (!TELEGRAM_PACKAGE.equals(param.getPackageName()) || !param.isFirstPackage()) {
+        if (!shouldHandleTelegramPackage(param.getPackageName(), param.isFirstPackage())) {
             return;
         }
         ModuleLogger.lifecycle(TAG, "Telegram package loaded; waiting for app class loader");
@@ -27,7 +26,7 @@ public final class GramSieveModule extends XposedModule {
 
     @Override
     public void onPackageReady(XposedModuleInterface.PackageReadyParam param) {
-        if (!TELEGRAM_PACKAGE.equals(param.getPackageName()) || !param.isFirstPackage()) {
+        if (!shouldHandleTelegramPackage(param.getPackageName(), param.isFirstPackage())) {
             return;
         }
         try {
@@ -35,5 +34,9 @@ public final class GramSieveModule extends XposedModule {
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_LIFECYCLE, TAG, "Failed to install Telegram hooks", throwable);
         }
+    }
+
+    static boolean shouldHandleTelegramPackage(String packageName, boolean firstPackage) {
+        return TelegramPackages.shouldHandle(packageName, firstPackage);
     }
 }

@@ -111,6 +111,7 @@ final class TelegramHookInstaller {
     private final EnhancementHookInstaller enhancementHooks;
     private XposedConfigProvider configProvider;
     private volatile Context hostApplicationContext;
+    private volatile String telegramResourcePackageName = TelegramPackages.PLAY_PACKAGE;
     private volatile BroadcastReceiver cliReceiver;
     private volatile WeakReference<Object> activeChatActivity = new WeakReference<>(null);
     private final Object moduleFallbackLock = new Object();
@@ -157,6 +158,10 @@ final class TelegramHookInstaller {
         if (installed) {
             return;
         }
+        String actualPackageName = applicationInfo == null ? null : applicationInfo.packageName;
+        telegramResourcePackageName = TelegramPackages.resolveResourcePackage(actualPackageName);
+        info("Telegram host package=" + (actualPackageName == null ? "<unknown>" : actualPackageName)
+                + " resourcePackage=" + telegramResourcePackageName);
         if (configProvider == null) {
             configProvider = new XposedConfigProvider(
                     MODULE_PACKAGE,
@@ -544,7 +549,7 @@ final class TelegramHookInstaller {
         response.put(
                 "adbTemplate",
                 "adb -s <device> shell am broadcast -a " + CLI_ACTION
-                        + " -p org.telegram.messenger --receiver-registered-only"
+                        + " -p " + telegramResourcePackageName + " --receiver-registered-only"
                         + " --es command <command> [--es name <name>] [--es value <value>]"
                         + " [--es dialog_id <id>] [--es account_id <id>]"
                         + " [--es message_id <id>] [--es limit <n>] [--es preview <text>]"
@@ -2769,7 +2774,7 @@ final class TelegramHookInstaller {
             return;
         }
         Context context = bar.getContext();
-        int selectAllIcon = context.getResources().getIdentifier("msg_select_all", "drawable", "org.telegram.messenger");
+        int selectAllIcon = context.getResources().getIdentifier("msg_select_all", "drawable", telegramResourcePackageName);
         if (selectAllIcon == 0) {
             selectAllIcon = android.R.drawable.ic_menu_agenda;
         }
@@ -5001,7 +5006,7 @@ final class TelegramHookInstaller {
     }
 
     private int resolveBlockMessageIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("report", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("report", "drawable", telegramResourcePackageName);
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_close_clear_cancel;
     }
 
@@ -5042,9 +5047,9 @@ final class TelegramHookInstaller {
     }
 
     private int resolveMarkMessageIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
-        telegramIcon = context.getResources().getIdentifier("msg_bookmark", "drawable", "org.telegram.messenger");
+        telegramIcon = context.getResources().getIdentifier("msg_bookmark", "drawable", telegramResourcePackageName);
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_save;
     }
 
@@ -5067,7 +5072,7 @@ final class TelegramHookInstaller {
                 item = (View) constructor.newInstance(context, false, true);
             }
             CharSequence label = isChineseLocale(context) ? "编辑历史" : "Edit History";
-            int iconRes = context.getResources().getIdentifier("msg_edit", "drawable", "org.telegram.messenger");
+            int iconRes = context.getResources().getIdentifier("msg_edit", "drawable", telegramResourcePackageName);
             if (iconRes == 0) iconRes = android.R.drawable.ic_menu_edit;
             Reflect.invokeIfExists(
                     item,
@@ -5104,7 +5109,7 @@ final class TelegramHookInstaller {
                 item = (View) constructor.newInstance(context, false, true);
             }
             CharSequence label = isChineseLocale(context) ? "重新加载这条消息" : "Reload this message";
-            int iconRes = context.getResources().getIdentifier("msg_retry", "drawable", "org.telegram.messenger");
+            int iconRes = context.getResources().getIdentifier("msg_retry", "drawable", telegramResourcePackageName);
             if (iconRes == 0) {
                 iconRes = android.R.drawable.ic_popup_sync;
             }
@@ -5828,7 +5833,7 @@ final class TelegramHookInstaller {
     }
 
     private void addTelegramString(List<String> labels, Context context, String name) {
-        int id = context.getResources().getIdentifier(name, "string", "org.telegram.messenger");
+        int id = context.getResources().getIdentifier(name, "string", telegramResourcePackageName);
         if (id == 0) {
             return;
         }
@@ -6477,7 +6482,7 @@ final class TelegramHookInstaller {
     }
 
     private int resolveAntiRecallIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_message", "drawable", telegramResourcePackageName);
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_save;
     }
 
@@ -6528,7 +6533,7 @@ final class TelegramHookInstaller {
     }
 
     private int resolveCleanupModeIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_delete", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_delete", "drawable", telegramResourcePackageName);
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_delete;
     }
 
@@ -6602,9 +6607,9 @@ final class TelegramHookInstaller {
     }
 
     private int resolveJumpToMarkIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_go_down", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_go_down", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
-        telegramIcon = context.getResources().getIdentifier("msg_arrow_down", "drawable", "org.telegram.messenger");
+        telegramIcon = context.getResources().getIdentifier("msg_arrow_down", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
         return android.R.drawable.ic_menu_mylocation;
     }
@@ -6667,9 +6672,9 @@ final class TelegramHookInstaller {
     }
 
     private int resolveScrollTopIcon(Context context) {
-        int telegramIcon = context.getResources().getIdentifier("msg_go_up", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_go_up", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
-        telegramIcon = context.getResources().getIdentifier("msg_arrow_up", "drawable", "org.telegram.messenger");
+        telegramIcon = context.getResources().getIdentifier("msg_arrow_up", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
         return android.R.drawable.ic_menu_upload;
     }
@@ -6945,7 +6950,7 @@ final class TelegramHookInstaller {
         if (context == null) {
             return android.R.drawable.ic_menu_manage;
         }
-        int telegramIcon = context.getResources().getIdentifier("msg_settings", "drawable", "org.telegram.messenger");
+        int telegramIcon = context.getResources().getIdentifier("msg_settings", "drawable", telegramResourcePackageName);
         return telegramIcon != 0 ? telegramIcon : android.R.drawable.ic_menu_manage;
     }
 
