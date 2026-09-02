@@ -1,16 +1,27 @@
 <p align="center">
-  <img src="assets/gramsieve-logo.png" alt="GramSieve logo" width="180">
+  <img src="assets/gramsieve-logo.png" width="168" height="168" alt="GramSieve paper plane icon">
 </p>
 
-# GramSieve
+<h1 align="center">GramSieve</h1>
 
-Telegram 本地增强 LSPosed 模块，提供消息过滤、宿主设置集成、浏览位置跳转、防撤回、防修改/编辑拦截、多版本编辑历史查看和原始媒体预览等能力。
+<p align="center">
+  面向 Telegram 官方客户端（<code>org.telegram.messenger</code>）的本地增强 LSPosed/Xposed 模块
+  <br>
+  A local enhancement LSPosed/Xposed module for the official Telegram client
+</p>
 
-An LSPosed module for local Telegram enhancements, including message filtering, host-settings integration, browsing position redirection, anti-recall, anti-edit/edit interception, multi-version edit-history viewing, and original media preview.
+<p align="center">
+  <a href="https://github.com/Xposed-Modules-Repo/com.tianqianguai.gramsieve/stargazers"><img src="https://img.shields.io/github/stars/Xposed-Modules-Repo/com.tianqianguai.gramsieve?style=for-the-badge&amp;logo=github&amp;label=Star" alt="GitHub Stars"></a>
+  <a href="https://t.me/Gramsieve_Offical"><img src="https://img.shields.io/badge/Telegram-Official_Group-26A5E4?style=for-the-badge&amp;logo=telegram&amp;logoColor=white" alt="Telegram Official Group"></a>
+</p>
 
-[![Telegram 官方群](https://img.shields.io/badge/Telegram-%E5%AE%98%E6%96%B9%E7%BE%A4-26A5E4?logo=telegram&logoColor=white)](https://t.me/Gramsieve_Offical)
+<p align="center">
+  如果 GramSieve 对你有帮助，欢迎点一个 Star 支持项目 ⭐
+  <br>
+  If GramSieve helps you, please consider leaving a Star.
+</p>
 
-## 功能 Features
+## 功能
 
 - **仅本地过滤** — 所有过滤在设备上完成，无网络请求，数据不离开手机
 - **全局 + 单聊规则** — 全局设置宽泛规则，再针对特定聊天覆盖或排除
