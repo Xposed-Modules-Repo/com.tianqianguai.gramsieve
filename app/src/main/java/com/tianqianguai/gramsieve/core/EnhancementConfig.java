@@ -227,6 +227,7 @@ public final class EnhancementConfig {
 
         DOWNLOAD_BOOST("download_boost", Category.TRANSFER),
         UPLOAD_BOOST("upload_boost", Category.TRANSFER),
+        KEEP_DOWNLOAD_BUTTON_VISIBLE("keep_download_button_visible", Category.TRANSFER),
         SHOW_DOWNLOAD_SOURCE("show_download_source", Category.TRANSFER),
 
         EXTENDED_OFFLINE_SEARCH("extended_offline_search", Category.TOOLS),

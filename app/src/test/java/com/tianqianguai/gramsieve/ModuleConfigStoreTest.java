@@ -37,6 +37,10 @@ public class ModuleConfigStoreTest {
         FilterConfig config = FilterConfig.createDefault();
         config.enhancements.setEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS, true);
         config.enhancements.setEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST, true);
+        config.enhancements.setEnabled(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE,
+                true
+        );
         config.enhancements.setModuleFallbackEnabled(
                 ModuleConflictDetector.KnownModule.TELEGRAM_SPEED_HOOK,
                 true
@@ -48,6 +52,8 @@ public class ModuleConfigStoreTest {
 
         assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS));
         assertTrue(decoded.enhancements.isEnabled(EnhancementConfig.Feature.DOWNLOAD_BOOST));
+        assertTrue(decoded.enhancements.isEnabled(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE));
         assertTrue(decoded.enhancements.isModuleFallbackEnabled(
                 ModuleConflictDetector.KnownModule.TELEGRAM_SPEED_HOOK
         ));

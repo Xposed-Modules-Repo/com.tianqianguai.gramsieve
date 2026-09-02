@@ -19,8 +19,7 @@ import java.util.List;
  *
  * <h3>Expected flow</h3>
  * <ol>
- *   <li>Download button injected into ActionBarMenu</li>
- *   <li>Download button clicked → original download button found and clicked</li>
+ *   <li>Telegram's native download item is kept visible when configured</li>
  *   <li>SelectAll button injected into action bar / action mode</li>
  *   <li>SelectAll clicked → items selected (via adapter fields or fallback long-click)</li>
  * </ol>
@@ -31,17 +30,13 @@ public final class SelectAllFlowLogContractTest {
 
     // ---- Log markers produced by TelegramHookInstaller ----
 
-    /** startKeepVisibleLoop added the download ImageButton. */
-    private static final String MARKER_DOWNLOAD_BTN_ADDED =
-            "SelectAll: added download button to ActionBarMenu";
+    /** Telegram's own download menu item was made persistent. */
+    private static final String MARKER_DOWNLOAD_BTN_ENABLED =
+            "PersistentDownloadButton: native item enabled";
 
-    /** User (or auto-delay) clicked the injected download button. */
-    private static final String MARKER_DOWNLOAD_BTN_CLICKED =
-            "SelectAll: download button clicked";
-
-    /** The original Telegram download button (tag==3) was found and performClick'd. */
-    private static final String MARKER_ORIGINAL_DOWNLOAD_CLICKED =
-            "SelectAll: performed click on original download btn";
+    /** GramSieve stopped overriding Telegram's visibility controller. */
+    private static final String MARKER_DOWNLOAD_BTN_RESTORED =
+            "PersistentDownloadButton: native ownership restored";
 
     /** SelectAll button injected into an activity's actionBar. */
     private static final String MARKER_SELECT_ALL_INJECTED_INTO_ACTIVITY =
@@ -124,15 +119,13 @@ public final class SelectAllFlowLogContractTest {
     // ---- Tests ----
 
     /**
-     * Happy path: download button injected → clicked → original download triggered
-     * → selectAll injected → clicked → items selected via adapter.
+     * Happy path: native download item kept visible → selectAll injected → clicked
+     * → items selected via adapter.
      */
     @Test
-    public void fullFlow_downloadThenSelectAllViaAdapter_logsInOrder() {
+    public void fullFlow_nativeDownloadThenSelectAllViaAdapter_logsInOrder() {
         PersistentLogStore.LogSnapshot snapshot = buildSnapshot(
-                hookEntry(MARKER_DOWNLOAD_BTN_ADDED),
-                hookEntry(MARKER_DOWNLOAD_BTN_CLICKED),
-                hookEntry(MARKER_ORIGINAL_DOWNLOAD_CLICKED),
+                hookEntry(MARKER_DOWNLOAD_BTN_ENABLED + " reason=lifecycle visibility=0 alpha=1.0 controller=native"),
                 hookEntry(MARKER_SELECT_ALL_INJECTED_INTO_ACTIVITY + " DialogsActivity actionBar"),
                 hookEntry(MARKER_SELECT_ALL_CLICKED),
                 hookEntry(MARKER_ADAPTER_SELECT_ALL_HINT + "org.telegram.ui.DialogsActivity$6"),
@@ -142,25 +135,19 @@ public final class SelectAllFlowLogContractTest {
         List<String> messages = messagesOf(snapshot);
 
         // All markers present
-        assertTrue("download btn added", anyContains(messages, MARKER_DOWNLOAD_BTN_ADDED));
-        assertTrue("download btn clicked", anyContains(messages, MARKER_DOWNLOAD_BTN_CLICKED));
-        assertTrue("original download clicked", anyContains(messages, MARKER_ORIGINAL_DOWNLOAD_CLICKED));
+        assertTrue("native download visible", anyContains(messages, MARKER_DOWNLOAD_BTN_ENABLED));
         assertTrue("selectAll injected", anyContains(messages, MARKER_SELECT_ALL_INJECTED_INTO_ACTIVITY));
         assertTrue("selectAll clicked", anyContains(messages, MARKER_SELECT_ALL_CLICKED));
         assertTrue("adapter found", anyContains(messages, MARKER_ADAPTER_SELECT_ALL_HINT));
         assertTrue("selectedDialogs populated", anyContains(messages, MARKER_SELECTED_DIALOGS_SIZE));
 
         // Ordering: download flow before selectAll flow
-        int downloadAdded = firstIndexOf(messages, MARKER_DOWNLOAD_BTN_ADDED);
-        int downloadClicked = firstIndexOf(messages, MARKER_DOWNLOAD_BTN_CLICKED);
-        int originalClicked = firstIndexOf(messages, MARKER_ORIGINAL_DOWNLOAD_CLICKED);
+        int downloadEnabled = firstIndexOf(messages, MARKER_DOWNLOAD_BTN_ENABLED);
         int selectAllInjected = firstIndexOf(messages, MARKER_SELECT_ALL_INJECTED_INTO_ACTIVITY);
         int selectAllClicked = firstIndexOf(messages, MARKER_SELECT_ALL_CLICKED);
         int selectedSize = firstIndexOf(messages, MARKER_SELECTED_DIALOGS_SIZE);
 
-        assertTrue("download added before click", downloadAdded < downloadClicked);
-        assertTrue("download click before original", downloadClicked < originalClicked);
-        assertTrue("original before selectAll injected", originalClicked < selectAllInjected);
+        assertTrue("download enabled before selectAll injected", downloadEnabled < selectAllInjected);
         assertTrue("selectAll injected before clicked", selectAllInjected < selectAllClicked);
         assertTrue("selectAll clicked before size report", selectAllClicked < selectedSize);
     }
@@ -217,24 +204,22 @@ public final class SelectAllFlowLogContractTest {
     }
 
     /**
-     * Download button auto-click after 3s delay produces visibility log.
+     * Native download visibility is logged without replacing its click listener.
      */
     @Test
-    public void downloadButtonAutoClick_logsVisibility() {
+    public void nativeDownloadButton_logsEnableAndRestore() {
         PersistentLogStore.LogSnapshot snapshot = buildSnapshot(
-                hookEntry(MARKER_DOWNLOAD_BTN_ADDED),
-                hookEntry("SelectAll: DOWNLOAD_BTN vis=0 w=96 h=96 x=540 y=48 VISIBLE=true"),
-                hookEntry(MARKER_DOWNLOAD_BTN_CLICKED),
-                hookEntry(MARKER_ORIGINAL_DOWNLOAD_CLICKED)
+                hookEntry(MARKER_DOWNLOAD_BTN_ENABLED
+                        + " reason=config-save visibility=0 alpha=1.0 controller=native"),
+                hookEntry(MARKER_DOWNLOAD_BTN_RESTORED
+                        + " reason=config-save controller=native")
         );
 
         List<String> messages = messagesOf(snapshot);
 
-        assertTrue("btn added", anyContains(messages, MARKER_DOWNLOAD_BTN_ADDED));
-        assertTrue("visibility logged", anyContains(messages, "DOWNLOAD_BTN vis="));
-        assertTrue("VISIBLE=true", anyContains(messages, "VISIBLE=true"));
-        assertTrue("auto-clicked", anyContains(messages, MARKER_DOWNLOAD_BTN_CLICKED));
-        assertTrue("original clicked", anyContains(messages, MARKER_ORIGINAL_DOWNLOAD_CLICKED));
+        assertTrue("native item enabled", anyContains(messages, MARKER_DOWNLOAD_BTN_ENABLED));
+        assertTrue("native controller retained", anyContains(messages, "controller=native"));
+        assertTrue("native ownership restored", anyContains(messages, MARKER_DOWNLOAD_BTN_RESTORED));
     }
 
     /**
@@ -287,14 +272,13 @@ public final class SelectAllFlowLogContractTest {
     /**
      * The log-based verification method for on-device testing:
      * <pre>
-     * 1. adb shell am start -n org.telegram.messenger/.DefaultIcon
-     * 2. Wait for "SelectAll: added download button" in logs
-     * 3. Tap the download button (adb shell input tap x y)
-     * 4. Verify "SelectAll: performed click on original download btn"
-     * 5. Long-press a chat row to enter selection mode
-     * 6. Verify "SelectAll: injected" appears
-     * 7. Tap "全选" / "Select All"
-     * 8. Verify "SelectAll: selectedDialogs.size=N" where N > 1
+     * 1. Use feature.set with name=keep_download_button_visible and value=true
+     * 2. Read ui.download-button.state and verify present/configuredEnabled/forcedByGramSieve
+     * 3. Use feature.set with value=false and verify forcedByGramSieve=false
+     * 4. Long-press a chat row to enter selection mode
+     * 5. Verify "SelectAll: injected" appears
+     * 6. Tap "全选" / "Select All"
+     * 7. Verify "SelectAll: selectedDialogs.size=N" where N > 1
      *    OR "SelectAll: toggled N items" where N > 1
      * </pre>
      *
@@ -304,12 +288,10 @@ public final class SelectAllFlowLogContractTest {
     public void logMarkersMatchExpectedStrings() {
         // These are the exact strings TelegramHookInstaller produces.
         // If any of these fail, the on-device verification script must be updated.
-        assertEquals("SelectAll: added download button to ActionBarMenu",
-                MARKER_DOWNLOAD_BTN_ADDED);
-        assertEquals("SelectAll: download button clicked",
-                MARKER_DOWNLOAD_BTN_CLICKED);
-        assertEquals("SelectAll: performed click on original download btn",
-                MARKER_ORIGINAL_DOWNLOAD_CLICKED);
+        assertEquals("PersistentDownloadButton: native item enabled",
+                MARKER_DOWNLOAD_BTN_ENABLED);
+        assertEquals("PersistentDownloadButton: native ownership restored",
+                MARKER_DOWNLOAD_BTN_RESTORED);
         assertEquals("SelectAll: clicked!",
                 MARKER_SELECT_ALL_CLICKED);
 
