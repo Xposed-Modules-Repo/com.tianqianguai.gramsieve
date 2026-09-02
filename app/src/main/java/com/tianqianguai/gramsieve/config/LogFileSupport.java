@@ -132,7 +132,7 @@ public final class LogFileSupport {
             }
             LineTail lineTail = limitLines(decoded, maxLines);
             boolean truncated = byteTruncated || lineTail.truncated;
-            String text = lineTail.text;
+            String text = LogPrivacy.sanitizeMessage(lineTail.text);
             if (truncated) {
                 text = "[... log tail truncated ...]\n" + text;
             }
@@ -298,6 +298,9 @@ public final class LogFileSupport {
     }
 
     private static long copyCompleteLog(File source, OutputStream output) throws IOException {
+        if (!LogPrivacy.allowsSensitiveContent()) {
+            return copySanitizedLog(source, output);
+        }
         long copied = 0L;
         try (InputStream input = new BufferedInputStream(new FileInputStream(source))) {
             byte[] buffer = new byte[COPY_BUFFER_BYTES];
@@ -311,6 +314,24 @@ public final class LogFileSupport {
             }
         }
         return copied;
+    }
+
+    private static long copySanitizedLog(File source, OutputStream output) throws IOException {
+        long written = 0L;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(source), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("log export interrupted");
+                }
+                byte[] encoded = (LogPrivacy.sanitizeMessage(line) + '\n')
+                        .getBytes(StandardCharsets.UTF_8);
+                output.write(encoded);
+                written += encoded.length;
+            }
+        }
+        return written;
     }
 
     private static ExportStats writeRange(File source, OutputStream output,
@@ -335,7 +356,8 @@ public final class LogFileSupport {
                 if (!currentIncluded) {
                     continue;
                 }
-                byte[] encoded = (line + '\n').getBytes(StandardCharsets.UTF_8);
+                byte[] encoded = (LogPrivacy.sanitizeMessage(line) + '\n')
+                        .getBytes(StandardCharsets.UTF_8);
                 output.write(encoded);
                 written += encoded.length;
             }
@@ -391,7 +413,7 @@ public final class LogFileSupport {
             if (!currentIncluded) {
                 continue;
             }
-            String retainedLine = line + '\n';
+            String retainedLine = LogPrivacy.sanitizeMessage(line) + '\n';
             byte[] encoded = retainedLine.getBytes(StandardCharsets.UTF_8);
             if (encoded.length > maxBytes) {
                 int offset = encoded.length - maxBytes;

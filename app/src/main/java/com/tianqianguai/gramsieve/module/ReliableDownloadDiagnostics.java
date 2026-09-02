@@ -1,5 +1,7 @@
 package com.tianqianguai.gramsieve.module;
 
+import com.tianqianguai.gramsieve.config.LogPrivacy;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -131,6 +133,9 @@ final class ReliableDownloadDiagnostics {
         }
         if (value instanceof String) {
             String text = (String) value;
+            if (!LogPrivacy.allowsSensitiveContent()) {
+                return "String(" + LogPrivacy.field("value", text) + ")";
+            }
             if (text.length() > MAX_VALUE_LENGTH) {
                 text = text.substring(0, MAX_VALUE_LENGTH) + "...";
             }

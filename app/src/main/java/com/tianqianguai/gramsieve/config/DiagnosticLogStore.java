@@ -78,6 +78,49 @@ public final class DiagnosticLogStore {
         return GSON.toJson((entry == null ? new DiagnosticEntry() : entry).sanitize());
     }
 
+    public static void setMessageDetails(
+            DiagnosticEntry entry,
+            String chatName,
+            String senderName,
+            String text,
+            String caption,
+            String buttonText
+    ) {
+        setMessageDetailsForBuild(
+                entry,
+                chatName,
+                senderName,
+                text,
+                caption,
+                buttonText,
+                LogPrivacy.allowsSensitiveContent()
+        );
+    }
+
+    static void setMessageDetailsForBuild(
+            DiagnosticEntry entry,
+            String chatName,
+            String senderName,
+            String text,
+            String caption,
+            String buttonText,
+            boolean allowSensitiveContent
+    ) {
+        if (entry == null) {
+            return;
+        }
+        entry.chatNameChars = LogPrivacy.characterCount(chatName);
+        entry.senderNameChars = LogPrivacy.characterCount(senderName);
+        entry.textChars = LogPrivacy.characterCount(text);
+        entry.captionChars = LogPrivacy.characterCount(caption);
+        entry.buttonTextChars = LogPrivacy.characterCount(buttonText);
+        entry.chatName = allowSensitiveContent ? chatName : "";
+        entry.senderName = allowSensitiveContent ? senderName : "";
+        entry.text = allowSensitiveContent ? text : "";
+        entry.caption = allowSensitiveContent ? caption : "";
+        entry.buttonText = allowSensitiveContent ? buttonText : "";
+    }
+
     public static DiagnosticEntry entryFromJson(String json) {
         try {
             DiagnosticEntry entry = json == null || json.isBlank()
@@ -106,11 +149,12 @@ public final class DiagnosticLogStore {
     }
 
     public static final class DiagnosticSnapshot {
-        public int schemaVersion = 1;
+        public int schemaVersion = 2;
         public long updatedAtEpochMs = System.currentTimeMillis();
         public List<DiagnosticEntry> entries = new ArrayList<>();
 
         DiagnosticSnapshot sanitize() {
+            schemaVersion = 2;
             if (entries == null) {
                 entries = new ArrayList<>();
             }
@@ -151,6 +195,11 @@ public final class DiagnosticLogStore {
         public String text = "";
         public String caption = "";
         public String buttonText = "";
+        public int chatNameChars = 0;
+        public int senderNameChars = 0;
+        public int textChars = 0;
+        public int captionChars = 0;
+        public int buttonTextChars = 0;
         public boolean hasInlineButtons = false;
 
         DiagnosticEntry sanitize() {
@@ -167,7 +216,23 @@ public final class DiagnosticLogStore {
             text = limit(text, 240);
             caption = limit(caption, 240);
             buttonText = limit(buttonText, 240);
+            chatNameChars = normalizedLength(chatNameChars, chatName);
+            senderNameChars = normalizedLength(senderNameChars, senderName);
+            textChars = normalizedLength(textChars, text);
+            captionChars = normalizedLength(captionChars, caption);
+            buttonTextChars = normalizedLength(buttonTextChars, buttonText);
+            if (!LogPrivacy.allowsSensitiveContent()) {
+                chatName = "";
+                senderName = "";
+                text = "";
+                caption = "";
+                buttonText = "";
+            }
             return this;
+        }
+
+        private static int normalizedLength(int recordedLength, String fallbackValue) {
+            return Math.max(Math.max(0, recordedLength), fallbackValue == null ? 0 : fallbackValue.length());
         }
 
         private static String limit(String value, int maxLength) {

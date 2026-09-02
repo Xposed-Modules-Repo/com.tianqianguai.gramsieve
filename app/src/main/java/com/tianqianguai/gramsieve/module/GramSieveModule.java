@@ -85,6 +85,7 @@ public final class GramSieveModule extends XposedModule {
                 + " process=" + param.getProcessName() + " oldHooks=" + oldHandles.size());
         try {
             hookInstaller.install(classLoader, applicationInfo);
+            hookInstaller.rebindVisibleHostUi(classLoader);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_LIFECYCLE, TAG,
                     "Hot reload new generation installation failed package=" + packageName,
