@@ -2191,7 +2191,10 @@ final class HostConfigPanel {
             case INTERFACE:
                 return t("精简 Telegram 界面，并补充更直接的信息展示。", "Trim Telegram's interface and expose useful context directly.");
             case TRANSFER:
-                return t("下载和上传的并发参数；需要重启 Telegram。", "Download and upload concurrency; restart Telegram after changing.");
+                return t(
+                        "下载和上传的并发参数需要重启 Telegram；下载按钮常驻可立即生效。",
+                        "Download and upload concurrency requires a Telegram restart; keeping the download button visible applies immediately."
+                );
             case TOOLS:
             default:
                 return t("搜索、成员、会话定位和诊断工具。", "Search, member, navigation, and diagnostic tools.");
@@ -2288,6 +2291,8 @@ final class HostConfigPanel {
                 return t("下载并发增强", "Download concurrency boost");
             case UPLOAD_BOOST:
                 return t("上传并发增强", "Upload concurrency boost");
+            case KEEP_DOWNLOAD_BUTTON_VISIBLE:
+                return t("下载按钮常驻", "Keep download button visible");
             case SHOW_DOWNLOAD_SOURCE:
                 return t("显示下载来源", "Show download source");
             case EXTENDED_OFFLINE_SEARCH:

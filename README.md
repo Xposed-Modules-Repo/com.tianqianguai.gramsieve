@@ -31,6 +31,7 @@
 - **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，保存后立即生效
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
+- **可选下载按钮常驻** — 默认关闭；开启后始终保留 Telegram 原生下载入口，点击、动画和进度仍由客户端处理
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
 - **主动加载与防撤回防修改** — 后台和推送到达时主动加载消息，结合删除链路拦截和本地存储标记，尽量保留被撤回或修改的原始内容
 - **多版本编辑历史** — 编辑历史按版本保存，并会从 Telegram 本地历史同步写入中补齐离线期间发生的编辑
@@ -46,6 +47,7 @@
 - **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and apply immediately after saving
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
+- **Optional persistent download button** — off by default; when enabled, Telegram's native download entry stays available while clicks, animation, and progress remain client-controlled
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
 - **Anti-recall & anti-edit** — proactively loads messages in the background and when push updates arrive, combining delete-path interception and local-storage marking to preserve recalled or edited content where possible
 - **Multi-version edit history** — stores edit history by version and recovers edits that arrive through Telegram local history-sync writes while the device was offline

@@ -119,12 +119,15 @@ final class TelegramHookInstaller {
     private final UiCallbackRegistry uiCallbacks = new UiCallbackRegistry();
     private final Set<ViewGroup> initializedDownloadActionBars =
             Collections.newSetFromMap(new WeakHashMap<>());
+    private final Set<Object> persistentDownloadButtonHosts =
+            Collections.newSetFromMap(new WeakHashMap<>());
     private XposedConfigProvider configProvider;
     private volatile Context hostApplicationContext;
     private volatile String telegramResourcePackageName = TelegramPackages.PLAY_PACKAGE;
     private volatile BroadcastReceiver cliReceiver;
     private final Set<Thread> cliWorkers = Collections.synchronizedSet(new HashSet<>());
     private volatile WeakReference<Object> activeChatActivity = new WeakReference<>(null);
+    private volatile WeakReference<Object> activeDialogsActivity = new WeakReference<>(null);
     private volatile WeakReference<ViewGroup> activeConfigRoot = new WeakReference<>(null);
     private volatile WeakReference<Activity> resumedHostActivity = new WeakReference<>(null);
     private volatile Application hostLifecycleApplication;
@@ -165,6 +168,8 @@ final class TelegramHookInstaller {
     private volatile boolean readPositionDirty;
     private volatile boolean jumpDetected;
     private volatile boolean settingsListRowLogged;
+    private volatile Boolean keepDownloadButtonVisibleEnabled;
+    private volatile boolean persistentDownloadHookErrorLogged;
     private volatile boolean retiring;
 
     TelegramHookInstaller(XposedModule module) {
@@ -336,6 +341,9 @@ final class TelegramHookInstaller {
         synchronized (initializedDownloadActionBars) {
             initializedDownloadActionBars.clear();
         }
+        synchronized (persistentDownloadButtonHosts) {
+            persistentDownloadButtonHosts.clear();
+        }
 
         TelegramDialogDatabasePruner pruner = dialogDatabasePruner;
         if (pruner != null) {
@@ -382,7 +390,10 @@ final class TelegramHookInstaller {
         hostApplicationContext = null;
         savedClassLoader = null;
         activeChatActivity = new WeakReference<>(null);
+        activeDialogsActivity = new WeakReference<>(null);
         resumedHostActivity = new WeakReference<>(null);
+        keepDownloadButtonVisibleEnabled = null;
+        persistentDownloadHookErrorLogged = false;
         locallyHiddenDialogs.clear();
         decisionCache.clear();
         installed = false;
@@ -795,6 +806,8 @@ final class TelegramHookInstaller {
                 return cliCleanup(response, intent, true);
             case "ui.state":
                 return cliUiState(response);
+            case "ui.download-button.state":
+                return cliUiDownloadButtonState(response);
             case "ui.menu.state":
                 return cliUiMenuState(response);
             case "ui.menu.open":
@@ -839,7 +852,8 @@ final class TelegramHookInstaller {
                 "mark.list", "mark.set", "mark.clear",
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
-                "cleanup.get", "cleanup.set", "ui.state", "ui.menu.state", "ui.menu.open",
+                "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
+                "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close",
                 "ui.log-console.state", "ui.log-console.select",
                 "ui.jump-mark", "ui.first-message", "ui.scroll"
@@ -1332,12 +1346,53 @@ final class TelegramHookInstaller {
         response.put("selectedMessage", chatActivity != null
                 && Reflect.field(chatActivity, "selectedObject") != null);
         response.put("visibleMessages", visibleMessageState(chatActivity));
+        response.put("downloadButton", downloadButtonState());
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
-                "log-console.select", "menu.state", "menu.open", "jump-mark",
+                "log-console.select", "download-button.state", "menu.state", "menu.open", "jump-mark",
                 "first-message", "scroll"
         )));
         return response;
+    }
+
+    private JSONObject cliUiDownloadButtonState(JSONObject response) throws Exception {
+        response.put("downloadButton", downloadButtonState());
+        return response;
+    }
+
+    private JSONObject downloadButtonState() throws Exception {
+        Object activity = activeDialogsActivity.get();
+        Object actionBar = Reflect.field(activity, "actionBar");
+        View item = actionBar instanceof ViewGroup
+                ? nativeDownloadItem(activity, (ViewGroup) actionBar)
+                : null;
+        JSONObject state = viewState(item);
+        Context context = activity == null
+                ? resolveHostApplication()
+                : contextFromSettingsHost(activity);
+        boolean configured = context != null && isEnhancementEnabled(
+                context,
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
+        );
+        keepDownloadButtonVisibleEnabled = configured;
+        state.put("hostAvailable", activity != null);
+        state.put("configuredEnabled", configured);
+        state.put("nativeVisibleFlag", Boolean.TRUE.equals(
+                Reflect.field(activity, "downloadsItemVisible")));
+        boolean forced;
+        synchronized (persistentDownloadButtonHosts) {
+            forced = activity != null && persistentDownloadButtonHosts.contains(activity);
+        }
+        state.put("forcedByGramSieve", forced);
+        if (item != null) {
+            state.put("class", item.getClass().getName());
+            state.put("alpha", item.getAlpha());
+            state.put("scaleX", item.getScaleX());
+            state.put("scaleY", item.getScaleY());
+            state.put("width", item.getWidth());
+            state.put("height", item.getHeight());
+        }
+        return state;
     }
 
     private JSONObject visibleMessageState(Object chatActivity) throws Exception {
@@ -2273,6 +2328,7 @@ final class TelegramHookInstaller {
     private void hookDownloadActivityMenu(ClassLoader classLoader) {
         try {
             Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
+            hookNativeDownloadVisibility(dialogsClass);
             Method createView = Reflect.method(dialogsClass, "createView", Context.class);
             hook(createView, chain -> {
                 Object contextArg = chain.getArg(0);
@@ -2305,9 +2361,33 @@ final class TelegramHookInstaller {
             } catch (NoSuchMethodException ignored) {
                 info("DialogsActivity.onResume unavailable for action-mode rebind");
             }
-            info("Hooked DialogsActivity.createView for download button");
+            info("Hooked DialogsActivity lifecycle for download controls");
         } catch (Throwable t) {
             error("Failed to hook DialogsActivity.createView", t);
+        }
+    }
+
+    private void hookNativeDownloadVisibility(Class<?> dialogsClass) {
+        try {
+            Method checkVisibility = Reflect.method(dialogsClass, "checkUi_itemDownloadsVisibility");
+            hook(checkVisibility, chain -> {
+                try {
+                    Object activity = chain.getThisObject();
+                    if (!retiring && shouldKeepDownloadButtonVisible(activity)) {
+                        Reflect.setField(activity, "downloadsItemVisible", true);
+                    }
+                } catch (Throwable throwable) {
+                    if (!persistentDownloadHookErrorLogged) {
+                        persistentDownloadHookErrorLogged = true;
+                        error("PersistentDownloadButton: native visibility override failed", throwable);
+                    }
+                }
+                return chain.proceed();
+            });
+            info("PersistentDownloadButton: hooked native visibility controller");
+        } catch (Throwable throwable) {
+            error("PersistentDownloadButton: native visibility controller unavailable; lifecycle fallback armed",
+                    throwable);
         }
     }
 
@@ -2316,15 +2396,18 @@ final class TelegramHookInstaller {
         if (!(actionBar instanceof ViewGroup)) {
             return;
         }
+        activeDialogsActivity = new WeakReference<>(activity);
         ViewGroup bar = (ViewGroup) actionBar;
+        boolean firstInitialization;
         synchronized (initializedDownloadActionBars) {
-            if (!initializedDownloadActionBars.add(bar)) {
-                return;
-            }
+            firstInitialization = initializedDownloadActionBars.add(bar);
         }
         uiCallbacks.post(bar, () -> {
             try {
-                startKeepVisibleLoop(bar);
+                syncPersistentDownloadButton(activity, bar, "lifecycle");
+                if (!firstInitialization) {
+                    return;
+                }
                 installActionModeDetector(bar);
                 uiCallbacks.post(bar, () -> {
                     try {
@@ -2751,9 +2834,118 @@ final class TelegramHookInstaller {
         }
     }
 
-    private void startKeepVisibleLoop(ViewGroup actionBar) {
-        // 不再添加自定义下载按钮，完全依赖原生逻辑
-        info("SelectAll: skipping custom download button, using native");
+    private void syncPersistentDownloadButton(Object activity, ViewGroup actionBar, String reason) {
+        if (activity == null || actionBar == null || retiring) {
+            return;
+        }
+        if (shouldKeepDownloadButtonVisible(activity)) {
+            enforceNativeDownloadButtonVisibility(activity, actionBar, reason);
+        } else {
+            restoreNativeDownloadButtonVisibility(activity, reason);
+        }
+    }
+
+    private boolean shouldKeepDownloadButtonVisible(Object activity) {
+        Boolean cached = keepDownloadButtonVisibleEnabled;
+        if (cached != null) {
+            return cached;
+        }
+        Context context = contextFromSettingsHost(activity);
+        if (context == null || configProvider == null) {
+            return false;
+        }
+        boolean enabled = isEnhancementEnabled(
+                context,
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
+        );
+        keepDownloadButtonVisibleEnabled = enabled;
+        return enabled;
+    }
+
+    private void enforceNativeDownloadButtonVisibility(
+            Object activity,
+            ViewGroup actionBar,
+            String reason
+    ) {
+        View item = nativeDownloadItem(activity, actionBar);
+        if (item == null) {
+            info("PersistentDownloadButton: native item unavailable reason=" + reason);
+            return;
+        }
+        Reflect.setField(activity, "downloadsItemVisible", true);
+        boolean refreshed = invokeNoArg(activity, "checkUi_itemDownloadsVisibility");
+        if (!refreshed) {
+            item.setVisibility(View.VISIBLE);
+            item.setAlpha(1f);
+            item.setScaleX(1f);
+            item.setScaleY(1f);
+        }
+        boolean first;
+        synchronized (persistentDownloadButtonHosts) {
+            first = persistentDownloadButtonHosts.add(activity);
+        }
+        if (first || !"lifecycle".equals(reason)) {
+            info("PersistentDownloadButton: native item enabled reason=" + reason
+                    + " visibility=" + item.getVisibility()
+                    + " alpha=" + item.getAlpha()
+                    + " controller=" + (refreshed ? "native" : "view-fallback"));
+        }
+    }
+
+    private void restoreNativeDownloadButtonVisibility(Object activity, String reason) {
+        boolean owned;
+        synchronized (persistentDownloadButtonHosts) {
+            owned = persistentDownloadButtonHosts.remove(activity);
+        }
+        if (!owned) {
+            return;
+        }
+        boolean restored = invokeTwoBooleanArgs(activity, "updateProxyButton", false, true);
+        info("PersistentDownloadButton: native ownership restored reason=" + reason
+                + " controller=" + (restored ? "native" : "deferred"));
+    }
+
+    private View nativeDownloadItem(Object activity, ViewGroup actionBar) {
+        Object direct = Reflect.field(activity, "downloadsItem");
+        if (direct instanceof View) {
+            return (View) direct;
+        }
+        return findDownloadButton(actionBar);
+    }
+
+    private boolean invokeNoArg(Object target, String methodName) {
+        try {
+            Method method = Reflect.method(target.getClass(), methodName);
+            Reflect.invoke(method, target);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private boolean invokeTwoBooleanArgs(
+            Object target,
+            String methodName,
+            boolean first,
+            boolean second
+    ) {
+        try {
+            Method method = Reflect.method(target.getClass(), methodName, boolean.class, boolean.class);
+            Reflect.invoke(method, target, first, second);
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    private void refreshPersistentDownloadButtonUi(String reason) {
+        Object activity = activeDialogsActivity.get();
+        Object actionBar = Reflect.field(activity, "actionBar");
+        if (!(actionBar instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup bar = (ViewGroup) actionBar;
+        uiCallbacks.post(bar, () -> syncPersistentDownloadButton(activity, bar, reason));
     }
 
     private ViewGroup findActionBarMenu(ViewGroup actionBar) {
@@ -7175,6 +7367,10 @@ final class TelegramHookInstaller {
         }
         configProvider.replaceCachedConfig(updated);
         invalidateModuleFallbackSnapshot();
+        keepDownloadButtonVisibleEnabled = updated.enhancements != null
+                && updated.enhancements.isEnabledForGramSieve(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE);
+        refreshPersistentDownloadButtonUi("config-save");
         return updated;
     }
 

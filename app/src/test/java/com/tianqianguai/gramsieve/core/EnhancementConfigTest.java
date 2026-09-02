@@ -42,6 +42,18 @@ public final class EnhancementConfigTest {
     }
 
     @Test
+    public void keepDownloadButtonVisibleIsAvailableAndSurvivesSanitization() {
+        EnhancementConfig config = new EnhancementConfig();
+        config.setEnabled(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE, true);
+
+        config.sanitize();
+
+        assertTrue(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE.isAvailableInCurrentBuild());
+        assertTrue(config.isEnabledForGramSieve(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE));
+    }
+
+    @Test
     public void unavailableFeatureCannotSurviveSanitization() {
         EnhancementConfig config = new EnhancementConfig();
         config.enabled.put(EnhancementConfig.Feature.LOCAL_GROUP_MEMBER_LIST.key, true);
