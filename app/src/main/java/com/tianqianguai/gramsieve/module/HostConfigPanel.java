@@ -16,7 +16,6 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.text.TextUtils;
-import android.text.method.ScrollingMovementMethod;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -40,6 +39,7 @@ import android.widget.Toast;
 import com.tianqianguai.gramsieve.R;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.LogFileSupport;
+import com.tianqianguai.gramsieve.config.LogTimeRange;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.RuntimeModuleProbe;
 import com.tianqianguai.gramsieve.core.EnhancementConfig;
@@ -143,7 +143,10 @@ final class HostConfigPanel {
     private EditText outgoingPrefixInput;
     private EditText outgoingSuffixInput;
     private TextView logConsoleStatus;
-    private TextView logConsoleOutput;
+    private TextView logConsoleHeader;
+    private EditText logFromInput;
+    private EditText logToInput;
+    private EditText logConsoleOutput;
     private volatile boolean acceptingWorkers = true;
 
     private HostConfigPanel(
@@ -691,8 +694,8 @@ final class HostConfigPanel {
         LinearLayout card = addCard(container);
         addTitle(card, t("日志控制台", "Log console"));
         addInfo(card, t(
-                "读取 Telegram 宿主的 app-specific gramsieve.log；显示和复制只取有界尾部。",
-                "Reads Telegram's app-specific gramsieve.log; display and copy use a bounded tail."
+                "可按本地时间筛选、预览并导出 Telegram 宿主日志；长按终端正文可自由选择和复制。",
+                "Filter, preview, and export Telegram host logs by local time; long-press the terminal text to select and copy freely."
         ));
 
         LinearLayout terminal = new LinearLayout(context);
@@ -700,15 +703,61 @@ final class HostConfigPanel {
         terminal.setPadding(dp(12), dp(10), dp(12), dp(10));
         terminal.setBackground(rounded(Color.BLACK, dp(12), Color.rgb(44, 68, 48)));
 
-        TextView terminalHeader = new TextView(context);
-        terminalHeader.setText("$ gramsieve log.tail --limit " + LogFileSupport.DEFAULT_TAIL_LINES);
-        terminalHeader.setTextColor(Color.rgb(124, 255, 146));
-        terminalHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
-        terminalHeader.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
-        terminal.addView(terminalHeader, new LinearLayout.LayoutParams(
+        logConsoleHeader = new TextView(context);
+        logConsoleHeader.setText("$ gramsieve log.tail --limit " + LogFileSupport.DEFAULT_TAIL_LINES);
+        logConsoleHeader.setTextColor(Color.rgb(124, 255, 146));
+        logConsoleHeader.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        logConsoleHeader.setTypeface(Typeface.MONOSPACE, Typeface.BOLD);
+        terminal.addView(logConsoleHeader, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
+
+        TextView rangeHint = new TextView(context);
+        rangeHint.setText(t(
+                "# 时间格式：yyyy-MM-dd HH:mm:ss；留空表示不限",
+                "# Time format: yyyy-MM-dd HH:mm:ss; blank means unbounded"
+        ));
+        rangeHint.setTextColor(Color.rgb(118, 154, 123));
+        rangeHint.setTextSize(TypedValue.COMPLEX_UNIT_SP, 9.5f);
+        rangeHint.setTypeface(Typeface.MONOSPACE);
+        LinearLayout.LayoutParams rangeHintParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        rangeHintParams.topMargin = dp(6);
+        terminal.addView(rangeHint, rangeHintParams);
+
+        logFromInput = terminalTimeInput(t("起始时间 / FROM", "Start time / FROM"));
+        logToInput = terminalTimeInput(t("结束时间 / TO", "End time / TO"));
+        LinearLayout.LayoutParams timeInputParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(42)
+        );
+        timeInputParams.topMargin = dp(6);
+        terminal.addView(logFromInput, timeInputParams);
+        LinearLayout.LayoutParams endInputParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(42)
+        );
+        endInputParams.topMargin = dp(6);
+        terminal.addView(logToInput, endInputParams);
+
+        LinearLayout presets = new LinearLayout(context);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        presets.setGravity(Gravity.CENTER_VERTICAL);
+        Button lastHour = toolbarButton(t("最近1小时", "Last hour"));
+        Button today = toolbarButton(t("今天", "Today"));
+        Button all = toolbarButton(t("全部", "All"));
+        presets.addView(lastHour, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        presets.addView(today, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        presets.addView(all, new LinearLayout.LayoutParams(0, dp(38), 1f));
+        LinearLayout.LayoutParams presetParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        );
+        presetParams.topMargin = dp(4);
+        terminal.addView(presets, presetParams);
 
         logConsoleStatus = new TextView(context);
         logConsoleStatus.setText(t("正在读取…", "Reading…"));
@@ -723,19 +772,23 @@ final class HostConfigPanel {
         statusParams.bottomMargin = dp(8);
         terminal.addView(logConsoleStatus, statusParams);
 
-        logConsoleOutput = new TextView(context);
+        logConsoleOutput = new EditText(context);
         logConsoleOutput.setTextColor(Color.rgb(224, 255, 226));
         logConsoleOutput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
         logConsoleOutput.setTypeface(Typeface.MONOSPACE);
         logConsoleOutput.setGravity(Gravity.TOP | Gravity.START);
+        logConsoleOutput.setBackgroundColor(Color.TRANSPARENT);
+        logConsoleOutput.setKeyListener(null);
+        logConsoleOutput.setCursorVisible(false);
+        logConsoleOutput.setShowSoftInputOnFocus(false);
+        logConsoleOutput.setFocusableInTouchMode(true);
+        logConsoleOutput.setLongClickable(true);
         logConsoleOutput.setTextIsSelectable(true);
         logConsoleOutput.setHorizontallyScrolling(true);
         logConsoleOutput.setVerticalScrollBarEnabled(true);
-        logConsoleOutput.setMovementMethod(ScrollingMovementMethod.getInstance());
         logConsoleOutput.setPadding(dp(2), dp(2), dp(12), dp(2));
 
-        // Use TextView's own scrolling movement instead of nesting a second ScrollView inside
-        // the settings ScrollView; this keeps vertical gestures predictable on Telegram web.
+        // A read-only EditText keeps native selection handles without nesting another ScrollView.
         terminal.addView(logConsoleOutput, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 dp(260)
@@ -759,6 +812,15 @@ final class HostConfigPanel {
         refresh.setOnClickListener(view -> refreshLogConsole());
         copy.setOnClickListener(view -> copyLogConsole());
         export.setOnClickListener(view -> exportLogConsole());
+        lastHour.setOnClickListener(view -> applyLogRangePreset(
+                System.currentTimeMillis() - 60L * 60L * 1_000L,
+                System.currentTimeMillis()
+        ));
+        today.setOnClickListener(view -> {
+            long now = System.currentTimeMillis();
+            applyLogRangePreset(LogTimeRange.startOfToday(now), now);
+        });
+        all.setOnClickListener(view -> applyLogRangePreset(Long.MIN_VALUE, Long.MAX_VALUE));
         refreshLogConsole();
     }
 
@@ -766,23 +828,38 @@ final class HostConfigPanel {
         if (logConsoleOutput == null || logConsoleStatus == null) {
             return;
         }
+        final LogTimeRange range;
+        try {
+            range = selectedLogTimeRange();
+        } catch (IllegalArgumentException exception) {
+            logConsoleStatus.setText(t(
+                    "时间范围无效：" + exception.getMessage(),
+                    "Invalid time range: " + exception.getMessage()
+            ));
+            return;
+        }
         final int generation = ++logConsoleGeneration;
         logConsoleStatus.setText(t("正在读取…", "Reading…"));
         logConsoleOutput.setText("");
+        if (logConsoleHeader != null) {
+            logConsoleHeader.setText(range.isUnbounded()
+                    ? "$ gramsieve log.tail --limit " + LogFileSupport.DEFAULT_TAIL_LINES
+                    : "$ gramsieve log.range --from \"" + range.fromDisplay()
+                    + "\" --to \"" + range.toDisplay() + "\"");
+        }
         Context appContext = context.getApplicationContext() == null
                 ? context
                 : context.getApplicationContext();
-        startWorker("GramSieve-log-tail", () -> {
-            LogFileSupport.TailResult result = LogFileSupport.readTail(
-                    appContext,
-                    LogFileSupport.DEFAULT_TAIL_LINES,
-                    LogFileSupport.DEFAULT_TAIL_BYTES
-            );
+        startWorker(range.isUnbounded() ? "GramSieve-log-tail" : "GramSieve-log-range", () -> {
+            LogConsoleSnapshot result = readLogSnapshot(appContext, range);
             uiCallbacks.post(logConsoleOutput, () -> {
                 if (generation != logConsoleGeneration || overlay == null) {
                     return;
                 }
                 logConsoleOutput.setText(result.text);
+                if (result.text.length() > 0) {
+                    logConsoleOutput.setSelection(0);
+                }
                 if (!result.available) {
                     logConsoleStatus.setText(t(
                             "读取失败：" + result.error,
@@ -795,6 +872,7 @@ final class HostConfigPanel {
                                 + "  bytes=" + result.totalBytes
                                 + "  returned=" + result.returnedBytes
                                 + "  lines=" + result.lineCount
+                                + (result.ranged ? "  entries=" + result.matchedEntries : "")
                                 + (result.truncated ? "  [truncated]" : "")
                 );
             });
@@ -804,7 +882,7 @@ final class HostConfigPanel {
     private void copyLogConsole() {
         if (logConsoleOutput == null || logConsoleOutput.getText() == null
                 || logConsoleOutput.getText().length() == 0) {
-            Toast.makeText(context, t("暂无可复制日志", "No log tail to copy"), Toast.LENGTH_SHORT).show();
+            Toast.makeText(context, t("暂无可复制日志", "No log preview to copy"), Toast.LENGTH_SHORT).show();
             return;
         }
         ClipboardManager clipboard = (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
@@ -813,20 +891,32 @@ final class HostConfigPanel {
             return;
         }
         clipboard.setPrimaryClip(ClipData.newPlainText("GramSieve log", logConsoleOutput.getText()));
-        Toast.makeText(context, t("日志尾部已复制", "Log tail copied"), Toast.LENGTH_SHORT).show();
+        Toast.makeText(context, t("当前日志预览已复制", "Current log preview copied"), Toast.LENGTH_SHORT).show();
     }
 
     private void exportLogConsole() {
         if (logConsoleStatus == null) {
             return;
         }
+        final LogTimeRange range;
+        try {
+            range = selectedLogTimeRange();
+        } catch (IllegalArgumentException exception) {
+            logConsoleStatus.setText(t(
+                    "时间范围无效：" + exception.getMessage(),
+                    "Invalid time range: " + exception.getMessage()
+            ));
+            return;
+        }
         final int generation = ++logConsoleGeneration;
-        logConsoleStatus.setText(t("正在导出完整日志…", "Exporting complete log…"));
+        logConsoleStatus.setText(range.isUnbounded()
+                ? t("正在导出完整日志…", "Exporting complete log…")
+                : t("正在导出所选时间范围…", "Exporting selected time range…"));
         Context appContext = context.getApplicationContext() == null
                 ? context
                 : context.getApplicationContext();
         startWorker("GramSieve-log-export", () -> {
-            LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(appContext);
+            LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(appContext, range);
             uiCallbacks.post(logConsoleStatus, () -> {
                 if (generation != logConsoleGeneration || overlay == null) {
                     return;
@@ -842,13 +932,64 @@ final class HostConfigPanel {
                 }
                 String location = result.uri == null ? result.displayName : result.uri.toString();
                 logConsoleStatus.setText(t(
-                        "已导出：" + result.displayName + "  " + location,
-                        "Exported: " + result.displayName + "  " + location
+                        "已导出：" + result.displayName + "  bytes=" + result.bytes
+                                + (result.ranged ? "  entries=" + result.matchedEntries : "")
+                                + "  " + location,
+                        "Exported: " + result.displayName + "  bytes=" + result.bytes
+                                + (result.ranged ? "  entries=" + result.matchedEntries : "")
+                                + "  " + location
                 ));
                 Toast.makeText(context, t("日志已导出：" + result.displayName,
                         "Log exported: " + result.displayName), Toast.LENGTH_LONG).show();
             });
         });
+    }
+
+    private EditText terminalTimeInput(String hint) {
+        EditText input = new EditText(context);
+        input.setSingleLine(true);
+        input.setHint(hint);
+        input.setTextColor(Color.rgb(210, 255, 216));
+        input.setHintTextColor(Color.rgb(96, 135, 102));
+        input.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11f);
+        input.setTypeface(Typeface.MONOSPACE);
+        input.setInputType(InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD);
+        input.setPadding(dp(10), 0, dp(10), 0);
+        input.setBackground(rounded(Color.rgb(7, 20, 10), dp(8), Color.rgb(42, 92, 51)));
+        return input;
+    }
+
+    private LogTimeRange selectedLogTimeRange() {
+        String from = logFromInput == null || logFromInput.getText() == null
+                ? "" : logFromInput.getText().toString();
+        String to = logToInput == null || logToInput.getText() == null
+                ? "" : logToInput.getText().toString();
+        return LogTimeRange.parse(from, to);
+    }
+
+    private void applyLogRangePreset(long fromMs, long toMs) {
+        if (logFromInput == null || logToInput == null) {
+            return;
+        }
+        logFromInput.setText(fromMs == Long.MIN_VALUE ? "" : LogTimeRange.formatInput(fromMs));
+        logToInput.setText(toMs == Long.MAX_VALUE ? "" : LogTimeRange.formatInput(toMs));
+        refreshLogConsole();
+    }
+
+    private LogConsoleSnapshot readLogSnapshot(Context appContext, LogTimeRange range) {
+        if (range.isUnbounded()) {
+            LogFileSupport.TailResult result = LogFileSupport.readTail(
+                    appContext,
+                    LogFileSupport.DEFAULT_TAIL_LINES,
+                    LogFileSupport.DEFAULT_TAIL_BYTES
+            );
+            return LogConsoleSnapshot.fromTail(result);
+        }
+        return LogConsoleSnapshot.fromRange(LogFileSupport.readRange(
+                appContext,
+                range,
+                LogFileSupport.DEFAULT_RANGE_BYTES
+        ));
     }
 
     private void buildConflictCard(LinearLayout container) {
@@ -1949,6 +2090,51 @@ final class HostConfigPanel {
             return Integer.parseInt(valueOf(editText).trim());
         } catch (NumberFormatException ignored) {
             return fallback;
+        }
+    }
+
+    private static final class LogConsoleSnapshot {
+        final boolean available;
+        final boolean ranged;
+        final String sourcePath;
+        final long totalBytes;
+        final int returnedBytes;
+        final int lineCount;
+        final int matchedEntries;
+        final boolean truncated;
+        final String text;
+        final String error;
+
+        private LogConsoleSnapshot(boolean available, boolean ranged, String sourcePath,
+                                   long totalBytes, int returnedBytes, int lineCount,
+                                   int matchedEntries, boolean truncated, String text,
+                                   String error) {
+            this.available = available;
+            this.ranged = ranged;
+            this.sourcePath = sourcePath;
+            this.totalBytes = totalBytes;
+            this.returnedBytes = returnedBytes;
+            this.lineCount = lineCount;
+            this.matchedEntries = matchedEntries;
+            this.truncated = truncated;
+            this.text = text;
+            this.error = error;
+        }
+
+        static LogConsoleSnapshot fromTail(LogFileSupport.TailResult result) {
+            return new LogConsoleSnapshot(
+                    result.available, false, result.sourcePath, result.totalBytes,
+                    result.returnedBytes, result.lineCount, 0, result.truncated,
+                    result.text, result.error
+            );
+        }
+
+        static LogConsoleSnapshot fromRange(LogFileSupport.RangeResult result) {
+            return new LogConsoleSnapshot(
+                    result.available, true, result.sourcePath, result.totalBytes,
+                    result.returnedBytes, result.lineCount, result.matchedEntries,
+                    result.truncated, result.text, result.error
+            );
         }
     }
 

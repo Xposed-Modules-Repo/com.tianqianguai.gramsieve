@@ -9,14 +9,18 @@ import android.provider.MediaStore;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.RandomAccessFile;
+import java.io.StringReader;
 import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
+import java.util.ArrayDeque;
 import java.util.Date;
 import java.util.Locale;
 
@@ -35,6 +39,8 @@ public final class LogFileSupport {
     public static final int MAX_TAIL_BYTES = 128 * 1024;
     public static final int DEFAULT_TAIL_LINES = 300;
     public static final int MAX_TAIL_LINES = 1200;
+    public static final int DEFAULT_RANGE_BYTES = 192 * 1024;
+    public static final int MAX_RANGE_BYTES = 224 * 1024;
     private static final int COPY_BUFFER_BYTES = 32 * 1024;
 
     private LogFileSupport() {
@@ -118,10 +124,10 @@ public final class LogFileSupport {
             boolean byteTruncated = offset > 0L;
             if (byteTruncated) {
                 int firstLineBreak = decoded.indexOf('\n');
-            if (firstLineBreak >= 0 && firstLineBreak + 1 < decoded.length()) {
-                decoded = decoded.substring(firstLineBreak + 1);
-            } else if (firstLineBreak >= 0) {
-                decoded = "";
+                if (firstLineBreak >= 0 && firstLineBreak + 1 < decoded.length()) {
+                    decoded = decoded.substring(firstLineBreak + 1);
+                } else if (firstLineBreak >= 0) {
+                    decoded = "";
                 }
             }
             LineTail lineTail = limitLines(decoded, maxLines);
@@ -140,6 +146,52 @@ public final class LogFileSupport {
             );
         } catch (IOException | RuntimeException exception) {
             return TailResult.failure(file.getAbsolutePath() + ": " + exception.getClass().getSimpleName());
+        }
+    }
+
+    /** Reads a bounded preview containing complete log entries whose timestamps are in range. */
+    public static RangeResult readRange(Context context, LogTimeRange range, int requestedBytes) {
+        File file = preferredLogFile(context);
+        if (file == null) {
+            return RangeResult.failure("No application context or log path");
+        }
+        return readRange(file, range, requestedBytes);
+    }
+
+    public static RangeResult readRange(File file, LogTimeRange range, int requestedBytes) {
+        if (file == null) {
+            return RangeResult.failure("Log path is unavailable");
+        }
+        if (!file.isFile() || !file.canRead()) {
+            return RangeResult.missing(file.getAbsolutePath());
+        }
+        LogTimeRange effectiveRange = range == null ? LogTimeRange.unbounded() : range;
+        int maxBytes = normalizeRangeByteLimit(requestedBytes);
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(file), StandardCharsets.UTF_8))) {
+            RangeSelection selection = selectRange(reader, effectiveRange, maxBytes);
+            return RangeResult.success(
+                    file.getAbsolutePath(),
+                    file.length(),
+                    selection.returnedBytes,
+                    selection.lineCount,
+                    selection.matchedEntries,
+                    selection.truncated,
+                    selection.text
+            );
+        } catch (IOException | RuntimeException exception) {
+            return RangeResult.failure(file.getAbsolutePath() + ": "
+                    + exception.getClass().getSimpleName());
+        }
+    }
+
+    /** Pure range filter used by JVM tests. Continuation lines follow their timestamped entry. */
+    public static String filterTextByTimeRange(String input, LogTimeRange range) {
+        try (BufferedReader reader = new BufferedReader(new StringReader(input == null ? "" : input))) {
+            return selectRange(reader, range == null ? LogTimeRange.unbounded() : range,
+                    Integer.MAX_VALUE).text;
+        } catch (IOException impossible) {
+            return "";
         }
     }
 
@@ -178,6 +230,11 @@ public final class LogFileSupport {
      * legacy storage permission are required on the project's minSdk (33).
      */
     public static ExportResult exportToDownloads(Context context) {
+        return exportToDownloads(context, LogTimeRange.unbounded());
+    }
+
+    /** Streams either the complete log or only entries inside an inclusive time range. */
+    public static ExportResult exportToDownloads(Context context, LogTimeRange range) {
         File source = preferredLogFile(context);
         if (context == null) {
             return ExportResult.failure("Application context is unavailable");
@@ -196,21 +253,27 @@ public final class LogFileSupport {
         values.put(MediaStore.MediaColumns.RELATIVE_PATH,
                 Environment.DIRECTORY_DOWNLOADS + "/GramSieve");
         values.put(MediaStore.MediaColumns.IS_PENDING, 1);
+        LogTimeRange effectiveRange = range == null ? LogTimeRange.unbounded() : range;
         Uri uri = null;
         try {
             uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values);
             if (uri == null) {
                 return ExportResult.failure("MediaStore did not create a Downloads entry");
             }
-            try (InputStream input = new BufferedInputStream(new FileInputStream(source));
-                 OutputStream output = new BufferedOutputStream(resolver.openOutputStream(uri))) {
-                if (output == null) {
-                    throw new IOException("MediaStore output stream is unavailable");
-                }
-                byte[] buffer = new byte[COPY_BUFFER_BYTES];
-                int read;
-                while ((read = input.read(buffer)) != -1) {
-                    output.write(buffer, 0, read);
+            long exportedBytes;
+            int matchedEntries;
+            OutputStream rawOutput = resolver.openOutputStream(uri);
+            if (rawOutput == null) {
+                throw new IOException("MediaStore output stream is unavailable");
+            }
+            try (OutputStream output = new BufferedOutputStream(rawOutput)) {
+                if (effectiveRange.isUnbounded()) {
+                    exportedBytes = copyCompleteLog(source, output);
+                    matchedEntries = -1;
+                } else {
+                    ExportStats stats = writeRange(source, output, effectiveRange);
+                    exportedBytes = stats.bytes;
+                    matchedEntries = stats.matchedEntries;
                 }
                 output.flush();
             }
@@ -219,7 +282,8 @@ public final class LogFileSupport {
             if (resolver.update(uri, ready, null, null) <= 0) {
                 throw new IOException("MediaStore could not finalize the Downloads entry");
             }
-            return ExportResult.success(displayName, uri, source.getAbsolutePath(), source.length());
+            return ExportResult.success(displayName, uri, source.getAbsolutePath(), exportedBytes,
+                    matchedEntries, !effectiveRange.isUnbounded());
         } catch (IOException | RuntimeException exception) {
             if (uri != null) {
                 try {
@@ -231,6 +295,52 @@ public final class LogFileSupport {
             return ExportResult.failure(exception.getClass().getSimpleName()
                     + (exception.getMessage() == null ? "" : ": " + exception.getMessage()));
         }
+    }
+
+    private static long copyCompleteLog(File source, OutputStream output) throws IOException {
+        long copied = 0L;
+        try (InputStream input = new BufferedInputStream(new FileInputStream(source))) {
+            byte[] buffer = new byte[COPY_BUFFER_BYTES];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("log export interrupted");
+                }
+                output.write(buffer, 0, read);
+                copied += read;
+            }
+        }
+        return copied;
+    }
+
+    private static ExportStats writeRange(File source, OutputStream output,
+                                          LogTimeRange range) throws IOException {
+        long written = 0L;
+        int matchedEntries = 0;
+        boolean currentIncluded = false;
+        try (BufferedReader reader = new BufferedReader(new InputStreamReader(
+                new FileInputStream(source), StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = reader.readLine()) != null) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("log range export interrupted");
+                }
+                long timestamp = LogTimeRange.timestampFromLogLine(line);
+                if (timestamp != Long.MIN_VALUE) {
+                    currentIncluded = range.includes(timestamp);
+                    if (currentIncluded) {
+                        matchedEntries++;
+                    }
+                }
+                if (!currentIncluded) {
+                    continue;
+                }
+                byte[] encoded = (line + '\n').getBytes(StandardCharsets.UTF_8);
+                output.write(encoded);
+                written += encoded.length;
+            }
+        }
+        return new ExportStats(written, matchedEntries);
     }
 
     public static int normalizeLineLimit(int requestedLines) {
@@ -245,6 +355,75 @@ public final class LogFileSupport {
             return DEFAULT_TAIL_BYTES;
         }
         return Math.min(requestedBytes, MAX_TAIL_BYTES);
+    }
+
+    public static int normalizeRangeByteLimit(int requestedBytes) {
+        if (requestedBytes <= 0) {
+            return DEFAULT_RANGE_BYTES;
+        }
+        return Math.min(requestedBytes, MAX_RANGE_BYTES);
+    }
+
+    private static RangeSelection selectRange(BufferedReader reader, LogTimeRange range,
+                                              int maxBytes) throws IOException {
+        ArrayDeque<String> retained = new ArrayDeque<>();
+        long retainedBytes = 0L;
+        int retainedLines = 0;
+        int matchedEntries = 0;
+        boolean currentIncluded = range.isUnbounded();
+        boolean sawTimestamp = false;
+        boolean truncated = false;
+        String line;
+        while ((line = reader.readLine()) != null) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new IOException("log range read interrupted");
+            }
+            long timestamp = LogTimeRange.timestampFromLogLine(line);
+            if (timestamp != Long.MIN_VALUE) {
+                sawTimestamp = true;
+                currentIncluded = range.includes(timestamp);
+                if (currentIncluded) {
+                    matchedEntries++;
+                }
+            } else if (!sawTimestamp && !range.isUnbounded()) {
+                currentIncluded = false;
+            }
+            if (!currentIncluded) {
+                continue;
+            }
+            String retainedLine = line + '\n';
+            byte[] encoded = retainedLine.getBytes(StandardCharsets.UTF_8);
+            if (encoded.length > maxBytes) {
+                int offset = encoded.length - maxBytes;
+                retainedLine = decodeUtf8Tail(encoded, offset, maxBytes);
+                encoded = retainedLine.getBytes(StandardCharsets.UTF_8);
+                truncated = true;
+            }
+            retained.addLast(retainedLine);
+            retainedBytes += encoded.length;
+            retainedLines++;
+            while (retainedBytes > maxBytes && retained.size() > 1) {
+                String removed = retained.removeFirst();
+                retainedBytes -= removed.getBytes(StandardCharsets.UTF_8).length;
+                retainedLines--;
+                truncated = true;
+            }
+        }
+        StringBuilder text = new StringBuilder((int) Math.min(Integer.MAX_VALUE, retainedBytes + 64L));
+        if (truncated) {
+            text.append("[... matching log range truncated ...]\n");
+        }
+        for (String retainedLine : retained) {
+            text.append(retainedLine);
+        }
+        String result = text.toString();
+        return new RangeSelection(
+                result,
+                result.getBytes(StandardCharsets.UTF_8).length,
+                retainedLines,
+                matchedEntries,
+                truncated
+        );
     }
 
     private static String decodeUtf8Tail(byte[] bytes, int offset, int length) {
@@ -305,6 +484,76 @@ public final class LogFileSupport {
         }
     }
 
+    private static final class RangeSelection {
+        final String text;
+        final int returnedBytes;
+        final int lineCount;
+        final int matchedEntries;
+        final boolean truncated;
+
+        RangeSelection(String text, int returnedBytes, int lineCount,
+                       int matchedEntries, boolean truncated) {
+            this.text = text;
+            this.returnedBytes = returnedBytes;
+            this.lineCount = lineCount;
+            this.matchedEntries = matchedEntries;
+            this.truncated = truncated;
+        }
+    }
+
+    private static final class ExportStats {
+        final long bytes;
+        final int matchedEntries;
+
+        ExportStats(long bytes, int matchedEntries) {
+            this.bytes = bytes;
+            this.matchedEntries = matchedEntries;
+        }
+    }
+
+    public static final class RangeResult {
+        public final boolean available;
+        public final String sourcePath;
+        public final long totalBytes;
+        public final int returnedBytes;
+        public final int lineCount;
+        public final int matchedEntries;
+        public final boolean truncated;
+        public final String text;
+        public final String error;
+
+        private RangeResult(boolean available, String sourcePath, long totalBytes,
+                            int returnedBytes, int lineCount, int matchedEntries,
+                            boolean truncated, String text, String error) {
+            this.available = available;
+            this.sourcePath = sourcePath == null ? "" : sourcePath;
+            this.totalBytes = Math.max(0L, totalBytes);
+            this.returnedBytes = Math.max(0, returnedBytes);
+            this.lineCount = Math.max(0, lineCount);
+            this.matchedEntries = Math.max(0, matchedEntries);
+            this.truncated = truncated;
+            this.text = text == null ? "" : text;
+            this.error = error == null ? "" : error;
+        }
+
+        static RangeResult success(String sourcePath, long totalBytes, int returnedBytes,
+                                   int lineCount, int matchedEntries, boolean truncated,
+                                   String text) {
+            return new RangeResult(true, sourcePath, totalBytes, returnedBytes,
+                    lineCount, matchedEntries, truncated, text, "");
+        }
+
+        static RangeResult missing(String sourcePath) {
+            return new RangeResult(false, sourcePath, 0L, 0, 0, 0,
+                    false, "", "Log file is not available");
+        }
+
+        static RangeResult failure(String error) {
+            return new RangeResult(false, "", 0L, 0, 0, 0,
+                    false, "", error);
+        }
+    }
+
     public static final class TailResult {
         public final boolean available;
         public final String sourcePath;
@@ -347,24 +596,30 @@ public final class LogFileSupport {
         public final Uri uri;
         public final String sourcePath;
         public final long bytes;
+        public final int matchedEntries;
+        public final boolean ranged;
         public final String error;
 
         private ExportResult(boolean exported, String displayName, Uri uri, String sourcePath,
-                             long bytes, String error) {
+                             long bytes, int matchedEntries, boolean ranged, String error) {
             this.exported = exported;
             this.displayName = displayName == null ? "" : displayName;
             this.uri = uri;
             this.sourcePath = sourcePath == null ? "" : sourcePath;
             this.bytes = Math.max(0L, bytes);
+            this.matchedEntries = Math.max(-1, matchedEntries);
+            this.ranged = ranged;
             this.error = error == null ? "" : error;
         }
 
-        static ExportResult success(String displayName, Uri uri, String sourcePath, long bytes) {
-            return new ExportResult(true, displayName, uri, sourcePath, bytes, "");
+        static ExportResult success(String displayName, Uri uri, String sourcePath, long bytes,
+                                    int matchedEntries, boolean ranged) {
+            return new ExportResult(true, displayName, uri, sourcePath, bytes,
+                    matchedEntries, ranged, "");
         }
 
         static ExportResult failure(String error) {
-            return new ExportResult(false, "", null, "", 0L, error);
+            return new ExportResult(false, "", null, "", 0L, -1, false, error);
         }
     }
 }

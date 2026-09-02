@@ -33,6 +33,7 @@ import com.tianqianguai.gramsieve.config.ConfigUpdateReceiver;
 import com.tianqianguai.gramsieve.config.DiagnosticLogStore;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.LogFileSupport;
+import com.tianqianguai.gramsieve.config.LogTimeRange;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
 import com.tianqianguai.gramsieve.config.RuntimeModuleProbe;
@@ -573,6 +574,7 @@ final class TelegramHookInstaller {
     private boolean isAsyncCliCommand(String command) {
         return "modules.scan".equalsIgnoreCase(command)
                 || "log.tail".equalsIgnoreCase(command)
+                || "log.range".equalsIgnoreCase(command)
                 || "log.info".equalsIgnoreCase(command)
                 || "log.export".equalsIgnoreCase(command);
     }
@@ -626,10 +628,12 @@ final class TelegramHookInstaller {
                 return cliModuleScan(response, context);
             case "log.tail":
                 return cliLogTail(response, context, intent);
+            case "log.range":
+                return cliLogRange(response, context, intent);
             case "log.info":
                 return cliLogInfo(response, context);
             case "log.export":
-                return cliLogExport(response, context);
+                return cliLogExport(response, context, intent);
             case "config.get":
                 response.put("config", new JSONObject(
                         ModuleConfigStore.toJson(currentCliConfig(context))));
@@ -707,11 +711,12 @@ final class TelegramHookInstaller {
                 "adb -s <device> shell am broadcast -a " + CLI_ACTION
                         + " -p " + telegramResourcePackageName + " --receiver-registered-only"
                         + " --es command <command> [--es name <name>] [--es value <value>]"
-                        + " [--es dialog_id <id>] [--es account_id <id>]"
+                         + " [--es dialog_id <id>] [--es account_id <id>]"
                         + " [--es message_id <id>] [--es limit <n>] [--es preview <text>]"
+                        + " [--es from <time>] [--es to <time>] [--el from_ms <epoch>] [--el to_ms <epoch>]"
         );
         response.put("commands", new JSONArray(Arrays.asList(
-                "help", "ping", "state", "modules.scan", "log.tail", "log.info", "log.export",
+                "help", "ping", "state", "modules.scan", "log.tail", "log.range", "log.info", "log.export",
                 "config.get", "config.set",
                 "feature.list", "feature.get", "feature.set",
                 "fallback.list", "fallback.get", "fallback.set",
@@ -726,6 +731,8 @@ final class TelegramHookInstaller {
         response.put("maxResponseChars", MAX_CLI_RESPONSE_CHARS);
         response.put("logTailBytes", LogFileSupport.MAX_TAIL_BYTES);
         response.put("logTailLines", LogFileSupport.MAX_TAIL_LINES);
+        response.put("logRangeBytes", LogFileSupport.MAX_RANGE_BYTES);
+        response.put("logTimeFormat", "yyyy-MM-dd HH:mm:ss or epoch seconds/milliseconds");
         response.put("result", "JSON is returned directly in am broadcast result data");
         return response;
     }
@@ -750,6 +757,33 @@ final class TelegramHookInstaller {
         return response;
     }
 
+    private JSONObject cliLogRange(JSONObject response, Context context, Intent intent) throws Exception {
+        LogTimeRange range = logRangeFromIntent(intent);
+        LogFileSupport.RangeResult result = LogFileSupport.readRange(
+                context,
+                range,
+                LogFileSupport.DEFAULT_RANGE_BYTES
+        );
+        response.put("available", result.available);
+        response.put("source", result.sourcePath);
+        response.put("totalBytes", result.totalBytes);
+        response.put("returnedBytes", result.returnedBytes);
+        response.put("lineCount", result.lineCount);
+        response.put("matchedEntries", result.matchedEntries);
+        response.put("truncated", result.truncated);
+        response.put("fromMs", range.fromInclusiveMs == Long.MIN_VALUE
+                ? JSONObject.NULL : range.fromInclusiveMs);
+        response.put("toMs", range.toInclusiveMs == Long.MAX_VALUE
+                ? JSONObject.NULL : range.toInclusiveMs);
+        response.put("from", range.fromDisplay());
+        response.put("to", range.toDisplay());
+        response.put("text", result.text);
+        if (!result.error.isBlank()) {
+            response.put("error", result.error);
+        }
+        return response;
+    }
+
     private JSONObject cliLogInfo(JSONObject response, Context context) throws Exception {
         java.io.File preferred = LogFileSupport.preferredLogFile(context);
         java.io.File external = LogFileSupport.externalLogFile(context);
@@ -764,17 +798,36 @@ final class TelegramHookInstaller {
         return response;
     }
 
-    private JSONObject cliLogExport(JSONObject response, Context context) throws Exception {
-        LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(context);
+    private JSONObject cliLogExport(JSONObject response, Context context, Intent intent) throws Exception {
+        LogTimeRange range = logRangeFromIntent(intent);
+        LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(context, range);
         response.put("exported", result.exported);
         response.put("displayName", result.displayName);
         response.put("uri", result.uri == null ? "" : result.uri.toString());
         response.put("source", result.sourcePath);
         response.put("bytes", result.bytes);
+        response.put("ranged", result.ranged);
+        response.put("matchedEntries", result.matchedEntries);
+        response.put("fromMs", range.fromInclusiveMs == Long.MIN_VALUE
+                ? JSONObject.NULL : range.fromInclusiveMs);
+        response.put("toMs", range.toInclusiveMs == Long.MAX_VALUE
+                ? JSONObject.NULL : range.toInclusiveMs);
         if (!result.error.isBlank()) {
             response.put("error", result.error);
         }
         return response;
+    }
+
+    private LogTimeRange logRangeFromIntent(Intent intent) {
+        String from = stringExtra(intent, "from");
+        String to = stringExtra(intent, "to");
+        if ((from == null || from.isBlank()) && intent != null && intent.hasExtra("from_ms")) {
+            from = String.valueOf(intent.getLongExtra("from_ms", 0L));
+        }
+        if ((to == null || to.isBlank()) && intent != null && intent.hasExtra("to_ms")) {
+            to = String.valueOf(intent.getLongExtra("to_ms", 0L));
+        }
+        return LogTimeRange.parse(from, to);
     }
 
     static int parseLogLineLimit(String raw) {
