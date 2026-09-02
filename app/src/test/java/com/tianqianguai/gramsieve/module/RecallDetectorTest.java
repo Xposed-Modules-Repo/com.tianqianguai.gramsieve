@@ -186,6 +186,22 @@ public class RecallDetectorTest {
     }
 
     @Test
+    public void controllerDeleteWithoutUserConfirmationIsOnlyObserved() {
+        cache.put(100, 7, "keep", null, 1);
+        loader.enableChat(100);
+        ArrayList<Integer> ids = new ArrayList<>();
+        ids.add(7);
+        ArrayList<Object> args = new ArrayList<>();
+        args.add(ids);
+        args.add(100L);
+
+        assertFalse(detector.processDeletionsFromArgs(null, args, false));
+
+        assertNotNull(cache.get(100, 7));
+        assertTrue(store.deletedKeys.isEmpty());
+    }
+
+    @Test
     public void testLocalDeleteMessagesUsesOnlyFirstTelegram1283MessageIdList() {
         cache.put(100, 7, "message id", null, 1);
         cache.put(100, 8, "random id collision", null, 1);

@@ -3,10 +3,15 @@ package com.tianqianguai.gramsieve.module;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 
 import java.io.File;
+import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.function.BooleanSupplier;
 
 import io.github.libxposed.api.XposedInterface;
@@ -16,6 +21,11 @@ public final class RecallDetector {
     private static final String TAG = "GramSieve";
     private static final long LOCAL_DIALOG_DELETE_CLEANUP_MS = 2 * 60_000L;
     private static final long MANUAL_DELETE_ALERT_WINDOW_MS = 2 * 60_000L;
+    private static final long DELETE_TRANSPORT_CLAIM_WINDOW_MS = 5_000L;
+    private final Object deleteTransportLock = new Object();
+    private final Map<Object, DeleteTransportContext> recoveryDeleteRequests =
+            new WeakHashMap<>();
+    private DeleteTransportContext pendingDeleteTransport;
 
     private final MessageCache messageCache;
     private final BackgroundMessageLoader loader;
@@ -166,6 +176,10 @@ public final class RecallDetector {
     boolean prepareForHotReload() {
         active = false;
         telegramClassLoader = null;
+        synchronized (deleteTransportLock) {
+            recoveryDeleteRequests.clear();
+            pendingDeleteTransport = null;
+        }
         return telegramDbBridge.prepareForHotReload();
     }
 
@@ -219,7 +233,14 @@ public final class RecallDetector {
 
     private void hookStorageDeleteMessages(XposedModule module, java.lang.reflect.Method method, String methodName) {
         try {
-            hook(module, method, chain -> {
+            try {
+                module.deoptimize(method);
+            } catch (Throwable throwable) {
+                ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG,
+                        "MessageDeleteFlow: storage deoptimize failed method=" + methodName,
+                        throwable);
+            }
+            hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
                 if (usesExternalAntiRecall()) {
                     return chain.proceed();
                 }
@@ -229,10 +250,15 @@ public final class RecallDetector {
                             chain.getThisObject(), telegramClassLoader);
                     if (shouldAllowUserDeletion(deletion)) {
                         purgeDeletedMessages(accountId, deletion.dialogId, deletion.messageIds);
-                        ModuleLogger.hook(TAG, "RecallDetector: allowed storage." + methodName
+                        MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+                        if (diagnostics != null) {
+                            diagnostics.recordStorageOrigin();
+                        }
+                        ModuleLogger.hook(TAG, "MessageDeleteFlow: invoking origin storage."
+                                + methodName
                                 + " for user delete dialogId=" + deletion.dialogId
                                 + " count=" + deletion.messageIds.size());
-                        return chain.proceed();
+                        return invokeOrigin(module, method, chain.getThisObject(), chain.getArgs());
                     }
                     if (shouldBlockDeletion(accountId, deletion)) {
                         processDeletions(accountId, deletion.dialogId, deletion.messageIds);
@@ -352,12 +378,28 @@ public final class RecallDetector {
                     || parameterTypes[parameterTypes.length - 1] != Object[].class) {
                 continue;
             }
-            hook(module, method, chain -> {
+            hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
                 try {
                     java.util.List<Object> args = chain.getArgs();
                     int id = args == null || args.isEmpty() ? -1 : Reflect.asInt(args.get(0), -1);
                     int accountId = TelegramAccountResolver.resolveHost(
                             chain.getThisObject(), telegramClassLoader);
+                    if (id == messagesDeletedId && isDeleteRecoveryActive()) {
+                        MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+                        if (diagnostics != null) {
+                            diagnostics.recordNotificationOrigin();
+                        }
+                        ModuleLogger.hook(TAG,
+                                "MessageDeleteFlow: invoking origin NotificationCenter."
+                                        + method.getName() + " params="
+                                        + method.getParameterCount());
+                        return invokeOrigin(
+                                module,
+                                method,
+                                chain.getThisObject(),
+                                chain.getArgs()
+                        );
+                    }
                     if (id == messagesDeletedId && shouldSuppressMessagesDeletedEvent(accountId, args)) {
                         ModuleLogger.hook(TAG, "RecallDetector: blocked NotificationCenter.messagesDeleted");
                         return skipResult(method.getReturnType());
@@ -660,10 +702,27 @@ public final class RecallDetector {
             }
 
             DeletionRequest deletion = deletionFromControllerArgs(chain.getArgs());
-            processDeletionsFromArgs(chain.getThisObject(), chain.getArgs());
+            if (outermost) {
+                trace.manualUserDelete = shouldRecoverManualDelete(deletion);
+                if (trace.manualUserDelete) {
+                    trace.transportContext = new DeleteTransportContext(
+                            deletion.dialogId,
+                            deletion.messageIds,
+                            System.currentTimeMillis() + DELETE_TRANSPORT_CLAIM_WINDOW_MS
+                    );
+                    armDeleteTransport(trace.transportContext);
+                }
+            }
+            if (outermost) {
+                processDeletionsFromArgs(
+                        chain.getThisObject(),
+                        chain.getArgs(),
+                        trace.manualUserDelete
+                );
+            }
             try {
                 Object result = chain.proceed();
-                if (outermost && !trace.deleteRpcSeen && shouldRecoverManualDelete(deletion)) {
+                if (outermost && !trace.deleteRpcSeen && trace.manualUserDelete) {
                     trace.recoveringOrigin = true;
                     MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
                     if (diagnostics != null) {
@@ -699,6 +758,11 @@ public final class RecallDetector {
                 && diagnostics.consumeRecentAlert(deletion.dialogId, MANUAL_DELETE_ALERT_WINDOW_MS);
     }
 
+    private boolean isDeleteRecoveryActive() {
+        DeleteControllerTrace trace = deleteControllerTrace.get();
+        return trace != null && trace.recoveringOrigin;
+    }
+
     private Object invokeOrigin(
             XposedModule module,
             Method method,
@@ -717,6 +781,14 @@ public final class RecallDetector {
             if (!method.getName().startsWith("sendRequest") || method.getParameterCount() == 0) {
                 continue;
             }
+            if ("sendRequestInternal".equals(method.getName())) {
+                try {
+                    module.deoptimize(method);
+                } catch (Throwable throwable) {
+                    ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG,
+                            "MessageDeleteFlow: sendRequestInternal deoptimize failed", throwable);
+                }
+            }
             hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
                 Object request = chain.getArg(0);
                 String requestType = request == null ? "" : request.getClass().getSimpleName();
@@ -731,12 +803,157 @@ public final class RecallDetector {
                     }
                     ModuleLogger.hook(TAG, "MessageDeleteFlow: delete RPC entered type="
                             + requestType + " overload=" + method.getParameterCount());
+                    DeleteTransportContext transport = recoveryTransportContext(request, trace);
+                    if (transport != null) {
+                        wrapDeleteRequestDelegate(method, chain.getArgs(), transport);
+                        String stage = method.getName() + "/" + method.getParameterCount();
+                        int internalRequestToken = "sendRequestInternal".equals(method.getName())
+                                ? Reflect.asInt(
+                                        chain.getArg(method.getParameterCount() - 1),
+                                        0
+                                )
+                                : 0;
+                        if (internalRequestToken > 0 && diagnostics != null) {
+                            diagnostics.recordRequestToken(internalRequestToken);
+                        }
+                        try {
+                            if (diagnostics != null) {
+                                diagnostics.recordNetworkOrigin(stage);
+                            }
+                            ModuleLogger.hook(TAG,
+                                    "MessageDeleteFlow: invoking origin network stage=" + stage
+                                            + " type=" + requestType
+                                            + " dialogId=" + transport.dialogId);
+                            Object result = invokeOrigin(
+                                    module,
+                                    method,
+                                    chain.getThisObject(),
+                                    chain.getArgs()
+                            );
+                            int requestToken = internalRequestToken > 0
+                                    ? internalRequestToken
+                                    : Reflect.asInt(result, 0);
+                            if (requestToken > 0 && diagnostics != null) {
+                                diagnostics.recordRequestToken(requestToken);
+                            }
+                            if ("sendRequestInternal".equals(method.getName())) {
+                                if (diagnostics != null) {
+                                    diagnostics.recordNativeDispatch();
+                                }
+                                ModuleLogger.hook(TAG,
+                                        "MessageDeleteFlow: native delete dispatch completed type="
+                                                + requestType + " dialogId="
+                                                + transport.dialogId + " token=" + requestToken);
+                            }
+                            return result;
+                        } finally {
+                            if ("sendRequestInternal".equals(method.getName())) {
+                                removeRecoveryDeleteRequest(request);
+                            }
+                        }
+                    }
                 }
                 return chain.proceed();
             });
             hooked++;
         }
         ModuleLogger.hook(TAG, "MessageDeleteFlow: hooked ConnectionsManager request overloads=" + hooked);
+    }
+
+    private DeleteTransportContext recoveryTransportContext(
+            Object request,
+            DeleteControllerTrace trace
+    ) {
+        if (request == null) {
+            return null;
+        }
+        synchronized (deleteTransportLock) {
+            DeleteTransportContext context = recoveryDeleteRequests.get(request);
+            if (context != null && context.matches(request)) {
+                return context;
+            }
+            recoveryDeleteRequests.remove(request);
+            if (trace != null && trace.manualUserDelete && trace.transportContext != null) {
+                context = trace.transportContext.matches(request)
+                        ? trace.transportContext
+                        : null;
+            } else if (pendingDeleteTransport != null
+                    && pendingDeleteTransport.matches(request)) {
+                context = pendingDeleteTransport;
+            } else {
+                pendingDeleteTransport = null;
+            }
+            if (context != null) {
+                recoveryDeleteRequests.put(request, context);
+                if (pendingDeleteTransport == context) {
+                    pendingDeleteTransport = null;
+                }
+            }
+            return context;
+        }
+    }
+
+    private void armDeleteTransport(DeleteTransportContext context) {
+        synchronized (deleteTransportLock) {
+            pendingDeleteTransport = context;
+        }
+    }
+
+    private void removeRecoveryDeleteRequest(Object request) {
+        synchronized (deleteTransportLock) {
+            recoveryDeleteRequests.remove(request);
+        }
+    }
+
+    private void wrapDeleteRequestDelegate(
+            Method requestMethod,
+            List<Object> args,
+            DeleteTransportContext transport
+    ) {
+        if (args == null) {
+            return;
+        }
+        Class<?>[] parameterTypes = requestMethod.getParameterTypes();
+        for (int index = 0; index < parameterTypes.length && index < args.size(); index++) {
+            Class<?> parameterType = parameterTypes[index];
+            if (!"org.telegram.tgnet.RequestDelegate".equals(parameterType.getName())
+                    || !parameterType.isInterface()) {
+                continue;
+            }
+            Object delegate = args.get(index);
+            if (delegate == null || isDeleteDelegateProxy(delegate)) {
+                return;
+            }
+            Object wrapped = Proxy.newProxyInstance(
+                    parameterType.getClassLoader(),
+                    new Class<?>[]{parameterType},
+                    new DeleteRequestDelegateHandler(delegate, transport)
+            );
+            args.set(index, wrapped);
+            return;
+        }
+    }
+
+    private boolean isDeleteDelegateProxy(Object delegate) {
+        if (delegate == null || !Proxy.isProxyClass(delegate.getClass())) {
+            return false;
+        }
+        try {
+            return Proxy.getInvocationHandler(delegate) instanceof DeleteRequestDelegateHandler;
+        } catch (IllegalArgumentException ignored) {
+            return false;
+        }
+    }
+
+    private static String safeProtocolError(Object error) {
+        String raw = Reflect.asString(Reflect.field(error, "text"));
+        if (raw == null || raw.isBlank()) {
+            return "";
+        }
+        String trimmed = raw.trim();
+        return trimmed.length() <= 96 && trimmed.matches("[A-Za-z0-9_:\\-]+")
+                ? trimmed
+                : "<redacted>";
     }
 
     private static boolean isDeleteRpc(String requestType) {
@@ -750,6 +967,105 @@ public final class RecallDetector {
     private static final class DeleteControllerTrace {
         boolean deleteRpcSeen;
         boolean recoveringOrigin;
+        boolean manualUserDelete;
+        DeleteTransportContext transportContext;
+    }
+
+    private static final class DeleteTransportContext {
+        final long dialogId;
+        final int messageCount;
+        final List<Integer> messageIds;
+        final long expiresAtMs;
+
+        DeleteTransportContext(
+                long dialogId,
+                List<Integer> messageIds,
+                long expiresAtMs
+        ) {
+            this.dialogId = dialogId;
+            this.messageIds = messageIds == null
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(messageIds));
+            this.messageCount = this.messageIds.size();
+            this.expiresAtMs = expiresAtMs;
+        }
+
+        boolean matches(Object request) {
+            if (request == null || expiresAtMs < System.currentTimeMillis()) {
+                return false;
+            }
+            if (messageIds.isEmpty()) {
+                return true;
+            }
+            Object ids = Reflect.field(request, "id");
+            if (!(ids instanceof List<?>)) {
+                return false;
+            }
+            List<?> requestIds = (List<?>) ids;
+            if (requestIds.size() != messageIds.size()) {
+                return false;
+            }
+            for (int index = 0; index < messageIds.size(); index++) {
+                if (Reflect.asInt(requestIds.get(index), 0) != messageIds.get(index)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private final class DeleteRequestDelegateHandler implements InvocationHandler {
+        private final Object delegate;
+        private final DeleteTransportContext transport;
+
+        DeleteRequestDelegateHandler(Object delegate, DeleteTransportContext transport) {
+            this.delegate = delegate;
+            this.transport = transport;
+        }
+
+        @Override
+        public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
+            if (method.getDeclaringClass() == Object.class) {
+                if ("toString".equals(method.getName())) {
+                    return "GramSieveDeleteRequestDelegate(" + transport.dialogId + ")";
+                }
+                if ("hashCode".equals(method.getName())) {
+                    return System.identityHashCode(proxy);
+                }
+                if ("equals".equals(method.getName())) {
+                    return args != null && args.length == 1 && proxy == args[0];
+                }
+            }
+            if ("run".equals(method.getName()) && args != null && args.length >= 2) {
+                Object response = args[0];
+                Object error = args[1];
+                String responseType = response == null
+                        ? ""
+                        : response.getClass().getSimpleName();
+                int errorCode = Reflect.asInt(Reflect.field(error, "code"), 0);
+                String errorText = safeProtocolError(error);
+                MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+                if (diagnostics != null) {
+                    diagnostics.recordDeleteCallback(
+                            error == null,
+                            responseType,
+                            errorCode,
+                            errorText
+                    );
+                }
+                ModuleLogger.hook(TAG, "MessageDeleteFlow: delete callback dialogId="
+                        + transport.dialogId + " count=" + transport.messageCount
+                        + " success=" + (error == null)
+                        + " response=" + responseType
+                        + " errorCode=" + errorCode
+                        + " error=" + errorText);
+            }
+            try {
+                return method.invoke(delegate, args);
+            } catch (InvocationTargetException wrapped) {
+                throw wrapped.getCause();
+            }
+        }
     }
 
     private void processUpdatesFromArgs(Object messagesController, java.util.List<Object> args) {
@@ -763,11 +1079,25 @@ public final class RecallDetector {
     }
 
     boolean processDeletionsFromArgs(Object messagesController, java.util.List<Object> args) {
+        return processDeletionsFromArgs(messagesController, args, true);
+    }
+
+    boolean processDeletionsFromArgs(
+            Object messagesController,
+            java.util.List<Object> args,
+            boolean manualUserDelete
+    ) {
         DeletionRequest deletion = deletionFromControllerArgs(args);
         if (deletion.dialogId != 0L && !deletion.messageIds.isEmpty()) {
             MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
             if (diagnostics != null) {
                 diagnostics.recordControllerRequest(deletion.dialogId, deletion.messageIds.size());
+            }
+            if (!manualUserDelete) {
+                ModuleLogger.hook(TAG, "MessageDeleteFlow: controller delete pass-through without "
+                        + "user confirmation dialogId=" + deletion.dialogId
+                        + " count=" + deletion.messageIds.size());
+                return false;
             }
             int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
             if (selfDeleteTracker != null) {
