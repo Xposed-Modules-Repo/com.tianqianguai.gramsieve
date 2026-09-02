@@ -114,10 +114,23 @@ public final class BackgroundMessageLoader {
     }
 
     public synchronized void stop() {
+        prepareForHotReload();
+    }
+
+    synchronized boolean prepareForHotReload() {
         running = false;
         cancelAllPendingRequests();
-        scheduler.shutdown();
+        Handler handler = mainHandler;
+        mainHandler = null;
+        if (handler != null) {
+            handler.removeCallbacksAndMessages(null);
+        }
+        telegramClassLoader = null;
+        historyApi = null;
+        loadedMessagesConsumer = null;
+        boolean stopped = ExecutorShutdown.now(scheduler, 3_000L);
         info("BackgroundMessageLoader: stopped");
+        return stopped;
     }
 
     public void enableChat(long dialogId) {

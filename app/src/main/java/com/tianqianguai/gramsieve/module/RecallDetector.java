@@ -25,6 +25,7 @@ public final class RecallDetector {
     private final BooleanSupplier useExternalAntiRecall;
     private final BooleanSupplier useExternalEditHistory;
     private volatile ClassLoader telegramClassLoader;
+    private volatile boolean active = true;
 
     public RecallDetector(MessageCache messageCache, BackgroundMessageLoader loader) {
         this(messageCache, loader, null);
@@ -94,6 +95,7 @@ public final class RecallDetector {
     }
 
     public void install(ClassLoader classLoader, XposedModule module) {
+        active = true;
         telegramClassLoader = classLoader;
         ModuleLogger.hook(TAG, "RecallDetector: installing hooks...");
         try {
@@ -149,6 +151,12 @@ public final class RecallDetector {
                 hookSingleMethod(module, m, "processLoadedMessages");
             }
         }
+    }
+
+    boolean prepareForHotReload() {
+        active = false;
+        telegramClassLoader = null;
+        return telegramDbBridge.prepareForHotReload();
     }
 
     private void hookStorageMethods(Class<?> messagesStorageClass, XposedModule module) {
@@ -874,11 +882,12 @@ public final class RecallDetector {
         }
     }
 
-    private static void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
+    private void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
         module.hook(method)
+                .setId(HookIdentity.forCaller("recall", method))
                 .setPriority(XposedInterface.PRIORITY_LOWEST)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
-                .intercept(hooker);
+                .intercept(chain -> active ? hooker.intercept(chain) : chain.proceed());
     }
 
     private void hookProcessUpdateArray(ClassLoader classLoader, XposedModule module) {

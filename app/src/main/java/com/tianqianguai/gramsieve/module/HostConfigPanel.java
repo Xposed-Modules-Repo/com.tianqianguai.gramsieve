@@ -9,6 +9,8 @@ import android.content.ContextWrapper;
 import android.content.res.ColorStateList;
 import android.content.res.Resources;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -48,9 +50,14 @@ import com.tianqianguai.gramsieve.core.RuleDraftMatrix;
 import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -114,6 +121,8 @@ final class HostConfigPanel {
             new EnumMap<>(EnhancementConfig.Feature.class);
     private final Map<ModuleConflictDetector.KnownModule, Switch> moduleFallbackSwitches =
             new EnumMap<>(ModuleConflictDetector.KnownModule.class);
+    private final Set<Thread> workers = Collections.synchronizedSet(new HashSet<>());
+    private final UiCallbackRegistry uiCallbacks = new UiCallbackRegistry();
 
     private FrameLayout overlay;
     private OnBackInvokedDispatcher backDispatcher;
@@ -135,6 +144,7 @@ final class HostConfigPanel {
     private EditText outgoingSuffixInput;
     private TextView logConsoleStatus;
     private TextView logConsoleOutput;
+    private volatile boolean acceptingWorkers = true;
 
     private HostConfigPanel(
             Context context,
@@ -244,6 +254,38 @@ final class HostConfigPanel {
             return true;
         }
         return false;
+    }
+
+    static boolean closeForHotReload(ViewGroup root, long timeoutMs) {
+        if (root == null) {
+            return true;
+        }
+        long startedAt = System.currentTimeMillis();
+        HostConfigPanel[] panelHolder = new HostConfigPanel[1];
+        boolean uiClosed = runOnMainAndWait(() -> {
+            View existing = root.findViewById(R.id.gramsieve_host_config_panel_id);
+            if (existing == null) {
+                return;
+            }
+            Object owner = existing.getTag();
+            if (owner instanceof HostConfigPanel) {
+                HostConfigPanel panel = (HostConfigPanel) owner;
+                panelHolder[0] = panel;
+                panel.close();
+                return;
+            }
+            ViewGroup parent = existing.getParent() instanceof ViewGroup
+                    ? (ViewGroup) existing.getParent() : null;
+            if (parent != null) {
+                parent.removeView(existing);
+            }
+        }, Math.min(1_500L, Math.max(0L, timeoutMs)));
+        if (!uiClosed) {
+            return false;
+        }
+        HostConfigPanel panel = panelHolder[0];
+        long remaining = Math.max(0L, timeoutMs - (System.currentTimeMillis() - startedAt));
+        return panel == null || panel.awaitWorkers(remaining);
     }
 
     static FilterConfig applyGlobalDraft(
@@ -730,13 +772,13 @@ final class HostConfigPanel {
         Context appContext = context.getApplicationContext() == null
                 ? context
                 : context.getApplicationContext();
-        new Thread(() -> {
+        startWorker("GramSieve-log-tail", () -> {
             LogFileSupport.TailResult result = LogFileSupport.readTail(
                     appContext,
                     LogFileSupport.DEFAULT_TAIL_LINES,
                     LogFileSupport.DEFAULT_TAIL_BYTES
             );
-            logConsoleOutput.post(() -> {
+            uiCallbacks.post(logConsoleOutput, () -> {
                 if (generation != logConsoleGeneration || overlay == null) {
                     return;
                 }
@@ -756,7 +798,7 @@ final class HostConfigPanel {
                                 + (result.truncated ? "  [truncated]" : "")
                 );
             });
-        }, "GramSieve-log-tail").start();
+        });
     }
 
     private void copyLogConsole() {
@@ -783,9 +825,9 @@ final class HostConfigPanel {
         Context appContext = context.getApplicationContext() == null
                 ? context
                 : context.getApplicationContext();
-        new Thread(() -> {
+        startWorker("GramSieve-log-export", () -> {
             LogFileSupport.ExportResult result = LogFileSupport.exportToDownloads(appContext);
-            logConsoleStatus.post(() -> {
+            uiCallbacks.post(logConsoleStatus, () -> {
                 if (generation != logConsoleGeneration || overlay == null) {
                     return;
                 }
@@ -806,7 +848,7 @@ final class HostConfigPanel {
                 Toast.makeText(context, t("日志已导出：" + result.displayName,
                         "Log exported: " + result.displayName), Toast.LENGTH_LONG).show();
             });
-        }, "GramSieve-log-export").start();
+        });
     }
 
     private void buildConflictCard(LinearLayout container) {
@@ -821,7 +863,7 @@ final class HostConfigPanel {
 
     private void requestModuleState(LinearLayout card) {
         int generation = ++moduleProbeGeneration;
-        new Thread(() -> {
+        startWorker("GramSieve-module-probe", () -> {
             RuntimeModuleProbe.Result result = RuntimeModuleProbe.scan(context, module);
             ArrayList<String> names = new ArrayList<>();
             for (ModuleConflictDetector.KnownModule module : result.modules) {
@@ -830,8 +872,8 @@ final class HostConfigPanel {
             Bundle data = new Bundle();
             data.putStringArrayList("installed_modules", names);
             data.putString("source", result.source);
-            card.post(() -> completeModuleProbe(generation, card, data));
-        }, "GramSieve-module-probe").start();
+            uiCallbacks.post(card, () -> completeModuleProbe(generation, card, data));
+        });
     }
 
     private void completeModuleProbe(int generation, LinearLayout card, Bundle data) {
@@ -1274,6 +1316,9 @@ final class HostConfigPanel {
     }
 
     private void close() {
+        acceptingWorkers = false;
+        interruptWorkers();
+        uiCallbacks.prepareForHotReload(0L);
         if (overlay == null) {
             return;
         }
@@ -1285,6 +1330,81 @@ final class HostConfigPanel {
         ViewGroup parent = (ViewGroup) panel.getParent();
         if (parent != null) {
             parent.removeView(panel);
+        }
+    }
+
+    private void startWorker(String name, Runnable task) {
+        if (!acceptingWorkers || task == null) {
+            return;
+        }
+        Thread worker = new Thread(() -> {
+            try {
+                task.run();
+            } finally {
+                synchronized (workers) {
+                    workers.remove(Thread.currentThread());
+                    workers.notifyAll();
+                }
+            }
+        }, name);
+        worker.setDaemon(true);
+        synchronized (workers) {
+            if (!acceptingWorkers) {
+                return;
+            }
+            workers.add(worker);
+            worker.start();
+        }
+    }
+
+    private void interruptWorkers() {
+        synchronized (workers) {
+            for (Thread worker : workers) {
+                worker.interrupt();
+            }
+        }
+    }
+
+    private boolean awaitWorkers(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        synchronized (workers) {
+            while (!workers.isEmpty()) {
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) {
+                    return false;
+                }
+                try {
+                    workers.wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return true;
+        }
+    }
+
+    private static boolean runOnMainAndWait(Runnable action, long timeoutMs) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run();
+            return true;
+        }
+        CountDownLatch completed = new CountDownLatch(1);
+        Handler handler = new Handler(Looper.getMainLooper());
+        if (!handler.post(() -> {
+            try {
+                action.run();
+            } finally {
+                completed.countDown();
+            }
+        })) {
+            return false;
+        }
+        try {
+            return completed.await(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return false;
         }
     }
 

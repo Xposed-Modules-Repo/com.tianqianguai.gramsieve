@@ -111,11 +111,14 @@ final class TelegramHookInstaller {
 
     private final XposedModule module;
     private final EnhancementHookInstaller enhancementHooks;
+    private final UiCallbackRegistry uiCallbacks = new UiCallbackRegistry();
     private XposedConfigProvider configProvider;
     private volatile Context hostApplicationContext;
     private volatile String telegramResourcePackageName = TelegramPackages.PLAY_PACKAGE;
     private volatile BroadcastReceiver cliReceiver;
+    private final Set<Thread> cliWorkers = Collections.synchronizedSet(new HashSet<>());
     private volatile WeakReference<Object> activeChatActivity = new WeakReference<>(null);
+    private volatile WeakReference<ViewGroup> activeConfigRoot = new WeakReference<>(null);
     private final Object moduleFallbackLock = new Object();
     private volatile EnhancementConfig moduleFallbackSnapshot = new EnhancementConfig();
     private volatile long moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
@@ -152,6 +155,7 @@ final class TelegramHookInstaller {
     private volatile boolean readPositionDirty;
     private volatile boolean jumpDetected;
     private volatile boolean settingsListRowLogged;
+    private volatile boolean retiring;
 
     TelegramHookInstaller(XposedModule module) {
         this.module = module;
@@ -167,6 +171,7 @@ final class TelegramHookInstaller {
         if (installed) {
             return;
         }
+        retiring = false;
         String actualPackageName = applicationInfo == null ? null : applicationInfo.packageName;
         telegramResourcePackageName = TelegramPackages.resolveResourcePackage(actualPackageName);
         info("Telegram host package=" + (actualPackageName == null ? "<unknown>" : actualPackageName)
@@ -199,6 +204,91 @@ final class TelegramHookInstaller {
         hookOnItemClickDiagnostic(classLoader);
         installed = true;
         info("Installed Telegram hooks");
+    }
+
+    String targetPackageName() {
+        return telegramResourcePackageName;
+    }
+
+    synchronized boolean prepareForHotReload() {
+        if (retiring) {
+            return true;
+        }
+        retiring = true;
+        boolean clean = true;
+        enhancementHooks.prepareForHotReload();
+        clean &= reliableDownloadHooks.prepareForHotReload();
+
+        Context context = hostApplicationContext;
+        BroadcastReceiver receiver = cliReceiver;
+        cliReceiver = null;
+        if (context != null && receiver != null) {
+            try {
+                context.unregisterReceiver(receiver);
+            } catch (IllegalArgumentException ignored) {
+                // The host may already have unregistered its receiver while shutting down.
+            } catch (RuntimeException exception) {
+                clean = false;
+                error("Hot reload: CLI receiver unregister failed", exception);
+            }
+        }
+        clean &= awaitCliWorkers(3_000L);
+
+        ViewGroup configRoot = activeConfigRoot.get();
+        activeConfigRoot = new WeakReference<>(null);
+        clean &= HostConfigPanel.closeForHotReload(configRoot, 4_000L);
+        clean &= uiCallbacks.prepareForHotReload(3_000L);
+
+        TelegramDialogDatabasePruner pruner = dialogDatabasePruner;
+        if (pruner != null) {
+            clean &= pruner.prepareForHotReload(4_000L);
+        }
+        RecallDetector detector = recallDetector;
+        if (detector != null) {
+            clean &= detector.prepareForHotReload();
+        }
+        BackgroundMessageLoader loader = backgroundMessageLoader;
+        if (loader != null) {
+            clean &= loader.prepareForHotReload();
+        }
+        MediaPrefetcher prefetcher = mediaPrefetcher;
+        if (prefetcher != null) {
+            clean &= prefetcher.prepareForHotReload();
+        }
+        EditHistoryPolicyStore policyStore = editHistoryPolicyStore;
+        if (policyStore != null) {
+            try {
+                policyStore.close();
+            } catch (RuntimeException exception) {
+                clean = false;
+                error("Hot reload: edit-history store close failed", exception);
+            }
+        }
+        MessageCache cache = messageCache;
+        if (cache != null) {
+            clean &= cache.prepareForHotReload();
+        }
+
+        downloadPageFragmentView = null;
+        backgroundMessageLoader = null;
+        recallDetector = null;
+        antiRecallConfigStore = null;
+        editHistoryPolicyStore = null;
+        localDialogDeleteStore = null;
+        messageMarkStore = null;
+        dialogDatabasePruner = null;
+        mediaPrefetcher = null;
+        mediaCache = null;
+        messageCache = null;
+        configProvider = null;
+        hostApplicationContext = null;
+        savedClassLoader = null;
+        activeChatActivity = new WeakReference<>(null);
+        locallyHiddenDialogs.clear();
+        decisionCache.clear();
+        installed = false;
+        info("Hot reload: old generation resources retired clean=" + clean);
+        return clean;
     }
 
     private volatile ClassLoader savedClassLoader;
@@ -394,10 +484,7 @@ final class TelegramHookInstaller {
                 String command = intent == null ? "" : stringExtra(intent, "command");
                 if (isAsyncCliCommand(command)) {
                     PendingResult pendingResult = goAsync();
-                    new Thread(
-                            () -> completeAsyncCliCommand(receiverContext, intent, command, pendingResult),
-                            "GramSieve-cli-" + command.replace('.', '-')
-                    ).start();
+                    startCliWorker(receiverContext, intent, command, pendingResult);
                     return;
                 }
                 try {
@@ -434,6 +521,53 @@ final class TelegramHookInstaller {
         );
         cliReceiver = receiver;
         info("CLI bridge registered action=" + CLI_ACTION + " permission=android.permission.DUMP");
+    }
+
+    private void startCliWorker(Context context, Intent intent, String command,
+                                BroadcastReceiver.PendingResult pendingResult) {
+        Thread worker = new Thread(() -> {
+            try {
+                completeAsyncCliCommand(context, intent, command, pendingResult);
+            } finally {
+                synchronized (cliWorkers) {
+                    cliWorkers.remove(Thread.currentThread());
+                    cliWorkers.notifyAll();
+                }
+            }
+        }, "GramSieve-cli-" + command.replace('.', '-'));
+        worker.setDaemon(true);
+        synchronized (cliWorkers) {
+            if (retiring) {
+                pendingResult.setResultCode(Activity.RESULT_CANCELED);
+                pendingResult.setResultData("{\"ok\":false,\"error\":\"hot reload in progress\"}");
+                pendingResult.finish();
+                return;
+            }
+            cliWorkers.add(worker);
+            worker.start();
+        }
+    }
+
+    private boolean awaitCliWorkers(long timeoutMs) {
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        synchronized (cliWorkers) {
+            while (!cliWorkers.isEmpty()) {
+                for (Thread worker : cliWorkers) {
+                    worker.interrupt();
+                }
+                long remaining = deadline - System.currentTimeMillis();
+                if (remaining <= 0L) {
+                    return false;
+                }
+                try {
+                    cliWorkers.wait(remaining);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return false;
+                }
+            }
+            return true;
+        }
     }
 
     private boolean isAsyncCliCommand(String command) {
@@ -1625,13 +1759,13 @@ final class TelegramHookInstaller {
                     if (actionBar instanceof ViewGroup) {
                         View bar = (ViewGroup) actionBar;
                         Object activityRef = activity;
-                        bar.postDelayed(() -> {
+                        uiCallbacks.post(bar, () -> {
                             try {
                                 startKeepVisibleLoop((ViewGroup) bar);
                                 installActionModeDetector((ViewGroup) bar);
                                 // After download button auto-clicks, also install detector on
                                 // the download page's internal ActionBarMenu
-                                bar.postDelayed(() -> {
+                                uiCallbacks.post(bar, () -> {
                                     try {
                                         installActionModeDetectorOnDownloadPage((ViewGroup) bar, activityRef);
                                     } catch (Throwable t) {
@@ -1822,7 +1956,7 @@ final class TelegramHookInstaller {
                     Reflect.invokeIfExists(adapter, "notifyDataSetChanged", new Class<?>[0]);
                     ((View) listView).requestLayout();
                     ((View) listView).invalidate();
-                    ((View) listView).post(() -> {
+                    uiCallbacks.post((View) listView, () -> {
                         try {
                             Object delayedAdapter = Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0]);
                             if (listView instanceof ViewGroup) {
@@ -2091,7 +2225,7 @@ final class TelegramHookInstaller {
             return;
         }
         info("SelectAll: installing action mode detector on ActionBarMenu children=" + menu.getChildCount());
-        menu.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+        uiCallbacks.setHierarchyListener(menu, new ViewGroup.OnHierarchyChangeListener() {
             @Override
             public void onChildViewAdded(View parent, View child) {
                 try {
@@ -2100,7 +2234,7 @@ final class TelegramHookInstaller {
                     }
                     if (isActionModeIndicator(child)) {
                         info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
-                        menu.postDelayed(() -> {
+                        uiCallbacks.post(menu, () -> {
                             try {
                                 if (menu.findViewWithTag(MENU_ID_SELECT_ALL) == null) {
                                     // Check if we're on the download page
@@ -2158,7 +2292,7 @@ final class TelegramHookInstaller {
         info("SelectAll: download page detected, polling for action mode");
         ViewGroup fragmentViewRef = (ViewGroup) fragmentView;
         // Poll for action mode buttons
-        actionBar.postDelayed(new Runnable() {
+        uiCallbacks.post(actionBar, new Runnable() {
             @Override
             public void run() {
                 try {
@@ -2186,10 +2320,10 @@ final class TelegramHookInstaller {
                         info("SelectAll: action mode detected, injecting Select All into action mode menu");
                         injectSelectAllIntoActionModeForDownload(actionModeMenu, fragmentViewRef);
                     }
-                    actionBar.postDelayed(this, 500);
+                    uiCallbacks.post(actionBar, this, 500);
                 } catch (Throwable t) {
                     error("SelectAll: poll error", t);
-                    actionBar.postDelayed(this, 1000);
+                    uiCallbacks.post(actionBar, this, 1000);
                 }
             }
         }, 500);
@@ -2222,7 +2356,7 @@ final class TelegramHookInstaller {
         menu.invalidate();
         menu.requestLayout();
         info("SelectAll: injected into ActionBarMenu at index=" + insertIndex + " children=" + menu.getChildCount());
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 info("SelectAll: download page Select All clicked");
                 selectAllDownloadItems(fragmentView);
@@ -2387,7 +2521,7 @@ final class TelegramHookInstaller {
         if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
             return;
         }
-        menu.setOnHierarchyChangeListener(new ViewGroup.OnHierarchyChangeListener() {
+        uiCallbacks.setHierarchyListener(menu, new ViewGroup.OnHierarchyChangeListener() {
             @Override
             public void onChildViewAdded(View parent, View child) {
                 try {
@@ -2396,7 +2530,7 @@ final class TelegramHookInstaller {
                     }
                     if (isActionModeIndicator(child)) {
                         info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
-                        menu.postDelayed(() -> {
+                        uiCallbacks.post(menu, () -> {
                             try {
                                 if (menu.findViewWithTag(MENU_ID_SELECT_ALL) == null) {
                                     injectSelectAllIntoActionMode(menu);
@@ -2706,7 +2840,7 @@ final class TelegramHookInstaller {
         content.addView(button, insertIdx, lp);
         info("SelectAll: inserted at index " + insertIdx);
         ViewGroup parent = bar.getParent() instanceof ViewGroup ? (ViewGroup) bar.getParent() : null;
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 info("SelectAll: clicked!");
                 if (parent != null) selectAllFromContentView(parent);
@@ -2887,7 +3021,7 @@ final class TelegramHookInstaller {
         button.setTextSize(14);
         button.setPadding(dp(context, 12), 0, dp(context, 12), 0);
         button.setGravity(android.view.Gravity.CENTER);
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 selectAllDownloadItems(activity);
             } catch (Throwable throwable) {
@@ -2915,7 +3049,7 @@ final class TelegramHookInstaller {
         button.setTextColor(0xFFFFFFFF);
         button.setPadding(dp(context, 16), 0, dp(context, 16), 0);
         button.setGravity(android.view.Gravity.CENTER);
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 selectAllInActionMode(menuView);
             } catch (Throwable throwable) {
@@ -2946,7 +3080,7 @@ final class TelegramHookInstaller {
         // No background - match the delete button style
         ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 info("SelectAll: download page Select All clicked in action mode");
                 selectAllDownloadItems(fragmentView);
@@ -3044,7 +3178,7 @@ final class TelegramHookInstaller {
 
         // Force re-bind visible cells to update checkmarks
         final RecyclerView rv = recyclerView;
-        rv.post(() -> {
+        uiCallbacks.post(rv, () -> {
             for (int i = 0; i < rv.getChildCount(); i++) {
                 View child = rv.getChildAt(i);
                 if (child != null) {
@@ -3175,7 +3309,7 @@ final class TelegramHookInstaller {
         button.bringToFront();
         button.setClickable(true);
         button.setFocusable(true);
-        button.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(button, v -> {
             try {
                 info("SelectAll: button clicked!");
                 selectAllFromActionBar(bar);
@@ -3183,7 +3317,7 @@ final class TelegramHookInstaller {
                 error("Select all failed", throwable);
             }
         });
-        button.setOnTouchListener((v, event) -> {
+        uiCallbacks.setTouchListener(button, (v, event) -> {
             info("SelectAll: touch event=" + event.getAction());
             return false;
         });
@@ -4202,7 +4336,7 @@ final class TelegramHookInstaller {
         }
         
         cell.setTag(R.id.gramsieve_menu_item_id, "recalled_" + cachedMessage.messageId);
-        cell.post(() -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
+        uiCallbacks.post(cell, () -> Toast.makeText(context, markText, Toast.LENGTH_LONG).show());
     }
 
     private void showEditedMark(View cell, MessageCache.CachedMessage cachedMessage) {
@@ -5329,7 +5463,7 @@ final class TelegramHookInstaller {
         }
         Object selectedMessageObject = messageObject;
         blockItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_BLOCK_MESSAGE);
-        blockItem.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(blockItem, v -> {
             dismissScrimPopup(chatActivity);
             addRuleForSelectedMessage(v.getContext(), messageView, selectedMessageObject);
         });
@@ -5337,7 +5471,7 @@ final class TelegramHookInstaller {
         View markItem = createMessageMarkMenuItem(((View) contentView).getContext(), chatActivity);
         if (markItem != null) {
             markItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_MARK_MESSAGE);
-            markItem.setOnClickListener(v -> {
+            uiCallbacks.setClickListener(markItem, v -> {
                 dismissScrimPopup(chatActivity);
                 markSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
             });
@@ -5348,7 +5482,7 @@ final class TelegramHookInstaller {
                 : null;
         if (editHistoryItem != null) {
             editHistoryItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_EDIT_HISTORY);
-            editHistoryItem.setOnClickListener(v -> {
+            uiCallbacks.setClickListener(editHistoryItem, v -> {
                 dismissScrimPopup(chatActivity);
                 showSelectedMessageEditHistory(v, chatActivity, selectedMessageObject);
             });
@@ -5359,7 +5493,7 @@ final class TelegramHookInstaller {
         ) ? createReloadMessageMenuItem(((View) contentView).getContext(), chatActivity) : null;
         if (reloadItem != null) {
             reloadItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_RELOAD_MESSAGE);
-            reloadItem.setOnClickListener(v -> {
+            uiCallbacks.setClickListener(reloadItem, v -> {
                 dismissScrimPopup(chatActivity);
                 reloadSelectedMessage(v.getContext(), chatActivity, selectedMessageObject);
             });
@@ -5853,6 +5987,7 @@ final class TelegramHookInstaller {
         }
         Context context = anchor.getContext();
         android.app.Dialog dialog = new android.app.Dialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        uiCallbacks.trackDialog(dialog);
         android.widget.FrameLayout root = new android.widget.FrameLayout(context);
         root.setBackgroundColor(android.graphics.Color.BLACK);
         ImageView imageView = new ImageView(context);
@@ -5863,7 +5998,7 @@ final class TelegramHookInstaller {
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
         ));
-        root.setOnClickListener(v -> dialog.dismiss());
+        uiCallbacks.setClickListener(root, v -> dialog.dismiss());
         dialog.setContentView(root);
         dialog.show();
         info("Anti-recall: opened original image history locally msgId=" + cachedMessage.messageId + " file=" + file.getName());
@@ -5873,6 +6008,7 @@ final class TelegramHookInstaller {
     private boolean showOriginalVideoHistory(View anchor, MessageCache.CachedMessage cachedMessage, java.io.File file) {
         Context context = anchor.getContext();
         android.app.Dialog dialog = new android.app.Dialog(context, android.R.style.Theme_Black_NoTitleBar_Fullscreen);
+        uiCallbacks.trackDialog(dialog);
         android.widget.FrameLayout root = new android.widget.FrameLayout(context);
         root.setBackgroundColor(android.graphics.Color.BLACK);
 
@@ -5890,7 +6026,7 @@ final class TelegramHookInstaller {
         closeButton.setImageResource(android.R.drawable.ic_menu_close_clear_cancel);
         closeButton.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         closeButton.setColorFilter(android.graphics.Color.WHITE);
-        closeButton.setOnClickListener(v -> dialog.dismiss());
+        uiCallbacks.setClickListener(closeButton, v -> dialog.dismiss());
         android.widget.FrameLayout.LayoutParams closeParams = new android.widget.FrameLayout.LayoutParams(
                 dp(context, 48f),
                 dp(context, 48f),
@@ -6344,7 +6480,7 @@ final class TelegramHookInstaller {
         refreshRadialSelectors(insertedItem);
         popupContent.requestLayout();
         popupContent.invalidate();
-        popupContent.post(() -> {
+        uiCallbacks.post(popupContent, () -> {
             refreshRadialSelectors(insertedItem);
             popupContent.requestLayout();
             popupContent.invalidate();
@@ -6558,7 +6694,7 @@ final class TelegramHookInstaller {
         if (parent instanceof View) {
             ((View) parent).requestLayout();
         }
-        refreshRoot.post(() -> {
+        uiCallbacks.post(refreshRoot, () -> {
             int postRefreshed = refreshBoundMessages(refreshRoot);
             refreshRoot.requestLayout();
             refreshRoot.invalidate();
@@ -6716,7 +6852,7 @@ final class TelegramHookInstaller {
             if (subItem instanceof View) {
                 View subItemView = (View) subItem;
                 subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CHAT);
-                subItemView.setOnClickListener(v -> {
+                uiCallbacks.setClickListener(subItemView, v -> {
                     try {
                         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
                         String title = resolveChatTitle(chatActivity);
@@ -6837,7 +6973,7 @@ final class TelegramHookInstaller {
         }
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_SCROLL_TOP);
-        subItemView.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(subItemView, v -> {
             try {
                 info("ScrollToTop menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
@@ -6861,7 +6997,7 @@ final class TelegramHookInstaller {
         }
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_JUMP_TO_MARK);
-        subItemView.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(subItemView, v -> {
             try {
                 info("JumpToMark menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
@@ -6916,7 +7052,7 @@ final class TelegramHookInstaller {
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
         info("Anti-recall: menu item created, class=" + subItemView.getClass().getName());
-        subItemView.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(subItemView, v -> {
             try {
                 info("Anti-recall: onClick fired");
                 boolean wasEnabled = backgroundMessageLoader.isChatEnabled(dialogId);
@@ -6976,7 +7112,7 @@ final class TelegramHookInstaller {
         }
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CLEANUP_MODE);
-        subItemView.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(subItemView, v -> {
             try {
                 boolean enabled = recallDetector.toggleCleanupMode(dialogId, CLEANUP_MODE_DURATION_MS);
                 Reflect.invokeIfExists(v, "setText", new Class<?>[]{CharSequence.class},
@@ -7197,7 +7333,7 @@ final class TelegramHookInstaller {
         }
         View subItemView = (View) subItem;
         subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_GLOBAL);
-        subItemView.setOnClickListener(v -> {
+        uiCallbacks.setClickListener(subItemView, v -> {
             try {
                 openConfigFromHost(host, v.getContext(), CONFIG_MODE_GLOBAL, 0L, "");
             } finally {
@@ -7567,6 +7703,7 @@ final class TelegramHookInstaller {
                 module
         );
         if (shown) {
+            activeConfigRoot = new WeakReference<>(root);
             info("Opened host config panel mode=" + mode + " dialogId=" + dialogId);
         }
         return shown;
@@ -7650,9 +7787,10 @@ final class TelegramHookInstaller {
 
     private void hook(Method method, XposedInterface.Hooker hooker) {
         module.hook(method)
+                .setId(HookIdentity.forCaller("telegram", method))
                 .setPriority(XposedInterface.PRIORITY_LOWEST)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
-                .intercept(hooker);
+                .intercept(chain -> retiring ? chain.proceed() : hooker.intercept(chain));
     }
 
     private void deoptimize(Method method, String label) {

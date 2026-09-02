@@ -336,6 +336,21 @@ public final class MessageCache {
         return store.getEditHistory(accountId, dialogId, messageId);
     }
 
+    boolean prepareForHotReload() {
+        mediaObjects.clear();
+        if (store instanceof SerializedMessageStore) {
+            return ((SerializedMessageStore) store).prepareForHotReload();
+        }
+        if (store instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) store).close();
+            } catch (Exception ignored) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     private static String key(int accountId, long dialogId, long messageId) {
         return accountId == 0
                 ? dialogId + ":" + messageId

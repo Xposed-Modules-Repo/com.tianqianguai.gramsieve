@@ -108,7 +108,11 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
 
     @Override
     public void close() {
-        executor.shutdown();
+        prepareForHotReload();
+    }
+
+    boolean prepareForHotReload() {
+        return ExecutorShutdown.gracefulThenNow(executor, 3_000L);
     }
 
     private void markMessagesDeleted(Object messagesStorage, long dialogId, List<Integer> messageIds) {
