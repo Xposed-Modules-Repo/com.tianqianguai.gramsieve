@@ -221,7 +221,7 @@ public final class LogFileSupport {
             return "gramsieve-log-"
                     + new SimpleDateFormat("yyyyMMdd-HHmmss-SSS", Locale.US)
                     .format(new Date(safeTimestamp))
-                    + ".log";
+                    + ".txt";
         }
     }
 

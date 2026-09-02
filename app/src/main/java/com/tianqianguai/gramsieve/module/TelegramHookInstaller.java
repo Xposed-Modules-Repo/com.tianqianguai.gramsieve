@@ -2,6 +2,7 @@ package com.tianqianguai.gramsieve.module;
 
 import android.Manifest;
 import android.app.Activity;
+import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.pm.ApplicationInfo;
 import android.content.ComponentName;
@@ -120,6 +121,9 @@ final class TelegramHookInstaller {
     private final Set<Thread> cliWorkers = Collections.synchronizedSet(new HashSet<>());
     private volatile WeakReference<Object> activeChatActivity = new WeakReference<>(null);
     private volatile WeakReference<ViewGroup> activeConfigRoot = new WeakReference<>(null);
+    private volatile WeakReference<Activity> resumedHostActivity = new WeakReference<>(null);
+    private volatile Application hostLifecycleApplication;
+    private volatile Application.ActivityLifecycleCallbacks hostLifecycleCallbacks;
     private final Object moduleFallbackLock = new Object();
     private volatile EnhancementConfig moduleFallbackSnapshot = new EnhancementConfig();
     private volatile long moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
@@ -235,6 +239,8 @@ final class TelegramHookInstaller {
         }
         clean &= awaitCliWorkers(3_000L);
 
+        unregisterHostActivityTracking();
+
         ViewGroup configRoot = activeConfigRoot.get();
         activeConfigRoot = new WeakReference<>(null);
         clean &= HostConfigPanel.closeForHotReload(configRoot, 4_000L);
@@ -285,6 +291,7 @@ final class TelegramHookInstaller {
         hostApplicationContext = null;
         savedClassLoader = null;
         activeChatActivity = new WeakReference<>(null);
+        resumedHostActivity = new WeakReference<>(null);
         locallyHiddenDialogs.clear();
         decisionCache.clear();
         installed = false;
@@ -355,6 +362,7 @@ final class TelegramHookInstaller {
                 ? context.getApplicationContext()
                 : context;
         ModuleLogger.init(context);
+        registerHostActivityTracking(hostApplicationContext);
         antiRecallConfigStore = new AntiRecallConfigStore(context);
         messageMarkStore = new MessageMarkStore(context);
         localDialogDeleteStore = new LocalDialogDeleteStore(context);
@@ -576,7 +584,8 @@ final class TelegramHookInstaller {
                 || "log.tail".equalsIgnoreCase(command)
                 || "log.range".equalsIgnoreCase(command)
                 || "log.info".equalsIgnoreCase(command)
-                || "log.export".equalsIgnoreCase(command);
+                || "log.export".equalsIgnoreCase(command)
+                || "ui.log-console.select".equalsIgnoreCase(command);
     }
 
     private void completeAsyncCliCommand(Context context, Intent intent, String command,
@@ -695,6 +704,14 @@ final class TelegramHookInstaller {
                 return cliCleanup(response, intent, true);
             case "ui.state":
                 return cliUiState(response);
+            case "ui.config.open":
+                return cliUiConfigOpen(response);
+            case "ui.config.close":
+                return cliUiConfigClose(response);
+            case "ui.log-console.state":
+                return cliUiLogConsole(response, intent, false);
+            case "ui.log-console.select":
+                return cliUiLogConsole(response, intent, true);
             case "ui.jump-mark":
                 return cliUiJump(response, context, intent);
             case "ui.scroll":
@@ -725,7 +742,10 @@ final class TelegramHookInstaller {
                 "mark.list", "mark.set", "mark.clear",
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
-                "cleanup.get", "cleanup.set", "ui.state", "ui.jump-mark", "ui.scroll"
+                "cleanup.get", "cleanup.set", "ui.state",
+                "ui.config.open", "ui.config.close",
+                "ui.log-console.state", "ui.log-console.select",
+                "ui.jump-mark", "ui.scroll"
         )));
         response.put("configSetExtras", new JSONArray(Arrays.asList("config_json", "config_b64")));
         response.put("maxResponseChars", MAX_CLI_RESPONSE_CHARS);
@@ -1206,12 +1226,107 @@ final class TelegramHookInstaller {
 
     private JSONObject cliUiState(JSONObject response) throws Exception {
         Object chatActivity = activeChatActivity.get();
+        HostConfigPanel.LogSelectionDiagnostics logConsole =
+                HostConfigPanel.inspectLogSelection(false, 0, -1, 1_500L);
         response.put("activeChat", chatActivity != null);
         response.put("trackedDialogId", trackedDialogId);
+        response.put("resumedActivity", activityName(resumedHostActivity.get()));
+        response.put("configPanelOpen", logConsole.panelOpen);
         response.put("selectedMessage", chatActivity != null
                 && Reflect.field(chatActivity, "selectedObject") != null);
-        response.put("directActions", new JSONArray(Arrays.asList("jump-mark", "scroll")));
+        response.put("directActions", new JSONArray(Arrays.asList(
+                "config.open", "config.close", "log-console.state",
+                "log-console.select", "jump-mark", "scroll"
+        )));
         return response;
+    }
+
+    private JSONObject cliUiConfigOpen(JSONObject response) throws Exception {
+        Activity activity = resumedHostActivity.get();
+        if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+            throw new IllegalStateException(
+                    "No resumed Telegram activity; foreground Telegram once and retry"
+            );
+        }
+        boolean opened = showHostConfigPanel(
+                activity,
+                activity,
+                CONFIG_MODE_GLOBAL,
+                0L,
+                ""
+        );
+        if (!opened) {
+            throw new IllegalStateException("Could not attach GramSieve config panel");
+        }
+        response.put("opened", true);
+        response.put("activity", activityName(activity));
+        return appendLogSelectionDiagnostics(
+                response,
+                HostConfigPanel.inspectLogSelection(false, 0, -1, 1_500L)
+        );
+    }
+
+    private JSONObject cliUiConfigClose(JSONObject response) throws Exception {
+        ViewGroup root = activeConfigRoot.get();
+        boolean closed = HostConfigPanel.closeExisting(root);
+        if (closed) {
+            activeConfigRoot = new WeakReference<>(null);
+        }
+        response.put("closed", closed);
+        return response;
+    }
+
+    private JSONObject cliUiLogConsole(
+            JSONObject response,
+            Intent intent,
+            boolean exercise
+    ) throws Exception {
+        int start = intExtra(intent, "start", 0);
+        int end = intExtra(intent, "end", -1);
+        HostConfigPanel.LogSelectionDiagnostics diagnostics =
+                HostConfigPanel.inspectLogSelection(exercise, start, end, 2_500L);
+        return appendLogSelectionDiagnostics(response, diagnostics);
+    }
+
+    private JSONObject appendLogSelectionDiagnostics(
+            JSONObject response,
+            HostConfigPanel.LogSelectionDiagnostics diagnostics
+    ) throws Exception {
+        JSONObject state = new JSONObject();
+        state.put("panelOpen", diagnostics.panelOpen);
+        state.put("exercised", diagnostics.exercised);
+        state.put("attached", diagnostics.attached);
+        state.put("globallyVisible", diagnostics.globallyVisible);
+        state.put("visibilityRequested", diagnostics.visibilityRequested);
+        state.put("textSelectable", diagnostics.textSelectable);
+        state.put("longClickable", diagnostics.longClickable);
+        state.put("focusable", diagnostics.focusable);
+        state.put("focused", diagnostics.focused);
+        state.put("textLength", diagnostics.textLength);
+        state.put("selectionStart", diagnostics.selectionStart);
+        state.put("selectionEnd", diagnostics.selectionEnd);
+        state.put("hasSelection", diagnostics.hasSelection);
+        state.put("longClickPerformed", diagnostics.longClickPerformed);
+        state.put("contextMenuShown", diagnostics.contextMenuShown);
+        state.put("actionModeCreateCount", diagnostics.actionModeCreateCount);
+        state.put("actionModeActive", diagnostics.actionModeActive);
+        state.put("selectionMenuSize", diagnostics.selectionMenuSize);
+        state.put("actionModeObserved", diagnostics.actionModeObserved);
+        state.put("selectionControllerPresent", diagnostics.selectionControllerPresent);
+        state.put("selectionControllerActive", diagnostics.selectionControllerActive);
+        state.put("startHandleShowing", diagnostics.startHandleShowing);
+        state.put("endHandleShowing", diagnostics.endHandleShowing);
+        state.put("selectionHandlesShowing", diagnostics.selectionHandlesShowing);
+        state.put("selectionUiReady", diagnostics.selectionUiReady);
+        if (!diagnostics.error.isBlank()) {
+            state.put("error", diagnostics.error);
+        }
+        response.put("logConsole", state);
+        return response;
+    }
+
+    private String activityName(Activity activity) {
+        return activity == null ? "" : activity.getClass().getName();
     }
 
     private JSONObject cliUiJump(JSONObject response, Context context, Intent intent) throws Exception {
@@ -1400,6 +1515,90 @@ final class TelegramHookInstaller {
             info("Anti-recall: ActivityThread.currentApplication() unavailable");
             return null;
         }
+    }
+
+    private synchronized void registerHostActivityTracking(Context context) {
+        if (hostLifecycleCallbacks != null || context == null) {
+            return;
+        }
+        Context appContext = context.getApplicationContext();
+        Application application = appContext instanceof Application
+                ? (Application) appContext
+                : context instanceof Application ? (Application) context : null;
+        if (application == null) {
+            info("CLI activity tracking unavailable: host Application missing");
+            return;
+        }
+        Application.ActivityLifecycleCallbacks callbacks =
+                new Application.ActivityLifecycleCallbacks() {
+                    @Override
+                    public void onActivityCreated(Activity activity, Bundle state) {
+                    }
+
+                    @Override
+                    public void onActivityStarted(Activity activity) {
+                    }
+
+                    @Override
+                    public void onActivityResumed(Activity activity) {
+                        if (isTelegramHostActivity(activity)) {
+                            resumedHostActivity = new WeakReference<>(activity);
+                        }
+                    }
+
+                    @Override
+                    public void onActivityPaused(Activity activity) {
+                        if (resumedHostActivity.get() == activity) {
+                            resumedHostActivity = new WeakReference<>(null);
+                        }
+                    }
+
+                    @Override
+                    public void onActivityStopped(Activity activity) {
+                        if (resumedHostActivity.get() == activity) {
+                            resumedHostActivity = new WeakReference<>(null);
+                        }
+                    }
+
+                    @Override
+                    public void onActivitySaveInstanceState(Activity activity, Bundle state) {
+                    }
+
+                    @Override
+                    public void onActivityDestroyed(Activity activity) {
+                        if (resumedHostActivity.get() == activity) {
+                            resumedHostActivity = new WeakReference<>(null);
+                        }
+                    }
+                };
+        application.registerActivityLifecycleCallbacks(callbacks);
+        hostLifecycleApplication = application;
+        hostLifecycleCallbacks = callbacks;
+        info("CLI activity tracking registered");
+    }
+
+    private synchronized void unregisterHostActivityTracking() {
+        Application application = hostLifecycleApplication;
+        Application.ActivityLifecycleCallbacks callbacks = hostLifecycleCallbacks;
+        hostLifecycleApplication = null;
+        hostLifecycleCallbacks = null;
+        resumedHostActivity = new WeakReference<>(null);
+        if (application == null || callbacks == null) {
+            return;
+        }
+        try {
+            application.unregisterActivityLifecycleCallbacks(callbacks);
+        } catch (RuntimeException exception) {
+            error("Hot reload: CLI activity tracking unregister failed", exception);
+        }
+    }
+
+    private boolean isTelegramHostActivity(Activity activity) {
+        if (activity == null) {
+            return false;
+        }
+        String packageName = activity.getPackageName();
+        return packageName != null && packageName.equals(telegramResourcePackageName);
     }
 
     private boolean usesModuleFallback(ModuleConflictDetector.ConflictKind kind) {

@@ -12,14 +12,20 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.TypedValue;
+import android.view.ActionMode;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.Menu;
+import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewConfiguration;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.window.OnBackInvokedCallback;
@@ -58,6 +64,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
@@ -65,6 +72,9 @@ import io.github.libxposed.api.XposedModule;
 
 @SuppressLint({"UseSwitchCompatOrMaterialCode", "SetTextI18n"})
 final class HostConfigPanel {
+    private static volatile WeakReference<HostConfigPanel> activePanel =
+            new WeakReference<>(null);
+
     private enum DialogHistoryChoice {
         FOLLOW_GLOBAL,
         RECORD,
@@ -147,6 +157,11 @@ final class HostConfigPanel {
     private EditText logFromInput;
     private EditText logToInput;
     private EditText logConsoleOutput;
+    private ActionMode logSelectionActionMode;
+    private volatile int logSelectionLongClickCount;
+    private volatile int logSelectionActionModeCreateCount;
+    private volatile boolean logSelectionActionModeActive;
+    private volatile int logSelectionMenuSize;
     private volatile boolean acceptingWorkers = true;
 
     private HostConfigPanel(
@@ -235,7 +250,35 @@ final class HostConfigPanel {
                 module
         );
         panel.attach();
+        activePanel = new WeakReference<>(panel);
         return true;
+    }
+
+    static LogSelectionDiagnostics inspectLogSelection(
+            boolean exercise,
+            int requestedStart,
+            int requestedEnd,
+            long timeoutMs
+    ) {
+        HostConfigPanel panel = activePanel.get();
+        if (panel == null) {
+            return LogSelectionDiagnostics.unavailable("GramSieve config panel is not open");
+        }
+        if (exercise) {
+            return panel.exerciseLogSelection(requestedStart, requestedEnd, timeoutMs);
+        }
+        LogSelectionDiagnostics[] result = new LogSelectionDiagnostics[1];
+        boolean completed = runOnMainAndWait(
+                () -> result[0] = panel.collectLogSelectionOnMain(
+                        false, false, false, false,
+                        panel.logSelectionActionModeCreateCount
+                ),
+                timeoutMs
+        );
+        if (!completed || result[0] == null) {
+            return LogSelectionDiagnostics.unavailable("Timed out waiting for Telegram UI thread");
+        }
+        return result[0];
     }
 
     static boolean closeExisting(ViewGroup root) {
@@ -376,6 +419,9 @@ final class HostConfigPanel {
 
             @Override
             public void onViewDetachedFromWindow(View view) {
+                if (activePanel.get() == HostConfigPanel.this) {
+                    activePanel = new WeakReference<>(null);
+                }
                 unregisterSystemBackHandler();
             }
         });
@@ -784,6 +830,36 @@ final class HostConfigPanel {
         logConsoleOutput.setFocusableInTouchMode(true);
         logConsoleOutput.setLongClickable(true);
         logConsoleOutput.setTextIsSelectable(true);
+        logConsoleOutput.setOnLongClickListener(view -> {
+            logSelectionLongClickCount++;
+            view.post(this::ensureLogSelectionUi);
+            return false;
+        });
+        logConsoleOutput.setCustomSelectionActionModeCallback(new ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(ActionMode mode, Menu menu) {
+                logSelectionActionModeCreateCount++;
+                logSelectionActionModeActive = true;
+                logSelectionMenuSize = menu == null ? 0 : menu.size();
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode mode, Menu menu) {
+                logSelectionMenuSize = menu == null ? 0 : menu.size();
+                return false;
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode mode, MenuItem item) {
+                return false;
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode mode) {
+                logSelectionActionModeActive = false;
+            }
+        });
         logConsoleOutput.setHorizontallyScrolling(true);
         logConsoleOutput.setVerticalScrollBarEnabled(true);
         logConsoleOutput.setPadding(dp(2), dp(2), dp(12), dp(2));
@@ -1460,6 +1536,14 @@ final class HostConfigPanel {
         acceptingWorkers = false;
         interruptWorkers();
         uiCallbacks.prepareForHotReload(0L);
+        ActionMode selectionMode = logSelectionActionMode;
+        logSelectionActionMode = null;
+        if (selectionMode != null) {
+            selectionMode.finish();
+        }
+        if (activePanel.get() == this) {
+            activePanel = new WeakReference<>(null);
+        }
         if (overlay == null) {
             return;
         }
@@ -1472,6 +1556,253 @@ final class HostConfigPanel {
         if (parent != null) {
             parent.removeView(panel);
         }
+    }
+
+    private void ensureLogSelectionUi() {
+        EditText output = logConsoleOutput;
+        if (overlay == null || output == null
+                || output.getSelectionStart() < 0
+                || output.getSelectionEnd() <= output.getSelectionStart()) {
+            return;
+        }
+        Object editor = Reflect.field(output, "mEditor");
+        Object selectionController = Reflect.field(
+                editor,
+                "mSelectionModifierCursorController"
+        );
+        Reflect.invokeIfExists(selectionController, "show", new Class<?>[0]);
+        if (logSelectionActionModeActive) {
+            return;
+        }
+        ActionMode mode = output.startActionMode(new ActionMode.Callback() {
+            @Override
+            public boolean onCreateActionMode(ActionMode actionMode, Menu menu) {
+                logSelectionActionModeCreateCount++;
+                logSelectionActionModeActive = true;
+                menu.add(0, android.R.id.copy, 0, t("复制", "Copy"))
+                        .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS);
+                logSelectionMenuSize = menu.size();
+                return true;
+            }
+
+            @Override
+            public boolean onPrepareActionMode(ActionMode actionMode, Menu menu) {
+                logSelectionMenuSize = menu == null ? 0 : menu.size();
+                return false;
+            }
+
+            @Override
+            public boolean onActionItemClicked(ActionMode actionMode, MenuItem item) {
+                if (item == null || item.getItemId() != android.R.id.copy) {
+                    return false;
+                }
+                copySelectedLogText();
+                actionMode.finish();
+                return true;
+            }
+
+            @Override
+            public void onDestroyActionMode(ActionMode actionMode) {
+                if (logSelectionActionMode == actionMode) {
+                    logSelectionActionMode = null;
+                }
+                logSelectionActionModeActive = false;
+            }
+        }, ActionMode.TYPE_FLOATING);
+        if (mode != null) {
+            logSelectionActionMode = mode;
+        }
+    }
+
+    private void copySelectedLogText() {
+        EditText output = logConsoleOutput;
+        if (output == null || output.getText() == null) {
+            return;
+        }
+        int start = Math.max(0, output.getSelectionStart());
+        int end = Math.min(output.length(), output.getSelectionEnd());
+        if (end <= start) {
+            return;
+        }
+        ClipboardManager clipboard =
+                (ClipboardManager) context.getSystemService(Context.CLIPBOARD_SERVICE);
+        if (clipboard == null) {
+            return;
+        }
+        clipboard.setPrimaryClip(ClipData.newPlainText(
+                "GramSieve log selection",
+                output.getText().subSequence(start, end)
+        ));
+        Toast.makeText(context, t("所选日志已复制", "Selected log copied"), Toast.LENGTH_SHORT).show();
+    }
+
+    private LogSelectionDiagnostics exerciseLogSelection(
+            int requestedStart,
+            int requestedEnd,
+            long timeoutMs
+    ) {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return LogSelectionDiagnostics.unavailable(
+                    "Selection exercise must run through the asynchronous CLI worker"
+            );
+        }
+        LogSelectionDiagnostics[] result = new LogSelectionDiagnostics[1];
+        CountDownLatch completed = new CountDownLatch(1);
+        Handler handler = new Handler(Looper.getMainLooper());
+        if (!handler.post(() -> {
+            EditText output = logConsoleOutput;
+            if (overlay == null || output == null || output.length() == 0) {
+                result[0] = LogSelectionDiagnostics.unavailable("Log console has no selectable text");
+                completed.countDown();
+                return;
+            }
+            int textLength = output.length();
+            Rect fullBounds = new Rect(0, 0,
+                    Math.max(1, output.getWidth()), Math.max(1, output.getHeight()));
+            boolean visibilityRequested = output.requestRectangleOnScreen(fullBounds, true);
+            output.requestFocusFromTouch();
+
+            int start = Math.max(0, Math.min(requestedStart, textLength - 1));
+            int fallbackEnd = Math.min(textLength, start + 12);
+            int end = requestedEnd < 0
+                    ? fallbackEnd
+                    : Math.max(start + 1, Math.min(requestedEnd, textLength));
+            output.setSelection(start);
+
+            float x = Math.max(1f, Math.min(output.getWidth() - 1f,
+                    output.getTotalPaddingLeft() + dp(24)));
+            float y = Math.max(1f, Math.min(output.getHeight() - 1f,
+                    output.getTotalPaddingTop() + output.getTextSize()));
+            int longClicksBefore = logSelectionLongClickCount;
+            int actionModesBefore = logSelectionActionModeCreateCount;
+            long downTime = android.os.SystemClock.uptimeMillis();
+            MotionEvent down = MotionEvent.obtain(
+                    downTime, downTime, MotionEvent.ACTION_DOWN, x, y, 0
+            );
+            output.dispatchTouchEvent(down);
+            down.recycle();
+
+            output.postDelayed(() -> {
+                MotionEvent up = MotionEvent.obtain(
+                        downTime, android.os.SystemClock.uptimeMillis(),
+                        MotionEvent.ACTION_UP, x, y, 0
+                );
+                output.dispatchTouchEvent(up);
+                up.recycle();
+                output.postDelayed(() -> {
+                    if (logSelectionActionModeActive
+                            || logSelectionActionModeCreateCount > actionModesBefore) {
+                        output.setSelection(start, end);
+                    }
+                    result[0] = collectLogSelectionOnMain(
+                            true,
+                            visibilityRequested,
+                            logSelectionLongClickCount > longClicksBefore,
+                            false,
+                            actionModesBefore
+                    );
+                    completed.countDown();
+                }, 350L);
+            }, ViewConfiguration.getLongPressTimeout() + 250L);
+        })) {
+            return LogSelectionDiagnostics.unavailable("Could not post selection gesture");
+        }
+        try {
+            if (!completed.await(Math.max(0L, timeoutMs), TimeUnit.MILLISECONDS)
+                    || result[0] == null) {
+                return LogSelectionDiagnostics.unavailable("Timed out waiting for native selection UI");
+            }
+            return result[0];
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return LogSelectionDiagnostics.unavailable("Selection exercise interrupted");
+        }
+    }
+
+    private LogSelectionDiagnostics collectLogSelectionOnMain(
+            boolean exercised,
+            boolean visibilityRequested,
+            boolean longClickPerformed,
+            boolean contextMenuShown,
+            int actionModeCreatesBefore
+    ) {
+        EditText output = logConsoleOutput;
+        if (overlay == null || output == null) {
+            return LogSelectionDiagnostics.unavailable("Log console is not ready");
+        }
+
+        int textLength = output.length();
+        Rect visibleBounds = new Rect();
+        boolean globallyVisible = output.getGlobalVisibleRect(visibleBounds)
+                && !visibleBounds.isEmpty();
+        int selectionStart = output.getSelectionStart();
+        int selectionEnd = output.getSelectionEnd();
+        boolean hasSelection = selectionStart >= 0
+                && selectionEnd > selectionStart;
+        Object editor = Reflect.field(output, "mEditor");
+        Object selectionController = Reflect.field(
+                editor,
+                "mSelectionModifierCursorController"
+        );
+        boolean selectionControllerActive = asBoolean(Reflect.invokeIfExists(
+                selectionController,
+                "isActive",
+                new Class<?>[0]
+        ));
+        Object startHandle = Reflect.field(selectionController, "mStartHandle");
+        Object endHandle = Reflect.field(selectionController, "mEndHandle");
+        boolean startHandleShowing = asBoolean(Reflect.invokeIfExists(
+                startHandle,
+                "isShowing",
+                new Class<?>[0]
+        ));
+        boolean endHandleShowing = asBoolean(Reflect.invokeIfExists(
+                endHandle,
+                "isShowing",
+                new Class<?>[0]
+        ));
+        boolean selectionHandlesShowing = selectionControllerActive
+                || (startHandleShowing && endHandleShowing);
+        boolean actionModeObserved = logSelectionActionModeActive
+                || logSelectionActionModeCreateCount > actionModeCreatesBefore;
+        boolean selectionUiReady = output.isAttachedToWindow()
+                && globallyVisible
+                && output.isTextSelectable()
+                && output.isLongClickable()
+                && hasSelection
+                && selectionHandlesShowing;
+        return new LogSelectionDiagnostics(
+                true,
+                "",
+                exercised,
+                output.isAttachedToWindow(),
+                globallyVisible,
+                visibilityRequested,
+                output.isTextSelectable(),
+                output.isLongClickable(),
+                output.isFocusable(),
+                output.hasFocus(),
+                textLength,
+                selectionStart,
+                selectionEnd,
+                hasSelection,
+                longClickPerformed,
+                contextMenuShown,
+                logSelectionActionModeCreateCount,
+                logSelectionActionModeActive,
+                logSelectionMenuSize,
+                actionModeObserved,
+                selectionController != null,
+                selectionControllerActive,
+                startHandleShowing,
+                endHandleShowing,
+                selectionHandlesShowing,
+                selectionUiReady
+        );
+    }
+
+    private static boolean asBoolean(Object value) {
+        return value instanceof Boolean && (Boolean) value;
     }
 
     private void startWorker(String name, Runnable task) {
@@ -2134,6 +2465,100 @@ final class HostConfigPanel {
                     result.available, true, result.sourcePath, result.totalBytes,
                     result.returnedBytes, result.lineCount, result.matchedEntries,
                     result.truncated, result.text, result.error
+            );
+        }
+    }
+
+    static final class LogSelectionDiagnostics {
+        final boolean panelOpen;
+        final String error;
+        final boolean exercised;
+        final boolean attached;
+        final boolean globallyVisible;
+        final boolean visibilityRequested;
+        final boolean textSelectable;
+        final boolean longClickable;
+        final boolean focusable;
+        final boolean focused;
+        final int textLength;
+        final int selectionStart;
+        final int selectionEnd;
+        final boolean hasSelection;
+        final boolean longClickPerformed;
+        final boolean contextMenuShown;
+        final int actionModeCreateCount;
+        final boolean actionModeActive;
+        final int selectionMenuSize;
+        final boolean actionModeObserved;
+        final boolean selectionControllerPresent;
+        final boolean selectionControllerActive;
+        final boolean startHandleShowing;
+        final boolean endHandleShowing;
+        final boolean selectionHandlesShowing;
+        final boolean selectionUiReady;
+
+        private LogSelectionDiagnostics(
+                boolean panelOpen,
+                String error,
+                boolean exercised,
+                boolean attached,
+                boolean globallyVisible,
+                boolean visibilityRequested,
+                boolean textSelectable,
+                boolean longClickable,
+                boolean focusable,
+                boolean focused,
+                int textLength,
+                int selectionStart,
+                int selectionEnd,
+                boolean hasSelection,
+                boolean longClickPerformed,
+                boolean contextMenuShown,
+                int actionModeCreateCount,
+                boolean actionModeActive,
+                int selectionMenuSize,
+                boolean actionModeObserved,
+                boolean selectionControllerPresent,
+                boolean selectionControllerActive,
+                boolean startHandleShowing,
+                boolean endHandleShowing,
+                boolean selectionHandlesShowing,
+                boolean selectionUiReady
+        ) {
+            this.panelOpen = panelOpen;
+            this.error = error;
+            this.exercised = exercised;
+            this.attached = attached;
+            this.globallyVisible = globallyVisible;
+            this.visibilityRequested = visibilityRequested;
+            this.textSelectable = textSelectable;
+            this.longClickable = longClickable;
+            this.focusable = focusable;
+            this.focused = focused;
+            this.textLength = textLength;
+            this.selectionStart = selectionStart;
+            this.selectionEnd = selectionEnd;
+            this.hasSelection = hasSelection;
+            this.longClickPerformed = longClickPerformed;
+            this.contextMenuShown = contextMenuShown;
+            this.actionModeCreateCount = actionModeCreateCount;
+            this.actionModeActive = actionModeActive;
+            this.selectionMenuSize = selectionMenuSize;
+            this.actionModeObserved = actionModeObserved;
+            this.selectionControllerPresent = selectionControllerPresent;
+            this.selectionControllerActive = selectionControllerActive;
+            this.startHandleShowing = startHandleShowing;
+            this.endHandleShowing = endHandleShowing;
+            this.selectionHandlesShowing = selectionHandlesShowing;
+            this.selectionUiReady = selectionUiReady;
+        }
+
+        static LogSelectionDiagnostics unavailable(String error) {
+            return new LogSelectionDiagnostics(
+                    false, error, false, false, false, false,
+                    false, false, false, false, 0, -1, -1,
+                    false, false, false, 0, false, 0, false,
+                    false, false, false, false, false, false
             );
         }
     }
