@@ -88,6 +88,7 @@ final class TelegramHookInstaller {
     private static final int SETTINGS_ROW_GRAMSIEVE = 0x4753001A;
     private static final int MENU_ID_CLEANUP_MODE = 0x4753001B;
     private static final int MENU_ID_RELOAD_MESSAGE = 0x4753001C;
+    private static final int MENU_ID_FIRST_MESSAGE = 0x4753001D;
     private static final int SETTINGS_ROW_COLOR_START = 0xFF2AABEE;
     private static final int SETTINGS_ROW_COLOR_END = 0xFF229ED9;
     private static final long MODULE_FALLBACK_SNAPSHOT_MS = 1500L;
@@ -798,6 +799,8 @@ final class TelegramHookInstaller {
                 return cliUiMenuState(response);
             case "ui.menu.open":
                 return cliUiMenuOpen(response, intent);
+            case "ui.first-message":
+                return cliUiFirstMessage(response, context, intent);
             case "ui.config.open":
                 return cliUiConfigOpen(response);
             case "ui.config.close":
@@ -839,7 +842,7 @@ final class TelegramHookInstaller {
                 "cleanup.get", "cleanup.set", "ui.state", "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close",
                 "ui.log-console.state", "ui.log-console.select",
-                "ui.jump-mark", "ui.scroll"
+                "ui.jump-mark", "ui.first-message", "ui.scroll"
         )));
         response.put("configSetExtras", new JSONArray(Arrays.asList("config_json", "config_b64")));
         response.put("maxResponseChars", MAX_CLI_RESPONSE_CHARS);
@@ -1328,11 +1331,41 @@ final class TelegramHookInstaller {
         response.put("configPanelOpen", logConsole.panelOpen);
         response.put("selectedMessage", chatActivity != null
                 && Reflect.field(chatActivity, "selectedObject") != null);
+        response.put("visibleMessages", visibleMessageState(chatActivity));
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
-                "log-console.select", "menu.state", "menu.open", "jump-mark", "scroll"
+                "log-console.select", "menu.state", "menu.open", "jump-mark",
+                "first-message", "scroll"
         )));
         return response;
+    }
+
+    private JSONObject visibleMessageState(Object chatActivity) throws Exception {
+        JSONObject state = new JSONObject();
+        Object list = chatActivity == null ? null : Reflect.field(chatActivity, "chatListView");
+        state.put("available", list instanceof ViewGroup);
+        if (!(list instanceof ViewGroup)) {
+            return state;
+        }
+        ViewGroup group = (ViewGroup) list;
+        int recognized = 0;
+        int minId = Integer.MAX_VALUE;
+        int maxId = 0;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            Object messageObject = resolveMessageObject(group.getChildAt(i));
+            int messageId = resolveMessageId(messageObject);
+            if (messageId <= 0) {
+                continue;
+            }
+            recognized++;
+            minId = Math.min(minId, messageId);
+            maxId = Math.max(maxId, messageId);
+        }
+        state.put("childViews", group.getChildCount());
+        state.put("recognized", recognized);
+        state.put("minId", recognized == 0 ? JSONObject.NULL : minId);
+        state.put("maxId", recognized == 0 ? JSONObject.NULL : maxId);
+        return state;
     }
 
     private JSONObject cliUiMenuState(JSONObject response) throws Exception {
@@ -1350,6 +1383,7 @@ final class TelegramHookInstaller {
         JSONObject chatItems = new JSONObject();
         chatItems.put("settings", menuItemState(headerItem, MENU_ID_CHAT));
         chatItems.put("scrollTop", menuItemState(headerItem, MENU_ID_SCROLL_TOP));
+        chatItems.put("firstMessage", menuItemState(headerItem, MENU_ID_FIRST_MESSAGE));
         chatItems.put("jumpToMark", menuItemState(headerItem, MENU_ID_JUMP_TO_MARK));
         chatItems.put("antiRecall", menuItemState(headerItem, MENU_ID_ANTI_RECALL));
         chatItems.put("cleanupMode", menuItemState(headerItem, MENU_ID_CLEANUP_MODE));
@@ -1403,6 +1437,19 @@ final class TelegramHookInstaller {
         Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
         response.put("opened", true);
         return cliUiMenuState(response);
+    }
+
+    private JSONObject cliUiFirstMessage(
+            JSONObject response,
+            Context context,
+            Intent intent
+    ) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        boolean invoked = jumpToFirstMessage(chatActivity, context);
+        response.put("dialogId", trackedDialogId);
+        response.put("targetMessageId", 1);
+        response.put("invoked", invoked);
+        return response;
     }
 
     private JSONObject menuItemState(Object menuItem, int targetId) throws Exception {
@@ -7428,6 +7475,7 @@ final class TelegramHookInstaller {
             });
         }
         injectScrollToTopMenu(chatActivity, headerItem);
+        injectFirstMessageMenu(chatActivity, headerItem);
         injectJumpToMarkMenu(chatActivity, headerItem);
         injectAntiRecallMenu(chatActivity, headerItem);
         injectCleanupModeMenu(chatActivity, headerItem);
@@ -7544,6 +7592,37 @@ final class TelegramHookInstaller {
                 scrollChatToTop(chatActivity, v.getContext());
             } catch (Throwable throwable) {
                 error("Scroll to top failed", throwable);
+            }
+        });
+    }
+
+    private void injectFirstMessageMenu(Object chatActivity, Object headerItem) {
+        View subItemView = reconcileMenuItemView(headerItem, MENU_ID_FIRST_MESSAGE);
+        if (subItemView == null) {
+            Context context = contextFromMenuItem(headerItem);
+            int iconRes = resolveFirstMessageIcon(context);
+            Object subItem = addMenuSubItem(
+                    headerItem,
+                    MENU_ID_FIRST_MESSAGE,
+                    iconRes,
+                    localizedFirstMessageLabel(context)
+            );
+            if (!(subItem instanceof View)) {
+                info("First-message addSubItem unavailable on "
+                        + headerItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_FIRST_MESSAGE);
+        }
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
+            try {
+                info("JumpToFirst menu clicked");
+                Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+                jumpToFirstMessage(chatActivity, v.getContext());
+            } catch (Throwable throwable) {
+                error("Jump to first message failed", throwable);
             }
         });
     }
@@ -7836,12 +7915,50 @@ final class TelegramHookInstaller {
         }
     }
 
+    private boolean jumpToFirstMessage(Object chatActivity, Context context) {
+        Toast.makeText(context, localizedFirstMessageStarted(context), Toast.LENGTH_SHORT).show();
+        boolean invoked = invokeScrollToMessageId(chatActivity, 1);
+        info("JumpToFirst: targetMsgId=1 invoked=" + invoked
+                + " dialog=" + Reflect.asLong(Reflect.invokeIfExists(
+                chatActivity, "getDialogId", new Class<?>[0]), 0L));
+        Toast.makeText(
+                context,
+                invoked
+                        ? localizedFirstMessageRequested(context)
+                        : localizedScrollUnavailable(context),
+                Toast.LENGTH_SHORT
+        ).show();
+        return invoked;
+    }
+
     private int resolveScrollTopIcon(Context context) {
         int telegramIcon = context.getResources().getIdentifier("msg_go_up", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
         telegramIcon = context.getResources().getIdentifier("msg_arrow_up", "drawable", telegramResourcePackageName);
         if (telegramIcon != 0) return telegramIcon;
         return android.R.drawable.ic_menu_upload;
+    }
+
+    private int resolveFirstMessageIcon(Context context) {
+        int telegramIcon = context.getResources().getIdentifier(
+                "msg_arrow_up", "drawable", telegramResourcePackageName);
+        if (telegramIcon != 0) return telegramIcon;
+        telegramIcon = context.getResources().getIdentifier(
+                "msg_go_up", "drawable", telegramResourcePackageName);
+        if (telegramIcon != 0) return telegramIcon;
+        return android.R.drawable.ic_menu_upload;
+    }
+
+    private CharSequence localizedFirstMessageLabel(Context context) {
+        return isChineseLocale(context) ? "跳转到第一条消息" : "Jump to first message";
+    }
+
+    private CharSequence localizedFirstMessageStarted(Context context) {
+        return isChineseLocale(context) ? "正在跳转到第一条消息…" : "Jumping to first message…";
+    }
+
+    private CharSequence localizedFirstMessageRequested(Context context) {
+        return isChineseLocale(context) ? "已请求第一条消息" : "First message requested";
     }
 
     private CharSequence localizedScrollTopLabel(Context context) {
