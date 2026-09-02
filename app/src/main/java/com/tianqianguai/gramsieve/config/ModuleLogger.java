@@ -110,7 +110,13 @@ public final class ModuleLogger {
     }
 
     private static void writeToFile(String level, String category, String tag, String message, String throwableStr) {
-        String line = formatLine(level, category, tag, message, throwableStr);
+        String line = formatLine(
+                level,
+                category,
+                tag,
+                LogPrivacy.sanitizeMessage(message),
+                LogPrivacy.sanitizeMessage(throwableStr)
+        );
         synchronized (ModuleLogger.class) {
             File[] files = logFiles;
             if (files.length == 0 && appContext != null) {
@@ -243,30 +249,43 @@ public final class ModuleLogger {
     }
 
     public static void info(String category, String tag, String message) {
-        logInfo("[" + category + "] " + tag + ": " + message);
+        String safeMessage = LogPrivacy.sanitizeMessage(message);
+        logInfo("[" + category + "] " + tag + ": " + safeMessage);
         if (xposedModule != null) {
-            xposedModule.log(Log.INFO, TAG, "[" + category + "] " + tag + ": " + message);
+            xposedModule.log(Log.INFO, TAG, "[" + category + "] " + tag + ": " + safeMessage);
         }
-        writeToFile("INFO", category, tag, message, null);
-        persist("INFO", category, tag, message, (String) null);
+        writeToFile("INFO", category, tag, safeMessage, null);
+        persist("INFO", category, tag, safeMessage, (String) null);
     }
 
     public static void warn(String category, String tag, String message) {
-        logWarn("[" + category + "] " + tag + ": " + message);
+        String safeMessage = LogPrivacy.sanitizeMessage(message);
+        logWarn("[" + category + "] " + tag + ": " + safeMessage);
         if (xposedModule != null) {
-            xposedModule.log(Log.WARN, TAG, "[" + category + "] " + tag + ": " + message);
+            xposedModule.log(Log.WARN, TAG, "[" + category + "] " + tag + ": " + safeMessage);
         }
-        writeToFile("WARN", category, tag, message, null);
-        persist("WARN", category, tag, message, (String) null);
+        writeToFile("WARN", category, tag, safeMessage, null);
+        persist("WARN", category, tag, safeMessage, (String) null);
     }
 
     public static void error(String category, String tag, String message, Throwable throwable) {
-        logError("[" + category + "] " + tag + ": " + message, throwable);
-        if (xposedModule != null) {
-            xposedModule.log(Log.ERROR, TAG, "[" + category + "] " + tag + ": " + message, throwable);
+        String safeMessage = LogPrivacy.sanitizeMessage(message);
+        String safeThrowable = LogPrivacy.sanitizeMessage(throwableToString(throwable));
+        String logMessage = "[" + category + "] " + tag + ": " + safeMessage;
+        Throwable logThrowable = LogPrivacy.allowsSensitiveContent() ? throwable : null;
+        if (!LogPrivacy.allowsSensitiveContent() && !safeThrowable.isEmpty()) {
+            logMessage += "\n" + safeThrowable;
         }
-        writeToFile("ERROR", category, tag, message, throwableToString(throwable));
-        persist("ERROR", category, tag, message, throwable);
+        logError(logMessage, logThrowable);
+        if (xposedModule != null) {
+            if (LogPrivacy.allowsSensitiveContent()) {
+                xposedModule.log(Log.ERROR, TAG, logMessage, throwable);
+            } else {
+                xposedModule.log(Log.ERROR, TAG, logMessage);
+            }
+        }
+        writeToFile("ERROR", category, tag, safeMessage, safeThrowable);
+        persist("ERROR", category, tag, safeMessage, safeThrowable);
     }
 
     public static void lifecycle(String tag, String message) {
@@ -325,7 +344,12 @@ public final class ModuleLogger {
         StringBuilder sb = new StringBuilder();
         sb.append(throwable.getClass().getName());
         if (throwable.getMessage() != null) {
-            sb.append(": ").append(throwable.getMessage());
+            if (LogPrivacy.allowsSensitiveContent()) {
+                sb.append(": ").append(throwable.getMessage());
+            } else {
+                sb.append(": ").append(LogPrivacy.field(
+                        "exceptionMessage", throwable.getMessage()));
+            }
         }
         StackTraceElement[] trace = throwable.getStackTrace();
         int limit = Math.min(trace.length, 8);

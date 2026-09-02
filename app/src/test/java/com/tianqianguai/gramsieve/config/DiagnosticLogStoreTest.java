@@ -33,7 +33,51 @@ public class DiagnosticLogStoreTest {
         );
 
         assertEquals("builtin match builtin_gambling_promo", parsed.reason);
-        assertEquals("spam text", parsed.text);
+        assertEquals(LogPrivacy.allowsSensitiveContent() ? "spam text" : "", parsed.text);
+        assertEquals(9, parsed.textChars);
         assertTrue(parsed.timestampEpochMs > 0L);
+    }
+
+    @Test
+    public void releaseDetailsDropContentButKeepLengths() {
+        DiagnosticLogStore.DiagnosticEntry entry = new DiagnosticLogStore.DiagnosticEntry();
+
+        DiagnosticLogStore.setMessageDetailsForBuild(
+                entry,
+                "Private Group",
+                "Alice",
+                "Secret body",
+                "Photo caption",
+                "Open button",
+                false
+        );
+        DiagnosticLogStore.DiagnosticEntry parsed = DiagnosticLogStore.entryFromJson(
+                DiagnosticLogStore.entryToJson(entry)
+        );
+
+        assertEquals("", parsed.chatName);
+        assertEquals("", parsed.senderName);
+        assertEquals("", parsed.text);
+        assertEquals("", parsed.caption);
+        assertEquals("", parsed.buttonText);
+        assertEquals(13, parsed.chatNameChars);
+        assertEquals(5, parsed.senderNameChars);
+        assertEquals(11, parsed.textChars);
+        assertEquals(13, parsed.captionChars);
+        assertEquals(11, parsed.buttonTextChars);
+    }
+
+    @Test
+    public void debugDetailsKeepContentAndLengths() {
+        DiagnosticLogStore.DiagnosticEntry entry = new DiagnosticLogStore.DiagnosticEntry();
+
+        DiagnosticLogStore.setMessageDetailsForBuild(
+                entry, "Group", "Bob", "Message", "Caption", "Button", true
+        );
+
+        assertEquals("Group", entry.chatName);
+        assertEquals("Bob", entry.senderName);
+        assertEquals("Message", entry.text);
+        assertEquals(7, entry.textChars);
     }
 }

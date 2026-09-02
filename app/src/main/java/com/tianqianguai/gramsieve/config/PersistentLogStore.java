@@ -167,8 +167,8 @@ public final class PersistentLogStore {
             level = limit(level, 16);
             category = limit(category, 32);
             tag = limit(tag, 64);
-            message = limit(message, 512);
-            throwable = limit(throwable, 1024);
+            message = LogPrivacy.sanitizeMessage(limit(message, 512));
+            throwable = LogPrivacy.sanitizeMessage(limit(throwable, 1024));
             return this;
         }
 

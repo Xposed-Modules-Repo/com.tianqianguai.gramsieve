@@ -34,6 +34,7 @@ import com.tianqianguai.gramsieve.config.ConfigUpdateReceiver;
 import com.tianqianguai.gramsieve.config.DiagnosticLogStore;
 import com.tianqianguai.gramsieve.config.AntiRecallConfigStore;
 import com.tianqianguai.gramsieve.config.LogFileSupport;
+import com.tianqianguai.gramsieve.config.LogPrivacy;
 import com.tianqianguai.gramsieve.config.LogTimeRange;
 import com.tianqianguai.gramsieve.config.ModuleLogger;
 import com.tianqianguai.gramsieve.config.ModuleConfigStore;
@@ -64,6 +65,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Locale;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import io.github.libxposed.api.XposedInterface;
@@ -114,6 +116,8 @@ final class TelegramHookInstaller {
     private final XposedModule module;
     private final EnhancementHookInstaller enhancementHooks;
     private final UiCallbackRegistry uiCallbacks = new UiCallbackRegistry();
+    private final Set<ViewGroup> initializedDownloadActionBars =
+            Collections.newSetFromMap(new WeakHashMap<>());
     private XposedConfigProvider configProvider;
     private volatile Context hostApplicationContext;
     private volatile String telegramResourcePackageName = TelegramPackages.PLAY_PACKAGE;
@@ -215,6 +219,89 @@ final class TelegramHookInstaller {
         return telegramResourcePackageName;
     }
 
+    void rebindVisibleHostUi(ClassLoader classLoader) {
+        Object host = resolveCurrentTelegramFragment(classLoader);
+        if (host == null) {
+            info("UIRebind: no visible Telegram fragment; lifecycle hooks remain armed");
+            return;
+        }
+        Runnable rebind = () -> {
+            if (retiring) {
+                return;
+            }
+            Object parentActivity = Reflect.invokeIfExists(host, "getParentActivity", new Class<?>[0]);
+            if (parentActivity instanceof Activity && isTelegramHostActivity((Activity) parentActivity)) {
+                resumedHostActivity = new WeakReference<>((Activity) parentActivity);
+            }
+            if (isFragment(host, "ChatActivity")) {
+                activeChatActivity = new WeakReference<>(host);
+                injectChatMenu(host);
+                refreshChatActivityFiltering(host);
+                beginReadPositionTracking(host);
+            } else if (isFragment(host, "ProfileActivity")) {
+                injectGlobalSettingsMenu(host, true);
+            } else if (isFragment(host, "SettingsActivity")) {
+                refreshSettingsList(host);
+            } else if (isFragment(host, "DialogsActivity")) {
+                ensureDownloadUiLifecycle(host);
+            }
+            info("UIRebind: completed fragment=" + host.getClass().getSimpleName());
+        };
+
+        View anchor = resolveHostFragmentView(host);
+        if (anchor != null && uiCallbacks.post(anchor, rebind)) {
+            info("UIRebind: scheduled fragment=" + host.getClass().getSimpleName());
+            return;
+        }
+        Object parentActivity = Reflect.invokeIfExists(host, "getParentActivity", new Class<?>[0]);
+        if (parentActivity instanceof Activity) {
+            ((Activity) parentActivity).runOnUiThread(rebind);
+            info("UIRebind: scheduled via parent activity fragment="
+                    + host.getClass().getSimpleName());
+            return;
+        }
+        info("UIRebind: visible fragment has no UI anchor; waiting for onResume fragment="
+                + host.getClass().getSimpleName());
+    }
+
+    private Object resolveCurrentTelegramFragment(ClassLoader classLoader) {
+        if (classLoader == null) {
+            return null;
+        }
+        try {
+            Class<?> launchActivity = classLoader.loadClass("org.telegram.ui.LaunchActivity");
+            Object fragment = Reflect.invokeStatic(
+                    launchActivity, "getSafeLastFragment", new Class<?>[0]);
+            if (fragment == null) {
+                fragment = Reflect.invokeStatic(
+                        launchActivity, "getLastFragmentIncludeMainTabs", new Class<?>[0]);
+            }
+            if (fragment == null) {
+                fragment = Reflect.invokeStatic(
+                        launchActivity, "getLastFragment", new Class<?>[0]);
+            }
+            return fragment;
+        } catch (ClassNotFoundException ignored) {
+            return null;
+        }
+    }
+
+    private boolean isFragment(Object fragment, String simpleName) {
+        return fragment != null && (simpleName.equals(fragment.getClass().getSimpleName())
+                || fragment.getClass().getName().endsWith("." + simpleName));
+    }
+
+    private void refreshSettingsList(Object settingsActivity) {
+        Object listView = Reflect.field(settingsActivity, "listView");
+        Object adapter = Reflect.field(listView, "adapter");
+        if (adapter == null) {
+            info("UIRebind: SettingsActivity adapter unavailable; waiting for next fillItems");
+            return;
+        }
+        Reflect.invokeIfExists(adapter, "update", new Class<?>[]{boolean.class}, true);
+        info("UIRebind: SettingsActivity rows refresh requested");
+    }
+
     synchronized boolean prepareForHotReload() {
         if (retiring) {
             return true;
@@ -245,6 +332,9 @@ final class TelegramHookInstaller {
         activeConfigRoot = new WeakReference<>(null);
         clean &= HostConfigPanel.closeForHotReload(configRoot, 4_000L);
         clean &= uiCallbacks.prepareForHotReload(3_000L);
+        synchronized (initializedDownloadActionBars) {
+            initializedDownloadActionBars.clear();
+        }
 
         TelegramDialogDatabasePruner pruner = dialogDatabasePruner;
         if (pruner != null) {
@@ -704,6 +794,10 @@ final class TelegramHookInstaller {
                 return cliCleanup(response, intent, true);
             case "ui.state":
                 return cliUiState(response);
+            case "ui.menu.state":
+                return cliUiMenuState(response);
+            case "ui.menu.open":
+                return cliUiMenuOpen(response, intent);
             case "ui.config.open":
                 return cliUiConfigOpen(response);
             case "ui.config.close":
@@ -742,7 +836,7 @@ final class TelegramHookInstaller {
                 "mark.list", "mark.set", "mark.clear",
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
-                "cleanup.get", "cleanup.set", "ui.state",
+                "cleanup.get", "cleanup.set", "ui.state", "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close",
                 "ui.log-console.state", "ui.log-console.select",
                 "ui.jump-mark", "ui.scroll"
@@ -1236,9 +1330,132 @@ final class TelegramHookInstaller {
                 && Reflect.field(chatActivity, "selectedObject") != null);
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
-                "log-console.select", "jump-mark", "scroll"
+                "log-console.select", "menu.state", "menu.open", "jump-mark", "scroll"
         )));
         return response;
+    }
+
+    private JSONObject cliUiMenuState(JSONObject response) throws Exception {
+        Object visibleFragment = resolveCurrentTelegramFragment(savedClassLoader);
+        Object chatActivity = activeChatActivity.get();
+        if (chatActivity == null && isFragment(visibleFragment, "ChatActivity")) {
+            chatActivity = visibleFragment;
+        }
+        response.put("visibleFragment", visibleFragment == null
+                ? ""
+                : visibleFragment.getClass().getName());
+        response.put("chat", chatActivity != null);
+
+        Object headerItem = chatActivity == null ? null : Reflect.field(chatActivity, "headerItem");
+        JSONObject chatItems = new JSONObject();
+        chatItems.put("settings", menuItemState(headerItem, MENU_ID_CHAT));
+        chatItems.put("scrollTop", menuItemState(headerItem, MENU_ID_SCROLL_TOP));
+        chatItems.put("jumpToMark", menuItemState(headerItem, MENU_ID_JUMP_TO_MARK));
+        chatItems.put("antiRecall", menuItemState(headerItem, MENU_ID_ANTI_RECALL));
+        chatItems.put("cleanupMode", menuItemState(headerItem, MENU_ID_CLEANUP_MODE));
+        response.put("chatItems", chatItems);
+
+        JSONArray menuLabels = new JSONArray();
+        ViewGroup popupLayout = menuPopupLayout(headerItem);
+        if (popupLayout != null) {
+            List<String> labels = new ArrayList<>();
+            collectMenuLabels(popupLayout, labels);
+            for (String label : labels) {
+                menuLabels.put(label);
+            }
+            response.put("chatMenuDirectChildren", popupLayout.getChildCount());
+        } else {
+            response.put("chatMenuDirectChildren", 0);
+        }
+        response.put("chatMenuLabels", menuLabels);
+        response.put("jumpToFirstMessagePresent", containsMenuLabel(
+                menuLabels, "跳转到第一条消息", "Jump to first message"));
+
+        Object profileHost = isFragment(visibleFragment, "ProfileActivity")
+                ? visibleFragment
+                : null;
+        Object overflow = profileHost == null ? null : resolveOverflowMenuItem(profileHost);
+        response.put("profileSettings", menuItemState(overflow, MENU_ID_GLOBAL));
+
+        Object actionBar = visibleFragment == null ? null : Reflect.field(visibleFragment, "actionBar");
+        View selectAll = actionBar instanceof ViewGroup
+                ? ((ViewGroup) actionBar).findViewWithTag(MENU_ID_SELECT_ALL)
+                : null;
+        response.put("selectAll", viewState(selectAll));
+
+        Object listView = isFragment(visibleFragment, "SettingsActivity")
+                ? Reflect.field(visibleFragment, "listView")
+                : null;
+        Object adapter = Reflect.field(listView, "adapter");
+        Object rawItems = Reflect.field(adapter, "items");
+        boolean settingsRowPresent = rawItems instanceof List<?>
+                && containsGramSieveSettingsItem((List<?>) rawItems);
+        response.put("settingsRowPresent", settingsRowPresent);
+        return response;
+    }
+
+    private JSONObject cliUiMenuOpen(JSONObject response, Intent intent) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        Object headerItem = Reflect.field(chatActivity, "headerItem");
+        if (headerItem == null) {
+            throw new IllegalStateException("Active chat header menu is unavailable");
+        }
+        Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+        response.put("opened", true);
+        return cliUiMenuState(response);
+    }
+
+    private JSONObject menuItemState(Object menuItem, int targetId) throws Exception {
+        ViewGroup popupLayout = menuPopupLayout(menuItem);
+        List<View> matches = new ArrayList<>();
+        if (popupLayout != null) {
+            collectTaggedMenuItemViews(popupLayout, targetId, matches);
+        }
+        JSONObject state = viewState(matches.isEmpty() ? null : matches.get(0));
+        state.put("occurrences", matches.size());
+        return state;
+    }
+
+    private void collectMenuLabels(ViewGroup group, List<String> labels) {
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (child instanceof TextView) {
+                String label = String.valueOf(((TextView) child).getText()).trim();
+                if (!label.isEmpty() && !labels.contains(label)) {
+                    labels.add(label.length() <= 80 ? label : label.substring(0, 80));
+                }
+            }
+            if (child instanceof ViewGroup) {
+                collectMenuLabels((ViewGroup) child, labels);
+            }
+        }
+    }
+
+    private boolean containsMenuLabel(JSONArray labels, String... expected) {
+        for (int i = 0; i < labels.length(); i++) {
+            String actual = labels.optString(i, "").trim();
+            for (String candidate : expected) {
+                if (candidate.equalsIgnoreCase(actual)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private JSONObject viewState(View view) throws Exception {
+        JSONObject state = new JSONObject();
+        state.put("present", view != null);
+        if (view == null) {
+            return state;
+        }
+        state.put("visibility", view.getVisibility());
+        state.put("shown", view.isShown());
+        state.put("attached", view.isAttachedToWindow());
+        state.put("enabled", view.isEnabled());
+        state.put("clickable", view.isClickable());
+        state.put("hasClickListener", view.hasOnClickListeners());
+        return state;
     }
 
     private JSONObject cliUiConfigOpen(JSONObject response) throws Exception {
@@ -1816,6 +2033,7 @@ final class TelegramHookInstaller {
                 try {
                     Object chatActivity = chain.getThisObject();
                     activeChatActivity = new WeakReference<>(chatActivity);
+                    injectChatMenu(chatActivity);
                     refreshChatActivityFiltering(chatActivity);
                     beginReadPositionTracking(chatActivity);
                 } catch (Throwable throwable) {
@@ -1985,6 +2203,20 @@ final class TelegramHookInstaller {
                 }
                 return result;
             });
+            try {
+                Method onResume = Reflect.method(profileActivityClass, "onResume");
+                hook(onResume, chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        injectGlobalSettingsMenu(chain.getThisObject(), true);
+                    } catch (Throwable throwable) {
+                        error("ProfileActivity menu resume rebind failed", throwable);
+                    }
+                    return result;
+                });
+            } catch (NoSuchMethodException ignored) {
+                info("ProfileActivity.onResume unavailable for menu rebind");
+            }
             info("Hooked ProfileActivity settings menu");
         } catch (Throwable throwable) {
             error("Failed to hook ProfileActivity menu", throwable);
@@ -2006,38 +2238,58 @@ final class TelegramHookInstaller {
                 }
                 Object result = chain.proceed();
                 try {
-                    Object activity = chain.getThisObject();
-                    Object actionBar = Reflect.field(activity, "actionBar");
-                    if (actionBar instanceof ViewGroup) {
-                        View bar = (ViewGroup) actionBar;
-                        Object activityRef = activity;
-                        uiCallbacks.post(bar, () -> {
-                            try {
-                                startKeepVisibleLoop((ViewGroup) bar);
-                                installActionModeDetector((ViewGroup) bar);
-                                // After download button auto-clicks, also install detector on
-                                // the download page's internal ActionBarMenu
-                                uiCallbacks.post(bar, () -> {
-                                    try {
-                                        installActionModeDetectorOnDownloadPage((ViewGroup) bar, activityRef);
-                                    } catch (Throwable t) {
-                                        error("SelectAll: download page detector failed", t);
-                                    }
-                                }, 8000);
-                            } catch (Throwable t) {
-                                error("SelectAll: loop failed", t);
-                            }
-                        }, 500);
-                    }
+                    ensureDownloadUiLifecycle(chain.getThisObject());
                 } catch (Throwable t) {
                     error("SelectAll: createView hook failed", t);
                 }
                 return result;
             });
+            try {
+                Method onResume = Reflect.method(dialogsClass, "onResume");
+                hook(onResume, chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        ensureDownloadUiLifecycle(chain.getThisObject());
+                    } catch (Throwable throwable) {
+                        error("SelectAll: resume rebind failed", throwable);
+                    }
+                    return result;
+                });
+            } catch (NoSuchMethodException ignored) {
+                info("DialogsActivity.onResume unavailable for action-mode rebind");
+            }
             info("Hooked DialogsActivity.createView for download button");
         } catch (Throwable t) {
             error("Failed to hook DialogsActivity.createView", t);
         }
+    }
+
+    private void ensureDownloadUiLifecycle(Object activity) {
+        Object actionBar = Reflect.field(activity, "actionBar");
+        if (!(actionBar instanceof ViewGroup)) {
+            return;
+        }
+        ViewGroup bar = (ViewGroup) actionBar;
+        synchronized (initializedDownloadActionBars) {
+            if (!initializedDownloadActionBars.add(bar)) {
+                return;
+            }
+        }
+        uiCallbacks.post(bar, () -> {
+            try {
+                startKeepVisibleLoop(bar);
+                installActionModeDetector(bar);
+                uiCallbacks.post(bar, () -> {
+                    try {
+                        installActionModeDetectorOnDownloadPage(bar, activity);
+                    } catch (Throwable throwable) {
+                        error("SelectAll: download page detector failed", throwable);
+                    }
+                }, 8000);
+            } catch (Throwable throwable) {
+                error("SelectAll: lifecycle setup failed", throwable);
+            }
+        }, 500);
     }
 
     private void hookDialogDeletionDiagnostics(ClassLoader classLoader) {
@@ -2440,7 +2692,10 @@ final class TelegramHookInstaller {
                     } else if (value != null && field.getType().isArray()) {
                         int len = java.lang.reflect.Array.getLength(value);
                         info("SelectAll:   " + label + "." + field.getName() + "=" + value.getClass().getSimpleName() + "[" + len + "]");
-                    } else if (value instanceof Number || value instanceof Boolean || value instanceof String) {
+                    } else if (value instanceof String) {
+                        info("SelectAll:   " + label + "." + field.getName() + " "
+                                + LogPrivacy.field("value", (String) value));
+                    } else if (value instanceof Number || value instanceof Boolean) {
                         info("SelectAll:   " + label + "." + field.getName() + "=" + value);
                     }
                 } catch (Throwable ignored) {}
@@ -2477,25 +2732,32 @@ final class TelegramHookInstaller {
             return;
         }
         info("SelectAll: installing action mode detector on ActionBarMenu children=" + menu.getChildCount());
+        if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
+            if (downloadPageFragmentView != null) {
+                injectSelectAllIntoActionModeForDownload(menu, downloadPageFragmentView);
+            } else {
+                injectSelectAllIntoActionMode(menu);
+            }
+        }
         uiCallbacks.setHierarchyListener(menu, new ViewGroup.OnHierarchyChangeListener() {
             @Override
             public void onChildViewAdded(View parent, View child) {
                 try {
-                    if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
+                    View existing = menu.findViewWithTag(MENU_ID_SELECT_ALL);
+                    if (existing != null && existing.hasOnClickListeners()) {
                         return;
                     }
                     if (isActionModeIndicator(child)) {
                         info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
                         uiCallbacks.post(menu, () -> {
                             try {
-                                if (menu.findViewWithTag(MENU_ID_SELECT_ALL) == null) {
-                                    // Check if we're on the download page
-                                    if (downloadPageFragmentView != null) {
-                                        info("SelectAll: on download page, injecting Select All into action mode");
-                                        injectSelectAllIntoActionModeForDownload(menu, downloadPageFragmentView);
-                                    } else {
-                                        injectSelectAllIntoActionMode(menu);
-                                    }
+                                // Check if we're on the download page. Both helpers also
+                                // rebind callbacks when the tagged view survived a hot reload.
+                                if (downloadPageFragmentView != null) {
+                                    info("SelectAll: on download page, injecting Select All into action mode");
+                                    injectSelectAllIntoActionModeForDownload(menu, downloadPageFragmentView);
+                                } else {
+                                    injectSelectAllIntoActionMode(menu);
                                 }
                             } catch (Throwable t) {
                                 error("SelectAll: delayed inject failed", t);
@@ -2568,9 +2830,12 @@ final class TelegramHookInstaller {
                             }
                         }
                     }
-                    if (actionModeActive && actionModeMenu != null && actionModeMenu.findViewWithTag(MENU_ID_SELECT_ALL) == null) {
-                        info("SelectAll: action mode detected, injecting Select All into action mode menu");
-                        injectSelectAllIntoActionModeForDownload(actionModeMenu, fragmentViewRef);
+                    if (actionModeActive && actionModeMenu != null) {
+                        View existing = actionModeMenu.findViewWithTag(MENU_ID_SELECT_ALL);
+                        if (existing == null || !existing.hasOnClickListeners()) {
+                            info("SelectAll: action mode detected, injecting or rebinding Select All");
+                            injectSelectAllIntoActionModeForDownload(actionModeMenu, fragmentViewRef);
+                        }
                     }
                     uiCallbacks.post(actionBar, this, 500);
                 } catch (Throwable t) {
@@ -2586,29 +2851,32 @@ final class TelegramHookInstaller {
      * that appear when selection mode is active.
      */
     private void injectSelectAllNextToActionButton(ViewGroup menu, ViewGroup actionBar, ViewGroup fragmentView) {
-        if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
+        View button = menu.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            Context context = actionBar.getContext();
+            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(label);
+            created.setTextSize(14);
+            created.setTextColor(0xFFFFFFFF);
+            created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            created.setBackgroundColor(0x33FFFFFF);
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            // Inject into ActionBarMenu (not ActionBar container) so it appears
+            // alongside the action buttons (delete, forward, etc.)
+            int insertIndex = menu.getChildCount();
+            menu.addView(created, insertIndex, lp);
+            menu.invalidate();
+            menu.requestLayout();
+            info("SelectAll: injected into ActionBarMenu at index=" + insertIndex
+                    + " children=" + menu.getChildCount());
+            button = created;
         }
-        Context context = actionBar.getContext();
-        CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(0xFFFFFFFF);
-        button.setPadding(dp(context, 12), 0, dp(context, 12), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        button.setBackgroundColor(0x33FFFFFF);
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        // Inject into ActionBarMenu (not ActionBar container) so it appears
-        // alongside the action buttons (delete, forward, etc.)
-        int insertIndex = menu.getChildCount();
-        menu.addView(button, insertIndex, lp);
-        menu.invalidate();
-        menu.requestLayout();
-        info("SelectAll: injected into ActionBarMenu at index=" + insertIndex + " children=" + menu.getChildCount());
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 info("SelectAll: download page Select All clicked");
                 selectAllDownloadItems(fragmentView);
@@ -2771,22 +3039,21 @@ final class TelegramHookInstaller {
      */
     private void installHierarchyDetector(ViewGroup menu) {
         if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
+            injectSelectAllIntoActionMode(menu);
         }
         uiCallbacks.setHierarchyListener(menu, new ViewGroup.OnHierarchyChangeListener() {
             @Override
             public void onChildViewAdded(View parent, View child) {
                 try {
-                    if (menu.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
+                    View existing = menu.findViewWithTag(MENU_ID_SELECT_ALL);
+                    if (existing != null && existing.hasOnClickListeners()) {
                         return;
                     }
                     if (isActionModeIndicator(child)) {
                         info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
                         uiCallbacks.post(menu, () -> {
                             try {
-                                if (menu.findViewWithTag(MENU_ID_SELECT_ALL) == null) {
-                                    injectSelectAllIntoActionMode(menu);
-                                }
+                                injectSelectAllIntoActionMode(menu);
                             } catch (Throwable t) {
                                 error("SelectAll: delayed inject failed", t);
                             }
@@ -2999,7 +3266,8 @@ final class TelegramHookInstaller {
             if (child instanceof TextView) {
                 String text = ((TextView) child).getText().toString().trim();
                 if (!text.isEmpty()) {
-                    info("SelectAll: " + label + "[" + depth + "][" + i + "] text=\"" + text + "\"");
+                    info("SelectAll: " + label + "[" + depth + "][" + i + "] "
+                            + LogPrivacy.field("text", text));
                 }
             }
             if (child instanceof ViewGroup) {
@@ -3012,7 +3280,9 @@ final class TelegramHookInstaller {
         if (depth > maxDepth) return;
         String name = view.getClass().getSimpleName();
         String extra = "";
-        if (view instanceof TextView) extra = " text=\"" + ((TextView) view).getText() + "\"";
+        if (view instanceof TextView) {
+            extra = " " + LogPrivacy.field("text", String.valueOf(((TextView) view).getText()));
+        }
         info("SelectAll: " + spaces(depth) + name + extra + " vis=" + view.getVisibility() + " w=" + view.getWidth() + " h=" + view.getHeight());
         if (view instanceof ViewGroup) {
             ViewGroup vg = (ViewGroup) view;
@@ -3034,7 +3304,9 @@ final class TelegramHookInstaller {
             View child = menu.getChildAt(i);
             String name = child.getClass().getSimpleName();
             String text = "";
-            if (child instanceof TextView) text = " text=\"" + ((TextView) child).getText() + "\"";
+            if (child instanceof TextView) {
+                text = " " + LogPrivacy.field("text", String.valueOf(((TextView) child).getText()));
+            }
             int id = child.getId();
             Object tag = child.getTag();
             info("SelectAll: menu[" + i + "]=" + name + text + " vis=" + child.getVisibility() + " id=" + id + " tag=" + tag);
@@ -3044,7 +3316,9 @@ final class TelegramHookInstaller {
                     View sub = vg.getChildAt(j);
                     String subName = sub.getClass().getSimpleName();
                     String subText = "";
-                    if (sub instanceof TextView) subText = " text=\"" + ((TextView) sub).getText() + "\"";
+                    if (sub instanceof TextView) {
+                        subText = " " + LogPrivacy.field("text", String.valueOf(((TextView) sub).getText()));
+                    }
                     info("SelectAll:   [" + j + "]=" + subName + subText + " vis=" + sub.getVisibility());
                 }
             }
@@ -3054,45 +3328,49 @@ final class TelegramHookInstaller {
     private void injectSelectAllIntoContentView(View actionBar) {
         if (!(actionBar instanceof ViewGroup)) return;
         ViewGroup bar = (ViewGroup) actionBar;
-        if (bar.findViewWithTag(MENU_ID_SELECT_ALL) != null) return;
-        if (bar.getChildCount() < 5) return;
-        View contentView = bar.getChildAt(4);
-        if (!(contentView instanceof ViewGroup)) return;
-        ViewGroup content = (ViewGroup) contentView;
-        info("SelectAll: ActionBar content children=" + content.getChildCount());
-        int xIndex = -1;
-        for (int i = 0; i < content.getChildCount(); i++) {
-            View c = content.getChildAt(i);
-            String txt = "";
-            if (c instanceof TextView) txt = " text=\"" + ((TextView) c).getText() + "\"";
-            info("SelectAll:   [" + i + "]=" + c.getClass().getSimpleName() + txt + " vis=" + c.getVisibility() + " w=" + c.getWidth());
-            if (c instanceof android.widget.ImageButton || (c.getClass().getSimpleName().contains("Item") && c.getWidth() < 200 && c.getWidth() > 0)) {
-                xIndex = i;
+        View button = bar.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            if (bar.getChildCount() < 5) return;
+            View contentView = bar.getChildAt(4);
+            if (!(contentView instanceof ViewGroup)) return;
+            ViewGroup content = (ViewGroup) contentView;
+            info("SelectAll: ActionBar content children=" + content.getChildCount());
+            for (int i = 0; i < content.getChildCount(); i++) {
+                View c = content.getChildAt(i);
+                String txt = "";
+                if (c instanceof TextView) {
+                    txt = " " + LogPrivacy.field("text", String.valueOf(((TextView) c).getText()));
+                }
+                info("SelectAll:   [" + i + "]=" + c.getClass().getSimpleName() + txt
+                        + " vis=" + c.getVisibility() + " w=" + c.getWidth());
             }
-        }
-        Context context = content.getContext();
-        CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(0xFFFFFFFF);
-        button.setPadding(dp(context, 16), 0, dp(context, 16), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        int insertIdx = 2;
-        for (int i = 0; i < content.getChildCount(); i++) {
-            View c = content.getChildAt(i);
-            if (c.getClass().getSimpleName().contains("Number") || (c instanceof TextView && c.getWidth() > 200)) {
-                insertIdx = i + 1;
-                break;
+            Context context = content.getContext();
+            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(label);
+            created.setTextSize(14);
+            created.setTextColor(0xFFFFFFFF);
+            created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            int insertIdx = 2;
+            for (int i = 0; i < content.getChildCount(); i++) {
+                View c = content.getChildAt(i);
+                if (c.getClass().getSimpleName().contains("Number")
+                        || (c instanceof TextView && c.getWidth() > 200)) {
+                    insertIdx = i + 1;
+                    break;
+                }
             }
+            content.addView(created, insertIdx, lp);
+            info("SelectAll: inserted at index " + insertIdx);
+            button = created;
         }
-        content.addView(button, insertIdx, lp);
-        info("SelectAll: inserted at index " + insertIdx);
         ViewGroup parent = bar.getParent() instanceof ViewGroup ? (ViewGroup) bar.getParent() : null;
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 info("SelectAll: clicked!");
                 if (parent != null) selectAllFromContentView(parent);
@@ -3259,29 +3537,28 @@ final class TelegramHookInstaller {
             return;
         }
         ViewGroup bar = (ViewGroup) actionBar;
-        if (bar.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
+        View button = bar.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            Context context = bar.getContext();
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(isChineseLocale(context) ? "全选" : "Select All");
+            created.setTextSize(14);
+            created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            bar.addView(created, 0);
+            info("SelectAll: injected button into " + activity.getClass().getSimpleName()
+                    + " actionBar");
+            button = created;
         }
-        Context context = bar.getContext();
-        int selectAllIcon = context.getResources().getIdentifier("msg_select_all", "drawable", telegramResourcePackageName);
-        if (selectAllIcon == 0) {
-            selectAllIcon = android.R.drawable.ic_menu_agenda;
-        }
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(isChineseLocale(context) ? "全选" : "Select All");
-        button.setTextSize(14);
-        button.setPadding(dp(context, 12), 0, dp(context, 12), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 selectAllDownloadItems(activity);
             } catch (Throwable throwable) {
                 error("Select all failed", throwable);
             }
         });
-        bar.addView(button, 0);
-        info("SelectAll: injected button into " + activity.getClass().getSimpleName() + " actionBar");
     }
 
     private void injectSelectAllIntoActionMode(Object menu) {
@@ -3289,27 +3566,29 @@ final class TelegramHookInstaller {
             return;
         }
         ViewGroup menuView = (ViewGroup) menu;
-        if (menuView.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
+        View button = menuView.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            Context context = menuView.getContext();
+            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(label);
+            created.setTextSize(14);
+            created.setTextColor(0xFFFFFFFF);
+            created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            menuView.addView(created);
+            info("SelectAll: injected into action mode bar");
+            button = created;
         }
-        Context context = menuView.getContext();
-        CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(0xFFFFFFFF);
-        button.setPadding(dp(context, 16), 0, dp(context, 16), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 selectAllInActionMode(menuView);
             } catch (Throwable throwable) {
                 error("Select all in action mode failed", throwable);
             }
         });
-        menuView.addView(button);
-        info("SelectAll: injected into action mode bar");
     }
 
     /**
@@ -3317,22 +3596,26 @@ final class TelegramHookInstaller {
      * When clicked, it selects all download items.
      */
     private void injectSelectAllIntoActionModeForDownload(ViewGroup menuView, ViewGroup fragmentView) {
-        if (menuView.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
+        View button = menuView.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            Context context = menuView.getContext();
+            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(label);
+            created.setTextSize(14);
+            created.setTextColor(0xFFFFFFFF);
+            created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            // No background - match the delete button style
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            menuView.addView(created, lp);
+            info("SelectAll: injected into action mode bar for download page");
+            button = created;
         }
-        Context context = menuView.getContext();
-        CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(0xFFFFFFFF);
-        button.setPadding(dp(context, 16), 0, dp(context, 16), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        // No background - match the delete button style
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 info("SelectAll: download page Select All clicked in action mode");
                 selectAllDownloadItems(fragmentView);
@@ -3340,8 +3623,6 @@ final class TelegramHookInstaller {
                 error("SelectAll: download select all failed: " + t.getMessage(), t);
             }
         });
-        menuView.addView(button, lp);
-        info("SelectAll: injected into action mode bar for download page");
     }
 
     private void selectAllInActionMode(ViewGroup menuView) {
@@ -3528,40 +3809,47 @@ final class TelegramHookInstaller {
             return;
         }
         ViewGroup bar = (ViewGroup) actionBar;
-        if (bar.findViewWithTag(MENU_ID_SELECT_ALL) != null) {
-            return;
-        }
-        Context context = bar.getContext();
-        CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
-        TextView button = new TextView(context);
-        button.setTag(MENU_ID_SELECT_ALL);
-        button.setText(label);
-        button.setTextSize(14);
-        button.setTextColor(0xFFFFFFFF);
-        button.setPadding(dp(context, 12), 0, dp(context, 12), 0);
-        button.setGravity(android.view.Gravity.CENTER);
-        button.setBackgroundColor(0x33FFFFFF);
-        ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
-        int childCount = bar.getChildCount();
-        for (int i = 0; i < childCount; i++) {
-            View child = bar.getChildAt(i);
-            if (child instanceof ViewGroup && child.getVisibility() == View.VISIBLE && child.getWidth() > 100) {
-                ViewGroup content = (ViewGroup) child;
-                int insertIndex = content.getChildCount() > 0 ? content.getChildCount() : 0;
-                content.addView(button, insertIndex, lp);
-                button.bringToFront();
-                content.invalidate();
-                content.requestLayout();
-                info("SelectAll: added to child[" + i + "] at " + insertIndex + " broughtToFront");
-                return;
+        View button = bar.findViewWithTag(MENU_ID_SELECT_ALL);
+        if (button == null) {
+            Context context = bar.getContext();
+            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
+            TextView created = new TextView(context);
+            created.setTag(MENU_ID_SELECT_ALL);
+            created.setText(label);
+            created.setTextSize(14);
+            created.setTextColor(0xFFFFFFFF);
+            created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
+            created.setGravity(android.view.Gravity.CENTER);
+            created.setBackgroundColor(0x33FFFFFF);
+            ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            boolean added = false;
+            int childCount = bar.getChildCount();
+            for (int i = 0; i < childCount; i++) {
+                View child = bar.getChildAt(i);
+                if (child instanceof ViewGroup && child.getVisibility() == View.VISIBLE
+                        && child.getWidth() > 100) {
+                    ViewGroup content = (ViewGroup) child;
+                    int insertIndex = content.getChildCount();
+                    content.addView(created, insertIndex, lp);
+                    content.invalidate();
+                    content.requestLayout();
+                    info("SelectAll: added to child[" + i + "] at " + insertIndex
+                            + " broughtToFront");
+                    added = true;
+                    break;
+                }
             }
+            if (!added) {
+                bar.addView(created, lp);
+            }
+            button = created;
         }
-        bar.addView(button, lp);
         button.bringToFront();
         button.setClickable(true);
         button.setFocusable(true);
-        uiCallbacks.setClickListener(button, v -> {
+        View boundButton = button;
+        uiCallbacks.setClickListener(boundButton, v -> {
             try {
                 info("SelectAll: button clicked!");
                 selectAllFromActionBar(bar);
@@ -3569,7 +3857,7 @@ final class TelegramHookInstaller {
                 error("Select all failed", throwable);
             }
         });
-        uiCallbacks.setTouchListener(button, (v, event) -> {
+        uiCallbacks.setTouchListener(boundButton, (v, event) -> {
             info("SelectAll: touch event=" + event.getAction());
             return false;
         });
@@ -3867,6 +4155,20 @@ final class TelegramHookInstaller {
             Class<?> settingsActivityClass = classLoader.loadClass("org.telegram.ui.SettingsActivity");
             hookSettingsActivityListRow(classLoader, settingsActivityClass);
             hookSettingsActivityBack(settingsActivityClass);
+            try {
+                Method onResume = Reflect.method(settingsActivityClass, "onResume");
+                hook(onResume, chain -> {
+                    Object result = chain.proceed();
+                    try {
+                        refreshSettingsList(chain.getThisObject());
+                    } catch (Throwable throwable) {
+                        error("SettingsActivity row resume refresh failed", throwable);
+                    }
+                    return result;
+                });
+            } catch (NoSuchMethodException ignored) {
+                info("SettingsActivity.onResume unavailable for row refresh");
+            }
             info("Hooked SettingsActivity host entry");
         } catch (Throwable throwable) {
             error("Failed to hook SettingsActivity host entry", throwable);
@@ -5519,10 +5821,10 @@ final class TelegramHookInstaller {
                         + " matched=" + decision.matched
                         + " excluded=" + decision.excluded
                         + " reason=" + preview(decision.reason)
-                        + " chat=" + preview(snapshot.chatName)
-                        + " sender=" + preview(snapshot.senderName)
+                        + " " + LogPrivacy.field("chat", snapshot.chatName)
+                        + " " + LogPrivacy.field("sender", snapshot.senderName)
                         + " dialog=" + snapshot.dialogId
-                        + " text=" + preview(snapshot.text)
+                        + " " + LogPrivacy.field("text", snapshot.text)
         );
     }
 
@@ -5536,13 +5838,13 @@ final class TelegramHookInstaller {
         }
         info(
                 "BindProbe cell=" + cell.getClass().getSimpleName()
-                        + " chat=" + preview(snapshot.chatName)
-                        + " sender=" + preview(snapshot.senderName)
+                        + " " + LogPrivacy.field("chat", snapshot.chatName)
+                        + " " + LogPrivacy.field("sender", snapshot.senderName)
                         + " dialog=" + snapshot.dialogId
                         + " msg=" + snapshot.messageId
-                        + " text=" + preview(snapshot.text)
-                        + " caption=" + preview(snapshot.caption)
-                        + " buttons=" + preview(snapshot.buttonText)
+                        + " " + LogPrivacy.field("text", snapshot.text)
+                        + " " + LogPrivacy.field("caption", snapshot.caption)
+                        + " " + LogPrivacy.field("buttons", snapshot.buttonText)
                         + " decision=" + decision.reason
         );
     }
@@ -5575,11 +5877,14 @@ final class TelegramHookInstaller {
         entry.senderId = decisionContext.snapshot.senderId;
         entry.messageId = decisionContext.snapshot.messageId;
         entry.stableKey = decisionContext.stableKey;
-        entry.chatName = decisionContext.snapshot.chatName;
-        entry.senderName = decisionContext.snapshot.senderName;
-        entry.text = decisionContext.snapshot.text;
-        entry.caption = decisionContext.snapshot.caption;
-        entry.buttonText = decisionContext.snapshot.buttonText;
+        DiagnosticLogStore.setMessageDetails(
+                entry,
+                decisionContext.snapshot.chatName,
+                decisionContext.snapshot.senderName,
+                decisionContext.snapshot.text,
+                decisionContext.snapshot.caption,
+                decisionContext.snapshot.buttonText
+        );
         entry.hasInlineButtons = decisionContext.snapshot.hasInlineButtons;
         Bundle extras = new Bundle();
         extras.putString(ConfigContentProvider.KEY_DIAGNOSTIC_ENTRY_JSON, DiagnosticLogStore.entryToJson(entry));
@@ -7097,25 +7402,30 @@ final class TelegramHookInstaller {
         if (headerItem == null) {
             return;
         }
-        if (!hasMenuItem(headerItem, MENU_ID_CHAT)) {
+        View chatMenuView = reconcileMenuItemView(headerItem, MENU_ID_CHAT);
+        if (chatMenuView == null) {
             Context context = contextFromMenuItem(headerItem);
             int iconRes = resolveIcon(context);
             Object subItem = addMenuSubItem(headerItem, MENU_ID_CHAT, iconRes, localizedChatMenuLabel(context));
             if (subItem instanceof View) {
-                View subItemView = (View) subItem;
-                subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CHAT);
-                uiCallbacks.setClickListener(subItemView, v -> {
-                    try {
-                        long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
-                        String title = resolveChatTitle(chatActivity);
-                        openConfigFromHost(chatActivity, v.getContext(), CONFIG_MODE_CHAT, dialogId, title);
-                    } finally {
-                        Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
-                    }
-                });
+                chatMenuView = (View) subItem;
+                chatMenuView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CHAT);
             } else {
                 info("ChatActivity menu addSubItem unavailable on " + headerItem.getClass().getName());
             }
+        }
+        if (chatMenuView != null) {
+            View boundChatMenuView = chatMenuView;
+            uiCallbacks.setClickListener(boundChatMenuView, v -> {
+                try {
+                    long dialogId = Reflect.asLong(Reflect.invokeIfExists(
+                            chatActivity, "getDialogId", new Class<?>[0]), 0L);
+                    String title = resolveChatTitle(chatActivity);
+                    openConfigFromHost(chatActivity, v.getContext(), CONFIG_MODE_CHAT, dialogId, title);
+                } finally {
+                    Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
+                }
+            });
         }
         injectScrollToTopMenu(chatActivity, headerItem);
         injectJumpToMarkMenu(chatActivity, headerItem);
@@ -7213,19 +7523,21 @@ final class TelegramHookInstaller {
     }
 
     private void injectScrollToTopMenu(Object chatActivity, Object headerItem) {
-        if (hasMenuItem(headerItem, MENU_ID_SCROLL_TOP)) {
-            return;
+        View subItemView = reconcileMenuItemView(headerItem, MENU_ID_SCROLL_TOP);
+        if (subItemView == null) {
+            Context context = contextFromMenuItem(headerItem);
+            int iconRes = resolveScrollTopIcon(context);
+            Object subItem = addMenuSubItem(
+                    headerItem, MENU_ID_SCROLL_TOP, iconRes, localizedScrollTopLabel(context));
+            if (!(subItem instanceof View)) {
+                info("Scroll-to-top addSubItem unavailable on " + headerItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_SCROLL_TOP);
         }
-        Context context = contextFromMenuItem(headerItem);
-        int iconRes = resolveScrollTopIcon(context);
-        Object subItem = addMenuSubItem(headerItem, MENU_ID_SCROLL_TOP, iconRes, localizedScrollTopLabel(context));
-        if (!(subItem instanceof View)) {
-            info("Scroll-to-top addSubItem unavailable on " + headerItem.getClass().getName());
-            return;
-        }
-        View subItemView = (View) subItem;
-        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_SCROLL_TOP);
-        uiCallbacks.setClickListener(subItemView, v -> {
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
             try {
                 info("ScrollToTop menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
@@ -7237,19 +7549,21 @@ final class TelegramHookInstaller {
     }
 
     private void injectJumpToMarkMenu(Object chatActivity, Object headerItem) {
-        if (hasMenuItem(headerItem, MENU_ID_JUMP_TO_MARK)) {
-            return;
+        View subItemView = reconcileMenuItemView(headerItem, MENU_ID_JUMP_TO_MARK);
+        if (subItemView == null) {
+            Context context = contextFromMenuItem(headerItem);
+            int iconRes = resolveJumpToMarkIcon(context);
+            Object subItem = addMenuSubItem(
+                    headerItem, MENU_ID_JUMP_TO_MARK, iconRes, localizedJumpToMarkLabel(context));
+            if (!(subItem instanceof View)) {
+                info("Jump-to-mark addSubItem unavailable on " + headerItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_JUMP_TO_MARK);
         }
-        Context context = contextFromMenuItem(headerItem);
-        int iconRes = resolveJumpToMarkIcon(context);
-        Object subItem = addMenuSubItem(headerItem, MENU_ID_JUMP_TO_MARK, iconRes, localizedJumpToMarkLabel(context));
-        if (!(subItem instanceof View)) {
-            info("Jump-to-mark addSubItem unavailable on " + headerItem.getClass().getName());
-            return;
-        }
-        View subItemView = (View) subItem;
-        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_JUMP_TO_MARK);
-        uiCallbacks.setClickListener(subItemView, v -> {
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
             try {
                 info("JumpToMark menu clicked");
                 Reflect.invokeIfExists(headerItem, "toggleSubMenu", new Class<?>[0]);
@@ -7272,15 +7586,8 @@ final class TelegramHookInstaller {
             info("Anti-recall: backgroundMessageLoader is null after init");
             return;
         }
-        if (hasMenuItem(headerItem, MENU_ID_ANTI_RECALL)) {
-            return;
-        }
         if (backgroundMessageLoader == null) {
             info("Anti-recall: backgroundMessageLoader is null after deferred init");
-            return;
-        }
-        if (hasMenuItem(headerItem, MENU_ID_ANTI_RECALL)) {
-            info("Anti-recall: menu item already exists");
             return;
         }
         Context context = contextFromMenuItem(headerItem);
@@ -7296,15 +7603,21 @@ final class TelegramHookInstaller {
         int iconRes = resolveAntiRecallIcon(context);
         CharSequence label = antiRecallStatusLabel(context, dialogId);
         info("Anti-recall: label=" + label);
-        Object subItem = addMenuSubItem(headerItem, MENU_ID_ANTI_RECALL, iconRes, label);
-        if (!(subItem instanceof View)) {
-            info("Anti-recall addSubItem unavailable on " + headerItem.getClass().getName());
-            return;
+        View subItemView = reconcileMenuItemView(headerItem, MENU_ID_ANTI_RECALL);
+        if (subItemView == null) {
+            Object subItem = addMenuSubItem(headerItem, MENU_ID_ANTI_RECALL, iconRes, label);
+            if (!(subItem instanceof View)) {
+                info("Anti-recall addSubItem unavailable on " + headerItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
+            info("Anti-recall: menu item created, class=" + subItemView.getClass().getName());
+        } else {
+            Reflect.invokeIfExists(subItemView, "setText", new Class<?>[]{CharSequence.class}, label);
         }
-        View subItemView = (View) subItem;
-        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
-        info("Anti-recall: menu item created, class=" + subItemView.getClass().getName());
-        uiCallbacks.setClickListener(subItemView, v -> {
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
             try {
                 info("Anti-recall: onClick fired");
                 boolean wasEnabled = backgroundMessageLoader.isChatEnabled(dialogId);
@@ -7347,7 +7660,7 @@ final class TelegramHookInstaller {
         if (recallDetector == null) {
             initAntiRecallFromChat(chatActivity);
         }
-        if (recallDetector == null || hasMenuItem(headerItem, MENU_ID_CLEANUP_MODE)) {
+        if (recallDetector == null) {
             return;
         }
         Context context = contextFromMenuItem(headerItem);
@@ -7356,15 +7669,21 @@ final class TelegramHookInstaller {
             return;
         }
         int iconRes = resolveCleanupModeIcon(context);
-        Object subItem = addMenuSubItem(headerItem, MENU_ID_CLEANUP_MODE, iconRes,
-                cleanupModeStatusLabel(context, dialogId));
-        if (!(subItem instanceof View)) {
-            info("CleanupMode addSubItem unavailable on " + headerItem.getClass().getName());
-            return;
+        CharSequence label = cleanupModeStatusLabel(context, dialogId);
+        View subItemView = reconcileMenuItemView(headerItem, MENU_ID_CLEANUP_MODE);
+        if (subItemView == null) {
+            Object subItem = addMenuSubItem(headerItem, MENU_ID_CLEANUP_MODE, iconRes, label);
+            if (!(subItem instanceof View)) {
+                info("CleanupMode addSubItem unavailable on " + headerItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CLEANUP_MODE);
+        } else {
+            Reflect.invokeIfExists(subItemView, "setText", new Class<?>[]{CharSequence.class}, label);
         }
-        View subItemView = (View) subItem;
-        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CLEANUP_MODE);
-        uiCallbacks.setClickListener(subItemView, v -> {
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
             try {
                 boolean enabled = recallDetector.toggleCleanupMode(dialogId, CLEANUP_MODE_DURATION_MS);
                 Reflect.invokeIfExists(v, "setText", new Class<?>[]{CharSequence.class},
@@ -7573,19 +7892,22 @@ final class TelegramHookInstaller {
             info(host.getClass().getSimpleName() + " overflow menu item not found");
             return;
         }
-        if (hasMenuItem(otherItem, MENU_ID_GLOBAL)) {
-            return;
-        }
         Context context = contextFromMenuItem(otherItem);
         int iconRes = resolveIcon(context);
-        Object subItem = addMenuSubItem(otherItem, MENU_ID_GLOBAL, iconRes, localizedGlobalMenuLabel(context));
-        if (!(subItem instanceof View)) {
-            info(host.getClass().getSimpleName() + " menu addSubItem unavailable on " + otherItem.getClass().getName());
-            return;
+        View subItemView = reconcileMenuItemView(otherItem, MENU_ID_GLOBAL);
+        if (subItemView == null) {
+            Object subItem = addMenuSubItem(
+                    otherItem, MENU_ID_GLOBAL, iconRes, localizedGlobalMenuLabel(context));
+            if (!(subItem instanceof View)) {
+                info(host.getClass().getSimpleName()
+                        + " menu addSubItem unavailable on " + otherItem.getClass().getName());
+                return;
+            }
+            subItemView = (View) subItem;
+            subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_GLOBAL);
         }
-        View subItemView = (View) subItem;
-        subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_GLOBAL);
-        uiCallbacks.setClickListener(subItemView, v -> {
+        View boundSubItemView = subItemView;
+        uiCallbacks.setClickListener(boundSubItemView, v -> {
             try {
                 openConfigFromHost(host, v.getContext(), CONFIG_MODE_GLOBAL, 0L, "");
             } finally {
@@ -7741,23 +8063,63 @@ final class TelegramHookInstaller {
         return null;
     }
 
-    private boolean hasMenuItem(Object menuItem, int targetId) {
+    private View findMenuItemView(Object menuItem, int targetId) {
+        ViewGroup popupLayout = menuPopupLayout(menuItem);
+        if (popupLayout == null) {
+            return null;
+        }
+        List<View> matches = new ArrayList<>();
+        collectTaggedMenuItemViews(popupLayout, targetId, matches);
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    private View reconcileMenuItemView(Object menuItem, int targetId) {
+        ViewGroup popupLayout = menuPopupLayout(menuItem);
+        if (popupLayout == null) {
+            return null;
+        }
+        List<View> matches = new ArrayList<>();
+        collectTaggedMenuItemViews(popupLayout, targetId, matches);
+        if (matches.isEmpty()) {
+            return null;
+        }
+        View retained = matches.get(0);
+        int removed = 0;
+        for (int i = 1; i < matches.size(); i++) {
+            View duplicate = matches.get(i);
+            ViewParent parent = duplicate.getParent();
+            if (parent instanceof ViewGroup) {
+                ((ViewGroup) parent).removeView(duplicate);
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            info("MenuRebind: removed duplicates id=" + targetId + " count=" + removed);
+        }
+        return retained;
+    }
+
+    private ViewGroup menuPopupLayout(Object menuItem) {
         Object popupLayout = Reflect.invokeIfExists(menuItem, "getPopupLayout", new Class<?>[0]);
         if (!(popupLayout instanceof ViewGroup)) {
-            return false;
+            popupLayout = Reflect.field(menuItem, "popupLayout");
         }
-        ViewGroup group = (ViewGroup) popupLayout;
+        return popupLayout instanceof ViewGroup ? (ViewGroup) popupLayout : null;
+    }
+
+    private void collectTaggedMenuItemViews(ViewGroup group, int targetId, List<View> matches) {
         for (int i = 0; i < group.getChildCount(); i++) {
-            Object keyedTag = group.getChildAt(i).getTag(R.id.gramsieve_menu_item_id);
-            if (keyedTag instanceof Integer && ((Integer) keyedTag) == targetId) {
-                return true;
+            View child = group.getChildAt(i);
+            Object keyedTag = child.getTag(R.id.gramsieve_menu_item_id);
+            Object tag = child.getTag();
+            if ((keyedTag instanceof Integer && ((Integer) keyedTag) == targetId)
+                    || (tag instanceof Integer && ((Integer) tag) == targetId)) {
+                matches.add(child);
             }
-            Object tag = group.getChildAt(i).getTag();
-            if (tag instanceof Integer && ((Integer) tag) == targetId) {
-                return true;
+            if (child instanceof ViewGroup) {
+                collectTaggedMenuItemViews((ViewGroup) child, targetId, matches);
             }
         }
-        return false;
     }
 
     private Object addMenuSubItem(Object menuItem, int menuId, int iconRes, CharSequence title) {

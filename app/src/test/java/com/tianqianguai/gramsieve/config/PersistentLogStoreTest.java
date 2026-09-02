@@ -1,6 +1,7 @@
 package com.tianqianguai.gramsieve.config;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -85,5 +86,30 @@ public class PersistentLogStoreTest {
 
         assertTrue(entry.throwable.contains("RuntimeException"));
         assertTrue(entry.throwable.contains("test error"));
+    }
+
+    @Test
+    public void buildPolicySanitizesLegacySensitiveMessage() {
+        PersistentLogStore.LogEntry entry = new PersistentLogStore.LogEntry(
+                "INFO",
+                "hook",
+                "GramSieve",
+                "DecisionProbe chat=\"Private Group\" text=\"Secret body\" dialog=42"
+        );
+
+        PersistentLogStore.LogEntry parsed = PersistentLogStore.entryFromJson(
+                PersistentLogStore.entryToJson(entry)
+        );
+
+        if (LogPrivacy.allowsSensitiveContent()) {
+            assertTrue(parsed.message.contains("Private Group"));
+            assertTrue(parsed.message.contains("Secret body"));
+        } else {
+            assertFalse(parsed.message.contains("Private Group"));
+            assertFalse(parsed.message.contains("Secret body"));
+            assertTrue(parsed.message.contains("chatPresent=true chatChars=13"));
+            assertTrue(parsed.message.contains("textPresent=true textChars=11"));
+            assertTrue(parsed.message.contains("dialog=42"));
+        }
     }
 }
