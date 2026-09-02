@@ -808,6 +808,10 @@ final class TelegramHookInstaller {
                 return cliUiState(response);
             case "ui.download-button.state":
                 return cliUiDownloadButtonState(response);
+            case "ui.download-select-all.state":
+                return cliUiDownloadSelectAll(response, false);
+            case "ui.download-select-all.click":
+                return cliUiDownloadSelectAll(response, true);
             case "ui.menu.state":
                 return cliUiMenuState(response);
             case "ui.menu.open":
@@ -853,6 +857,7 @@ final class TelegramHookInstaller {
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
                 "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
+                "ui.download-select-all.state", "ui.download-select-all.click",
                 "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close",
                 "ui.log-console.state", "ui.log-console.select",
@@ -1347,9 +1352,11 @@ final class TelegramHookInstaller {
                 && Reflect.field(chatActivity, "selectedObject") != null);
         response.put("visibleMessages", visibleMessageState(chatActivity));
         response.put("downloadButton", downloadButtonState());
+        response.put("downloadSelectAll", downloadSelectAllState());
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
-                "log-console.select", "download-button.state", "menu.state", "menu.open", "jump-mark",
+                "log-console.select", "download-button.state", "download-select-all.state",
+                "download-select-all.click", "menu.state", "menu.open", "jump-mark",
                 "first-message", "scroll"
         )));
         return response;
@@ -1358,6 +1365,53 @@ final class TelegramHookInstaller {
     private JSONObject cliUiDownloadButtonState(JSONObject response) throws Exception {
         response.put("downloadButton", downloadButtonState());
         return response;
+    }
+
+    private JSONObject cliUiDownloadSelectAll(JSONObject response, boolean click) throws Exception {
+        if (click) {
+            Object activity = activeDialogsActivity.get();
+            Object pager = Reflect.field(activity, "searchViewPager");
+            if (!bindDownloadSelectAll(pager, "cli-click")) {
+                throw new IllegalStateException(
+                        "Download selection mode is not active on the downloads tab");
+            }
+            Object actionMode = Reflect.invokeIfExists(pager, "getActionMode", new Class<?>[0]);
+            View button = actionMode instanceof ViewGroup
+                    ? ((ViewGroup) actionMode).findViewWithTag(MENU_ID_SELECT_ALL)
+                    : null;
+            if (button == null || !button.performClick()) {
+                throw new IllegalStateException("Download Select All action is unavailable");
+            }
+            response.put("clicked", true);
+        }
+        response.put("downloadSelectAll", downloadSelectAllState());
+        return response;
+    }
+
+    private JSONObject downloadSelectAllState() throws Exception {
+        Object activity = activeDialogsActivity.get();
+        Object pager = Reflect.field(activity, "searchViewPager");
+        Object container = Reflect.invokeIfExists(pager, "getDownloadsContainer", new Class<?>[0]);
+        Object current = Reflect.invokeIfExists(pager, "getCurrentView", new Class<?>[0]);
+        Object actionMode = Reflect.invokeIfExists(pager, "getActionMode", new Class<?>[0]);
+        boolean showing = Boolean.TRUE.equals(
+                Reflect.invokeIfExists(pager, "actionModeShowing", new Class<?>[0]));
+        View button = actionMode instanceof ViewGroup
+                ? ((ViewGroup) actionMode).findViewWithTag(MENU_ID_SELECT_ALL)
+                : null;
+        JSONObject state = new JSONObject();
+        state.put("hostAvailable", activity != null);
+        state.put("pagerAvailable", pager != null);
+        state.put("downloadsContainerAvailable", container instanceof ViewGroup);
+        state.put("currentDownloads", container != null && current == container);
+        state.put("actionModeShowing", showing);
+        state.put("actionModeAvailable", actionMode instanceof ViewGroup);
+        Object selectedFiles = Reflect.field(pager, "selectedFiles");
+        state.put("selectedCount", selectedFiles instanceof Map<?, ?>
+                ? ((Map<?, ?>) selectedFiles).size()
+                : 0);
+        state.put("selectAll", viewState(button));
+        return state;
     }
 
     private JSONObject downloadButtonState() throws Exception {
@@ -2329,6 +2383,7 @@ final class TelegramHookInstaller {
         try {
             Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
             hookNativeDownloadVisibility(dialogsClass);
+            hookDownloadSelectionActionMode(classLoader);
             Method createView = Reflect.method(dialogsClass, "createView", Context.class);
             hook(createView, chain -> {
                 Object contextArg = chain.getArg(0);
@@ -2391,6 +2446,28 @@ final class TelegramHookInstaller {
         }
     }
 
+    private void hookDownloadSelectionActionMode(ClassLoader classLoader) {
+        try {
+            Class<?> pagerClass = classLoader.loadClass(
+                    "org.telegram.ui.Components.SearchViewPager");
+            Method showActionMode = Reflect.method(pagerClass, "showActionMode", boolean.class);
+            hook(showActionMode, chain -> {
+                Object result = chain.proceed();
+                if (Boolean.TRUE.equals(chain.getArg(0))) {
+                    try {
+                        bindDownloadSelectAll(chain.getThisObject(), "action-mode");
+                    } catch (Throwable throwable) {
+                        error("SelectAll: download action-mode binding failed", throwable);
+                    }
+                }
+                return result;
+            });
+            info("SelectAll: hooked SearchViewPager.showActionMode");
+        } catch (Throwable throwable) {
+            error("SelectAll: failed to hook SearchViewPager.showActionMode", throwable);
+        }
+    }
+
     private void ensureDownloadUiLifecycle(Object activity) {
         Object actionBar = Reflect.field(activity, "actionBar");
         if (!(actionBar instanceof ViewGroup)) {
@@ -2405,17 +2482,11 @@ final class TelegramHookInstaller {
         uiCallbacks.post(bar, () -> {
             try {
                 syncPersistentDownloadButton(activity, bar, "lifecycle");
+                bindDownloadSelectAll(Reflect.field(activity, "searchViewPager"), "lifecycle");
                 if (!firstInitialization) {
                     return;
                 }
                 installActionModeDetector(bar);
-                uiCallbacks.post(bar, () -> {
-                    try {
-                        installActionModeDetectorOnDownloadPage(bar, activity);
-                    } catch (Throwable throwable) {
-                        error("SelectAll: download page detector failed", throwable);
-                    }
-                }, 8000);
             } catch (Throwable throwable) {
                 error("SelectAll: lifecycle setup failed", throwable);
             }
@@ -3085,6 +3156,35 @@ final class TelegramHookInstaller {
         }, 500);
     }
 
+    private boolean bindDownloadSelectAll(Object pager, String reason) {
+        if (pager == null || retiring) {
+            return false;
+        }
+        Object parent = Reflect.field(pager, "parent");
+        if (parent != null) {
+            activeDialogsActivity = new WeakReference<>(parent);
+        }
+        Object container = Reflect.invokeIfExists(
+                pager, "getDownloadsContainer", new Class<?>[0]);
+        Object current = Reflect.invokeIfExists(pager, "getCurrentView", new Class<?>[0]);
+        boolean showing = Boolean.TRUE.equals(
+                Reflect.invokeIfExists(pager, "actionModeShowing", new Class<?>[0]));
+        Object actionMode = Reflect.invokeIfExists(
+                pager, "getActionMode", new Class<?>[0]);
+        boolean currentDownloads = container != null && current == container;
+        if (!showing || !currentDownloads
+                || !(container instanceof ViewGroup)
+                || !(actionMode instanceof ViewGroup)) {
+            return false;
+        }
+        injectSelectAllIntoActionModeForDownload(
+                (ViewGroup) actionMode,
+                (ViewGroup) container
+        );
+        info("SelectAll: bound native download action mode reason=" + reason);
+        return true;
+    }
+
     /**
      * Injects "Select All" button next to the action buttons (like delete)
      * that appear when selection mode is active.
@@ -3133,6 +3233,9 @@ final class TelegramHookInstaller {
 
     private void selectAllDownloadItems(ViewGroup fragmentView) {
         java.util.List<View> containers = new java.util.ArrayList<>();
+        if (fragmentView.getClass().getSimpleName().contains("SearchDownloadsContainer")) {
+            containers.add(fragmentView);
+        }
         findAllViewsByClassName(fragmentView, "SearchDownloadsContainer", containers, 0);
         if (containers.isEmpty()) {
             info("SelectAll: SearchDownloadsContainer not found");
