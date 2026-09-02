@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/gramsieve-logo.png" alt="GramSieve logo" width="180">
+</p>
+
 # GramSieve
 
 Telegram 本地增强 LSPosed 模块，提供消息过滤、宿主设置集成、浏览位置跳转、防撤回、防修改/编辑拦截、多版本编辑历史查看和原始媒体预览等能力。
