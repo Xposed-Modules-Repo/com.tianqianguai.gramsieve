@@ -95,6 +95,7 @@ dependencies {
     implementation(libs.gson)
     implementation(libs.libxposed.service)
     compileOnly(libs.libxposed.api)
+    testImplementation(libs.libxposed.api)
     testImplementation(libs.junit)
     testImplementation(libs.mockito.core)
     androidTestImplementation(libs.androidx.junit)

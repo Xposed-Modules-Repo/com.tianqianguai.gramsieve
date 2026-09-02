@@ -15,6 +15,7 @@ import io.github.libxposed.api.XposedModule;
 public final class RecallDetector {
     private static final String TAG = "GramSieve";
     private static final long LOCAL_DIALOG_DELETE_CLEANUP_MS = 2 * 60_000L;
+    private static final long MANUAL_DELETE_ALERT_WINDOW_MS = 2 * 60_000L;
 
     private final MessageCache messageCache;
     private final BackgroundMessageLoader loader;
@@ -24,6 +25,8 @@ public final class RecallDetector {
     private final SelfDeleteTracker selfDeleteTracker;
     private final BooleanSupplier useExternalAntiRecall;
     private final BooleanSupplier useExternalEditHistory;
+    private volatile MessageDeleteFlowDiagnostics deleteFlowDiagnostics;
+    private final ThreadLocal<DeleteControllerTrace> deleteControllerTrace = new ThreadLocal<>();
     private volatile ClassLoader telegramClassLoader;
     private volatile boolean active = true;
 
@@ -98,11 +101,18 @@ public final class RecallDetector {
         active = true;
         telegramClassLoader = classLoader;
         ModuleLogger.hook(TAG, "RecallDetector: installing hooks...");
+        ModuleLogger.hook(TAG, "MessageDeleteFlow: origin invoker ready="
+                + (XposedInterface.Invoker.Type.ORIGIN != null));
         try {
             Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
             hookMethods(messagesControllerClass, module, classLoader);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to load MessagesController", throwable);
+        }
+        try {
+            hookDeleteRpc(classLoader, module);
+        } catch (Throwable throwable) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to hook delete RPC", throwable);
         }
         // Hook MessagesStorage to cache loaded messages
         try {
@@ -585,15 +595,15 @@ public final class RecallDetector {
 
     private void hookSingleMethod(XposedModule module, java.lang.reflect.Method method, String methodName) {
         try {
+            if (methodName.equals("deleteMessages")) {
+                hookDeleteControllerMethod(module, method);
+                return;
+            }
             hook(module, method, chain -> {
                 try {
                     java.util.List<Object> args = chain.getArgs();
                     if (methodName.equals("processUpdateArray")) {
                         processUpdatesFromArgs(chain.getThisObject(), args);
-                        return chain.proceed();
-                    }
-                    if (methodName.equals("deleteMessages")) {
-                        processDeletionsFromArgs(chain.getThisObject(), args);
                         return chain.proceed();
                     }
                     if (methodName.equals("deleteDialog") || methodName.equals("blockPeer")) {
@@ -627,6 +637,121 @@ public final class RecallDetector {
         }
     }
 
+    private void hookDeleteControllerMethod(XposedModule module, Method method) {
+        try {
+            boolean changed = module.deoptimize(method);
+            ModuleLogger.hook(TAG, "MessageDeleteFlow: "
+                    + (changed ? "deoptimized" : "deopt not needed")
+                    + " deleteMessages overload=" + method.getParameterCount());
+        } catch (Throwable throwable) {
+            ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG,
+                    "MessageDeleteFlow: deleteMessages deoptimize failed params="
+                            + method.getParameterCount(), throwable);
+        }
+        hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
+            DeleteControllerTrace trace = deleteControllerTrace.get();
+            boolean outermost = trace == null;
+            if (outermost) {
+                trace = new DeleteControllerTrace();
+                deleteControllerTrace.set(trace);
+            }
+            if (trace.recoveringOrigin) {
+                return invokeOrigin(module, method, chain.getThisObject(), chain.getArgs());
+            }
+
+            DeletionRequest deletion = deletionFromControllerArgs(chain.getArgs());
+            processDeletionsFromArgs(chain.getThisObject(), chain.getArgs());
+            try {
+                Object result = chain.proceed();
+                if (outermost && !trace.deleteRpcSeen && shouldRecoverManualDelete(deletion)) {
+                    trace.recoveringOrigin = true;
+                    MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+                    if (diagnostics != null) {
+                        diagnostics.recordOriginRecovery();
+                    }
+                    ModuleLogger.hook(TAG, "MessageDeleteFlow: controller returned before delete RPC; "
+                            + "invoking Telegram origin dialogId=" + deletion.dialogId
+                            + " count=" + deletion.messageIds.size()
+                            + " overload=" + method.getParameterCount());
+                    result = invokeOrigin(module, method, chain.getThisObject(), chain.getArgs());
+                    ModuleLogger.hook(TAG, "MessageDeleteFlow: origin recovery returned rpcSeen="
+                            + trace.deleteRpcSeen + " dialogId=" + deletion.dialogId);
+                }
+                return result;
+            } catch (Throwable throwable) {
+                ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG,
+                        "deleteMessages hook failed params=" + method.getParameterCount(), throwable);
+                throw throwable;
+            } finally {
+                if (outermost) {
+                    deleteControllerTrace.remove();
+                }
+            }
+        });
+        ModuleLogger.hook(TAG, "RecallDetector: hook deleteMessages success");
+    }
+
+    private boolean shouldRecoverManualDelete(DeletionRequest deletion) {
+        MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+        return diagnostics != null
+                && deletion.dialogId != 0L
+                && !deletion.messageIds.isEmpty()
+                && diagnostics.consumeRecentAlert(deletion.dialogId, MANUAL_DELETE_ALERT_WINDOW_MS);
+    }
+
+    private Object invokeOrigin(
+            XposedModule module,
+            Method method,
+            Object thisObject,
+            List<Object> args
+    ) throws Throwable {
+        return module.getInvoker(method)
+                .setType(XposedInterface.Invoker.Type.ORIGIN)
+                .invoke(thisObject, args.toArray(new Object[0]));
+    }
+
+    private void hookDeleteRpc(ClassLoader classLoader, XposedModule module) throws ClassNotFoundException {
+        Class<?> connectionsManagerClass = classLoader.loadClass("org.telegram.tgnet.ConnectionsManager");
+        int hooked = 0;
+        for (Method method : connectionsManagerClass.getDeclaredMethods()) {
+            if (!method.getName().startsWith("sendRequest") || method.getParameterCount() == 0) {
+                continue;
+            }
+            hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
+                Object request = chain.getArg(0);
+                String requestType = request == null ? "" : request.getClass().getSimpleName();
+                if (isDeleteRpc(requestType)) {
+                    DeleteControllerTrace trace = deleteControllerTrace.get();
+                    if (trace != null) {
+                        trace.deleteRpcSeen = true;
+                    }
+                    MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+                    if (diagnostics != null) {
+                        diagnostics.recordDeleteRpc(requestType);
+                    }
+                    ModuleLogger.hook(TAG, "MessageDeleteFlow: delete RPC entered type="
+                            + requestType + " overload=" + method.getParameterCount());
+                }
+                return chain.proceed();
+            });
+            hooked++;
+        }
+        ModuleLogger.hook(TAG, "MessageDeleteFlow: hooked ConnectionsManager request overloads=" + hooked);
+    }
+
+    private static boolean isDeleteRpc(String requestType) {
+        return requestType != null
+                && requestType.startsWith("TL_")
+                && (requestType.contains("deleteMessages")
+                || requestType.contains("deleteScheduledMessages")
+                || requestType.contains("deleteQuickReplyMessages"));
+    }
+
+    private static final class DeleteControllerTrace {
+        boolean deleteRpcSeen;
+        boolean recoveringOrigin;
+    }
+
     private void processUpdatesFromArgs(Object messagesController, java.util.List<Object> args) {
         if (args == null || args.isEmpty()) return;
         for (Object arg : args) {
@@ -640,6 +765,10 @@ public final class RecallDetector {
     boolean processDeletionsFromArgs(Object messagesController, java.util.List<Object> args) {
         DeletionRequest deletion = deletionFromControllerArgs(args);
         if (deletion.dialogId != 0L && !deletion.messageIds.isEmpty()) {
+            MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
+            if (diagnostics != null) {
+                diagnostics.recordControllerRequest(deletion.dialogId, deletion.messageIds.size());
+            }
             int accountId = TelegramAccountResolver.resolveHost(messagesController, telegramClassLoader);
             if (selfDeleteTracker != null) {
                 selfDeleteTracker.recordUserDelete(deletion.dialogId, deletion.messageIds);
@@ -883,11 +1012,19 @@ public final class RecallDetector {
     }
 
     private void hook(XposedModule module, Method method, XposedInterface.Hooker hooker) {
+        hook(module, method, XposedInterface.PRIORITY_LOWEST, hooker);
+    }
+
+    private void hook(XposedModule module, Method method, int priority, XposedInterface.Hooker hooker) {
         module.hook(method)
                 .setId(HookIdentity.forCaller("recall", method))
-                .setPriority(XposedInterface.PRIORITY_LOWEST)
+                .setPriority(priority)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
                 .intercept(chain -> active ? hooker.intercept(chain) : chain.proceed());
+    }
+
+    void setDeleteFlowDiagnostics(MessageDeleteFlowDiagnostics diagnostics) {
+        deleteFlowDiagnostics = diagnostics;
     }
 
     private void hookProcessUpdateArray(ClassLoader classLoader, XposedModule module) {
