@@ -52,11 +52,17 @@ public final class MediaCache {
             byte[] buffer = new byte[8192];
             int bytesRead;
             while ((bytesRead = inputStream.read(buffer)) != -1) {
+                if (Thread.currentThread().isInterrupted()) {
+                    throw new IOException("media copy interrupted");
+                }
                 fos.write(buffer, 0, bytesRead);
             }
             ModuleLogger.hook(TAG, "MediaCache: saved " + file.getName() + " size=" + file.length());
             return file;
         } catch (IOException e) {
+            if (file.exists()) {
+                file.delete();
+            }
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "MediaCache: failed to save media", e);
             return null;
         }

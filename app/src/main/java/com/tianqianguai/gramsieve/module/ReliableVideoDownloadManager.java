@@ -53,6 +53,22 @@ final class ReliableVideoDownloadManager {
         this.classLoader = classLoader;
     }
 
+    boolean prepareForHotReload() {
+        classLoader = null;
+        for (Job job : jobs.values()) {
+            job.state.cancel();
+        }
+        jobs.clear();
+        userStarted.clear();
+        loggedCancelledTransport.clear();
+        loggedCancelledVideoState.clear();
+        loggedCancelledPlayerCleanup.clear();
+        lastForcedCancelAt.clear();
+        lastVideoStateClearAt.clear();
+        CANCEL_ORIGIN.remove();
+        return ExecutorShutdown.now(scheduler, 3_000L);
+    }
+
     static String currentCancelOrigin() {
         return CANCEL_ORIGIN.get();
     }

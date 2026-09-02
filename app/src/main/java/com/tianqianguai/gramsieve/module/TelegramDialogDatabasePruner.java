@@ -6,8 +6,12 @@ import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteException;
 
 import java.io.File;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 final class TelegramDialogDatabasePruner {
     interface Logger {
@@ -21,6 +25,8 @@ final class TelegramDialogDatabasePruner {
 
     private final Context context;
     private final Logger logger;
+    private final Set<Thread> workers = new HashSet<>();
+    private volatile boolean accepting = true;
     private final Map<String, Long> recentPrunes = new LinkedHashMap<String, Long>(64, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
@@ -34,7 +40,7 @@ final class TelegramDialogDatabasePruner {
     }
 
     void pruneAsync(long dialogId, int account, String source) {
-        if (dialogId == 0L || shouldSkipRecent(dialogId, account)) {
+        if (!accepting || dialogId == 0L || shouldSkipRecent(dialogId, account)) {
             return;
         }
         Thread thread = new Thread(() -> {
@@ -48,10 +54,53 @@ final class TelegramDialogDatabasePruner {
             } catch (Throwable throwable) {
                 logger.error("DialogDatabasePrune: failed dialogId=" + dialogId
                         + " account=" + account + " source=" + source, throwable);
+            } finally {
+                synchronized (workers) {
+                    workers.remove(Thread.currentThread());
+                    workers.notifyAll();
+                }
             }
         }, "GramSieve-DialogPrune");
         thread.setDaemon(true);
-        thread.start();
+        synchronized (workers) {
+            if (!accepting) {
+                return;
+            }
+            workers.add(thread);
+            thread.start();
+        }
+    }
+
+    boolean prepareForHotReload(long timeoutMs) {
+        accepting = false;
+        List<Thread> snapshot;
+        synchronized (workers) {
+            snapshot = new ArrayList<>(workers);
+        }
+        for (Thread worker : snapshot) {
+            worker.interrupt();
+        }
+        long deadline = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        boolean stopped = true;
+        for (Thread worker : snapshot) {
+            long remaining = Math.max(0L, deadline - System.currentTimeMillis());
+            if (remaining == 0L) {
+                stopped &= !worker.isAlive();
+                continue;
+            }
+            try {
+                worker.join(remaining);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                stopped = false;
+                break;
+            }
+            stopped &= !worker.isAlive();
+        }
+        synchronized (recentPrunes) {
+            recentPrunes.clear();
+        }
+        return stopped;
     }
 
     private boolean shouldSkipRecent(long dialogId, int account) {

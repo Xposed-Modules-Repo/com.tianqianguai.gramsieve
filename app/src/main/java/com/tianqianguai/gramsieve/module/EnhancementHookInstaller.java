@@ -68,12 +68,14 @@ final class EnhancementHookInstaller {
     private volatile EnhancementConfig cachedEnhancements = new EnhancementConfig();
     private volatile long lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
     private volatile Context applicationContext;
+    private volatile boolean active = true;
 
     EnhancementHookInstaller(XposedModule module) {
         this.module = module;
     }
 
     void install(ClassLoader classLoader, XposedConfigProvider configProvider) {
+        active = true;
         this.configProvider = configProvider;
         this.lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
         installNetworkPolicyHooks(classLoader);
@@ -82,6 +84,16 @@ final class EnhancementHookInstaller {
         installInterfaceHooks(classLoader);
         installTransferHooks(classLoader);
         applyStartupFlags(classLoader);
+    }
+
+    void prepareForHotReload() {
+        active = false;
+        hookedMethods.clear();
+        affixedRequests.clear();
+        configProvider = null;
+        applicationContext = null;
+        cachedEnhancements = new EnhancementConfig();
+        lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
     }
 
     private void installNetworkPolicyHooks(ClassLoader classLoader) {
@@ -836,9 +848,10 @@ final class EnhancementHookInstaller {
         try {
             method.setAccessible(true);
             module.hook(method)
+                    .setId(HookIdentity.forCaller("enhancement", method))
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
-                    .intercept(hooker);
+                    .intercept(chain -> active ? hooker.intercept(chain) : chain.proceed());
         } catch (Throwable throwable) {
             hookedMethods.remove(method);
             warn("Enhancements: failed to hook " + method.getDeclaringClass().getName() + "." + method.getName());

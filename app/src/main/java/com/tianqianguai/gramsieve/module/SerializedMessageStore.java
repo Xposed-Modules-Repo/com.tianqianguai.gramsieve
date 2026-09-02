@@ -143,7 +143,22 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
 
     @Override
     public void close() {
-        executor.shutdown();
+        prepareForHotReload();
+    }
+
+    boolean prepareForHotReload() {
+        boolean stopped = ExecutorShutdown.gracefulThenNow(executor, 4_000L);
+        if (delegate instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) delegate).close();
+            } catch (Exception exception) {
+                ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
+                        "delegate close failed: " + exception.getClass().getSimpleName());
+                stopped = false;
+            }
+        }
+        storageThread = null;
+        return stopped;
     }
 
     private void enqueueWrite(WriteTask task) {

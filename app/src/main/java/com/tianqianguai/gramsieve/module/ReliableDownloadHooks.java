@@ -17,6 +17,7 @@ final class ReliableDownloadHooks {
     private final DownloadCancellationRegistry cancellationRegistry;
     private final BooleanSupplier useExternalDownload;
     private ReliableVideoDownloadManager downloadManager;
+    private volatile boolean active = true;
 
     ReliableDownloadHooks(XposedModule module, DownloadCancellationRegistry cancellationRegistry) {
         this(module, cancellationRegistry, () -> false);
@@ -30,12 +31,20 @@ final class ReliableDownloadHooks {
     }
 
     void install(ClassLoader classLoader) {
+        active = true;
         downloadManager = new ReliableVideoDownloadManager(cancellationRegistry, useExternalDownload);
         downloadManager.setClassLoader(classLoader);
         hookDownloadButton(classLoader);
         hookDownloadMiniButton(classLoader);
         hookDownloadTransport(classLoader);
         hookDownloadNotifications(classLoader);
+    }
+
+    boolean prepareForHotReload() {
+        active = false;
+        ReliableVideoDownloadManager manager = downloadManager;
+        downloadManager = null;
+        return manager == null || manager.prepareForHotReload();
     }
 
     private void hookDownloadButton(ClassLoader classLoader) {
@@ -339,9 +348,10 @@ final class ReliableDownloadHooks {
 
     private void hook(Method method, XposedInterface.Hooker hooker) {
         module.hook(method)
+                .setId(HookIdentity.forCaller("download", method))
                 .setPriority(XposedInterface.PRIORITY_LOWEST)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
-                .intercept(hooker);
+                .intercept(chain -> active ? hooker.intercept(chain) : chain.proceed());
     }
 
     private boolean usesExternalDownload() {

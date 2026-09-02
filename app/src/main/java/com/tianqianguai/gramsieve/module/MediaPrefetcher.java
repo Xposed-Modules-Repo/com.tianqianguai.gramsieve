@@ -52,6 +52,13 @@ public final class MediaPrefetcher {
         this.telegramClassLoader = telegramClassLoader;
     }
 
+    boolean prepareForHotReload() {
+        telegramClassLoader = null;
+        pendingKeys.clear();
+        loggedCancelledKeys.clear();
+        return ExecutorShutdown.now(scheduler, 3_000L);
+    }
+
     public void prefetchFromMessage(long dialogId, long messageId, Object messageLike, Object mediaObject) {
         int account = TelegramAccountResolver.resolveWithFallback(telegramClassLoader, messageLike,
                 Reflect.field(messageLike, "messageOwner"));
