@@ -12,6 +12,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
 import android.content.res.Resources;
+import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Base64;
@@ -161,6 +162,8 @@ final class TelegramHookInstaller {
         }
     };
     private final UiTraceRateLimiter uiTraceRateLimiter = new UiTraceRateLimiter();
+    private final MessageDeleteFlowDiagnostics messageDeleteDiagnostics =
+            new MessageDeleteFlowDiagnostics();
     private boolean installed;
     private boolean persistentDiagnosticsUnavailable;
     private volatile long trackedDialogId;
@@ -212,6 +215,7 @@ final class TelegramHookInstaller {
         hookChatActivityPause(classLoader);
         hookScrollToLastMessage(classLoader);
         hookMessageContextMenu(classLoader);
+        hookMessageDeleteFlow(classLoader);
         hookSettingsActivityMenu(classLoader);
         hookProfileSettingsMenu(classLoader);
         hookDownloadActivityMenu(classLoader);
@@ -500,6 +504,7 @@ final class TelegramHookInstaller {
                 editHistoryPolicyStore,
                 () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.ANTI_RECALL),
                 () -> usesModuleFallback(ModuleConflictDetector.ConflictKind.EDIT_HISTORY));
+        recallDetector.setDeleteFlowDiagnostics(messageDeleteDiagnostics);
         backgroundMessageLoader.setLoadedMessagesConsumer(recallDetector::cacheBackgroundMessages);
         if (classLoader != null) {
             mediaPrefetcher.setTelegramClassLoader(classLoader);
@@ -812,6 +817,12 @@ final class TelegramHookInstaller {
                 return cliUiDownloadSelectAll(response, false);
             case "ui.download-select-all.click":
                 return cliUiDownloadSelectAll(response, true);
+            case "ui.message-menu.open":
+                return cliUiMessageMenuOpen(response, intent);
+            case "ui.message-menu.close":
+                return cliUiMessageMenuClose(response, intent);
+            case "ui.message-delete.state":
+                return cliUiMessageDeleteState(response);
             case "ui.menu.state":
                 return cliUiMenuState(response);
             case "ui.menu.open":
@@ -858,6 +869,7 @@ final class TelegramHookInstaller {
                 "message.get", "message.recalled", "message.edited", "message.history",
                 "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
                 "ui.download-select-all.state", "ui.download-select-all.click",
+                "ui.message-menu.open", "ui.message-menu.close", "ui.message-delete.state",
                 "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close",
                 "ui.log-console.state", "ui.log-console.select",
@@ -1356,7 +1368,9 @@ final class TelegramHookInstaller {
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
                 "log-console.select", "download-button.state", "download-select-all.state",
-                "download-select-all.click", "menu.state", "menu.open", "jump-mark",
+                "download-select-all.click", "message-menu.open", "message-menu.close",
+                "message-delete.state",
+                "menu.state", "menu.open", "jump-mark",
                 "first-message", "scroll"
         )));
         return response;
@@ -1446,6 +1460,145 @@ final class TelegramHookInstaller {
             state.put("width", item.getWidth());
             state.put("height", item.getHeight());
         }
+        return state;
+    }
+
+    private JSONObject cliUiMessageDeleteState(JSONObject response) throws Exception {
+        Object chatActivity = activeChatActivity.get();
+        Object popupWindow = Reflect.field(chatActivity, "scrimPopupWindow");
+        Object content = Reflect.invokeIfExists(popupWindow, "getContentView", new Class<?>[0]);
+        View popupContent = content instanceof View ? (View) content : null;
+        View deleteItem = findNativeDeleteMenuItem(popupContent);
+        ViewGroup parent = deleteItem != null && deleteItem.getParent() instanceof ViewGroup
+                ? (ViewGroup) deleteItem.getParent()
+                : null;
+
+        JSONObject state = new JSONObject();
+        state.put("activeChat", chatActivity != null);
+        state.put("popupAvailable", popupWindow instanceof PopupWindow);
+        state.put("popupContent", viewState(popupContent));
+        state.put("deleteItem", viewState(deleteItem));
+        state.put("deleteItemIndex", parent == null ? -1 : parent.indexOfChild(deleteItem));
+        state.put("menuItemCount", parent == null ? 0 : parent.getChildCount());
+        state.put("selectedMessageId", chatActivity == null
+                ? 0
+                : resolveMessageId(Reflect.field(chatActivity, "selectedObject")));
+        state.put("dialogId", trackedDialogId);
+        if (popupWindow instanceof PopupWindow) {
+            PopupWindow window = (PopupWindow) popupWindow;
+            state.put("windowWidth", window.getWidth());
+            state.put("windowHeight", window.getHeight());
+            state.put("windowShowing", window.isShowing());
+        }
+        if (popupContent != null) {
+            state.put("contentWidth", popupContent.getWidth());
+            state.put("contentHeight", popupContent.getHeight());
+            state.put("contentMeasuredWidth", popupContent.getMeasuredWidth());
+            state.put("contentMeasuredHeight", popupContent.getMeasuredHeight());
+        }
+        if (deleteItem != null) {
+            Rect visibleBounds = new Rect();
+            state.put("deleteItemGloballyVisible", deleteItem.getGlobalVisibleRect(visibleBounds));
+            JSONObject bounds = new JSONObject();
+            bounds.put("left", visibleBounds.left);
+            bounds.put("top", visibleBounds.top);
+            bounds.put("right", visibleBounds.right);
+            bounds.put("bottom", visibleBounds.bottom);
+            state.put("deleteItemBounds", bounds);
+        }
+        state.put("flow", messageDeleteDiagnosticsJson(messageDeleteDiagnostics.snapshot()));
+        response.put("messageDelete", state);
+        return response;
+    }
+
+    private JSONObject cliUiMessageMenuOpen(JSONObject response, Intent intent) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        int messageId = intExtra(intent, "message_id", 0);
+        if (messageId <= 0) {
+            throw new IllegalArgumentException("message_id must be positive");
+        }
+        View messageView = findVisibleMessageView(chatActivity, messageId);
+        if (messageView == null) {
+            throw new IllegalStateException("Message is not currently visible: " + messageId);
+        }
+        Object opened = Reflect.invokeIfExists(
+                chatActivity,
+                "createMenu",
+                new Class<?>[]{
+                        View.class,
+                        boolean.class,
+                        boolean.class,
+                        float.class,
+                        float.class,
+                        boolean.class,
+                        boolean.class,
+                        boolean.class
+                },
+                messageView,
+                true,
+                false,
+                messageView.getWidth() / 2f,
+                messageView.getHeight() / 2f,
+                false,
+                false,
+                false
+        );
+        if (!Boolean.TRUE.equals(opened)) {
+            throw new IllegalStateException("Telegram did not open the message menu");
+        }
+        response.put("opened", true);
+        response.put("messageId", messageId);
+        return cliUiMessageDeleteState(response);
+    }
+
+    private JSONObject cliUiMessageMenuClose(JSONObject response, Intent intent) throws Exception {
+        Object chatActivity = requireActiveChat(intent);
+        Object popup = Reflect.field(chatActivity, "scrimPopupWindow");
+        boolean showing = popup instanceof PopupWindow && ((PopupWindow) popup).isShowing();
+        if (showing) {
+            dismissScrimPopup(chatActivity);
+        }
+        response.put("closed", showing);
+        return cliUiMessageDeleteState(response);
+    }
+
+    private View findVisibleMessageView(Object chatActivity, int messageId) {
+        Object list = chatActivity == null ? null : Reflect.field(chatActivity, "chatListView");
+        if (!(list instanceof ViewGroup)) {
+            return null;
+        }
+        ViewGroup group = (ViewGroup) list;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View child = group.getChildAt(i);
+            if (resolveMessageId(resolveMessageObject(child)) == messageId) {
+                return child;
+            }
+        }
+        return null;
+    }
+
+    private JSONObject messageDeleteDiagnosticsJson(MessageDeleteFlowDiagnostics.Snapshot snapshot)
+            throws Exception {
+        JSONObject state = new JSONObject();
+        state.put("popupCount", snapshot.popupCount);
+        state.put("alertEntryCount", snapshot.alertEntryCount);
+        state.put("alertReturnCount", snapshot.alertReturnCount);
+        state.put("controllerRequestCount", snapshot.controllerRequestCount);
+        state.put("deleteRpcCount", snapshot.deleteRpcCount);
+        state.put("originRecoveryCount", snapshot.originRecoveryCount);
+        state.put("lastUpdatedAtMs", snapshot.lastUpdatedAtMs);
+        state.put("lastDialogId", snapshot.lastDialogId);
+        state.put("lastMessageId", snapshot.lastMessageId);
+        state.put("lastDeleteItemPresent", snapshot.lastDeleteItemPresent);
+        state.put("lastDeleteItemClickable", snapshot.lastDeleteItemClickable);
+        state.put("lastDeleteItemHasListener", snapshot.lastDeleteItemHasListener);
+        state.put("lastDeleteItemIndex", snapshot.lastDeleteItemIndex);
+        state.put("lastMenuItemCount", snapshot.lastMenuItemCount);
+        state.put("lastPopupWidth", snapshot.lastPopupWidth);
+        state.put("lastPopupHeight", snapshot.lastPopupHeight);
+        state.put("lastAlertParameterCount", snapshot.lastAlertParameterCount);
+        state.put("lastControllerMessageCount", snapshot.lastControllerMessageCount);
+        state.put("lastRpcType", snapshot.lastRpcType);
         return state;
     }
 
@@ -2300,6 +2453,46 @@ final class TelegramHookInstaller {
             info("Hooked ChatActivity message context menu");
         } catch (Throwable throwable) {
             error("Failed to hook ChatActivity message context menu", throwable);
+        }
+    }
+
+    private void hookMessageDeleteFlow(ClassLoader classLoader) {
+        try {
+            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            int hooked = 0;
+            for (Method method : chatActivityClass.getDeclaredMethods()) {
+                int parameterCount = method.getParameterCount();
+                if (!"createDeleteMessagesAlert".equals(method.getName())
+                        || (parameterCount != 2 && parameterCount != 3)) {
+                    continue;
+                }
+                method.setAccessible(true);
+                deoptimize(method, "ChatActivity.createDeleteMessagesAlert/" + parameterCount);
+                hook(method, XposedInterface.PRIORITY_HIGHEST, chain -> {
+                    Object selected = chain.getArg(0);
+                    if (selected == null) {
+                        selected = Reflect.field(chain.getThisObject(), "selectedObject");
+                    }
+                    int messageId = resolveMessageId(selected);
+                    long dialogId = trackedDialogId;
+                    messageDeleteDiagnostics.recordAlertEntry(dialogId, messageId, parameterCount);
+                    info("MessageDeleteFlow: alert enter params=" + parameterCount
+                            + " dialogId=" + dialogId + " messageId=" + messageId);
+                    try {
+                        return chain.proceed();
+                    } finally {
+                        messageDeleteDiagnostics.recordAlertReturn();
+                        Object visibleDialog = Reflect.invokeIfExists(
+                                chain.getThisObject(), "getVisibleDialog", new Class<?>[0]);
+                        info("MessageDeleteFlow: alert return params=" + parameterCount
+                                + " visibleDialog=" + (visibleDialog != null));
+                    }
+                });
+                hooked++;
+            }
+            info("MessageDeleteFlow: hooked alert overloads=" + hooked);
+        } catch (Throwable throwable) {
+            error("MessageDeleteFlow: failed to hook delete alert", throwable);
         }
     }
 
@@ -6398,47 +6591,57 @@ final class TelegramHookInstaller {
             });
         }
 
-        MenuInsertionPoint insertionPoint = findReportInsertionPoint((View) contentView);
-        if (insertionPoint != null) {
-            insertionPoint.parent.addView(
-                    blockItem,
-                    Math.min(insertionPoint.index + 1, insertionPoint.parent.getChildCount())
-            );
-            if (markItem != null) {
-                insertionPoint.parent.addView(
-                        markItem,
-                        Math.min(insertionPoint.index + 2, insertionPoint.parent.getChildCount())
-                );
-            }
-            if (editHistoryItem != null) {
-                insertionPoint.parent.addView(
-                        editHistoryItem,
-                        Math.min(insertionPoint.index + 3, insertionPoint.parent.getChildCount())
-                );
-            }
-            if (reloadItem != null) {
-                insertionPoint.parent.addView(
-                        reloadItem,
-                        Math.min(insertionPoint.index + 4, insertionPoint.parent.getChildCount())
-                );
-            }
-        } else {
-            ViewGroup fallbackContainer = resolvePopupLinearLayout(contentView);
-            if (fallbackContainer == null) {
-                return;
-            }
-            fallbackContainer.addView(blockItem);
-            if (markItem != null) {
-                fallbackContainer.addView(markItem);
-            }
-            if (editHistoryItem != null) {
-                fallbackContainer.addView(editHistoryItem);
-            }
-            if (reloadItem != null) {
-                fallbackContainer.addView(reloadItem);
-            }
+        View popupContent = (View) contentView;
+        View nativeDeleteItem = findNativeDeleteMenuItem(popupContent);
+        MenuInsertionPoint reportPoint = findReportInsertionPoint(popupContent);
+        ViewGroup nativeItemParent = nativeDeleteItem != null
+                && nativeDeleteItem.getParent() instanceof ViewGroup
+                ? (ViewGroup) nativeDeleteItem.getParent()
+                : null;
+        ViewGroup targetContainer = nativeItemParent != null
+                ? nativeItemParent
+                : reportPoint != null
+                ? reportPoint.parent
+                : resolvePopupLinearLayout(contentView);
+        if (targetContainer == null) {
+            return;
         }
-        refreshMessagePopup((View) contentView, blockItem, popupWindow);
+
+        // Telegram measures and positions this popup before createMenu returns. Keep every native
+        // item at its original index and append our entries, then explicitly remeasure the window.
+        // Inserting in the middle can move a visible native item outside the original touch region.
+        targetContainer.addView(blockItem);
+        if (markItem != null) {
+            targetContainer.addView(markItem);
+        }
+        if (editHistoryItem != null) {
+            targetContainer.addView(editHistoryItem);
+        }
+        if (reloadItem != null) {
+            targetContainer.addView(reloadItem);
+        }
+
+        int deleteItemIndex = nativeDeleteItem != null
+                && nativeDeleteItem.getParent() == targetContainer
+                ? targetContainer.indexOfChild(nativeDeleteItem)
+                : -1;
+        messageDeleteDiagnostics.recordPopup(
+                trackedDialogId,
+                resolveMessageId(selectedMessageObject),
+                nativeDeleteItem != null,
+                nativeDeleteItem != null && nativeDeleteItem.isClickable(),
+                nativeDeleteItem != null && nativeDeleteItem.hasOnClickListeners(),
+                deleteItemIndex,
+                targetContainer.getChildCount(),
+                popupContent.getMeasuredWidth(),
+                popupContent.getMeasuredHeight()
+        );
+        info("MessageDeleteFlow: popup injected nativeDelete=" + (nativeDeleteItem != null)
+                + " clickable=" + (nativeDeleteItem != null && nativeDeleteItem.isClickable())
+                + " listener=" + (nativeDeleteItem != null && nativeDeleteItem.hasOnClickListeners())
+                + " index=" + deleteItemIndex
+                + " items=" + targetContainer.getChildCount());
+        refreshMessagePopup(popupContent, blockItem, popupWindow);
     }
 
     private ViewGroup resolvePopupLinearLayout(Object contentView) {
@@ -7325,6 +7528,38 @@ final class TelegramHookInstaller {
         return labels;
     }
 
+    private View findNativeDeleteMenuItem(View root) {
+        if (root == null) {
+            return null;
+        }
+        if (isTelegramMenuSubItem(root) && textMatchesAny(root, deleteLabels(root.getContext()))) {
+            return root;
+        }
+        if (!(root instanceof ViewGroup)) {
+            return null;
+        }
+        ViewGroup group = (ViewGroup) root;
+        for (int i = 0; i < group.getChildCount(); i++) {
+            View match = findNativeDeleteMenuItem(group.getChildAt(i));
+            if (match != null) {
+                return match;
+            }
+        }
+        return null;
+    }
+
+    private List<String> deleteLabels(Context context) {
+        List<String> labels = new ArrayList<>();
+        addTelegramString(labels, context, "Delete");
+        addTelegramString(labels, context, "DeleteMessage");
+        addTelegramString(labels, context, "DeleteMessages");
+        addTelegramString(labels, context, "DeleteForMe");
+        labels.add("Delete");
+        labels.add("删除");
+        labels.add("删除消息");
+        return labels;
+    }
+
     private void addTelegramString(List<String> labels, Context context, String name) {
         int id = context.getResources().getIdentifier(name, "string", telegramResourcePackageName);
         if (id == 0) {
@@ -7381,19 +7616,28 @@ final class TelegramHookInstaller {
         popupContent.invalidate();
         uiCallbacks.post(popupContent, () -> {
             refreshRadialSelectors(insertedItem);
+            Reflect.invokeIfExists(popupContent, "precalculateHeight", new Class<?>[0]);
+            popupContent.forceLayout();
             popupContent.requestLayout();
+            int maxWidth = popupContent.getResources().getDisplayMetrics().widthPixels;
+            int maxHeight = popupContent.getResources().getDisplayMetrics().heightPixels;
+            popupContent.measure(
+                    View.MeasureSpec.makeMeasureSpec(maxWidth, View.MeasureSpec.AT_MOST),
+                    View.MeasureSpec.makeMeasureSpec(maxHeight, View.MeasureSpec.AT_MOST)
+            );
             popupContent.invalidate();
             if (popupWindow instanceof PopupWindow) {
                 PopupWindow window = (PopupWindow) popupWindow;
-                window.setHeight(ViewGroup.LayoutParams.WRAP_CONTENT);
-                window.update();
+                int width = popupContent.getMeasuredWidth();
+                int height = popupContent.getMeasuredHeight();
+                if (width > 0 && height > 0) {
+                    window.update(width, height);
+                    messageDeleteDiagnostics.recordPopupSize(width, height);
+                    info("MessageDeleteFlow: popup touch region resized width=" + width
+                            + " height=" + height);
+                }
             }
         });
-        if (popupWindow instanceof PopupWindow) {
-            PopupWindow window = (PopupWindow) popupWindow;
-            window.setHeight(ViewGroup.LayoutParams.WRAP_CONTENT);
-            window.update();
-        }
     }
 
     private void refreshRadialSelectors(View view) {
@@ -8816,9 +9060,13 @@ final class TelegramHookInstaller {
     }
 
     private void hook(Method method, XposedInterface.Hooker hooker) {
+        hook(method, XposedInterface.PRIORITY_LOWEST, hooker);
+    }
+
+    private void hook(Method method, int priority, XposedInterface.Hooker hooker) {
         module.hook(method)
                 .setId(HookIdentity.forCaller("telegram", method))
-                .setPriority(XposedInterface.PRIORITY_LOWEST)
+                .setPriority(priority)
                 .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
                 .intercept(chain -> retiring ? chain.proceed() : hooker.intercept(chain));
     }
