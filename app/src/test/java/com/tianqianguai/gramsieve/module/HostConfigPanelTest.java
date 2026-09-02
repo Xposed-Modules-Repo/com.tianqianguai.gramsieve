@@ -4,6 +4,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import com.tianqianguai.gramsieve.core.EnhancementConfig;
 import com.tianqianguai.gramsieve.core.FilterConfig;
 import com.tianqianguai.gramsieve.core.RuleDraftMatrix;
 
@@ -12,6 +13,27 @@ import org.junit.Test;
 import java.util.List;
 
 public class HostConfigPanelTest {
+    @Test
+    public void testedAndUntestedSectionsUseRequestedDefaults() {
+        assertTrue(HostConfigPanel.isFeatureSectionExpandedByDefault("tested"));
+        assertTrue(HostConfigPanel.isFeatureSectionExpandedByDefault(" TESTED "));
+        assertFalse(HostConfigPanel.isFeatureSectionExpandedByDefault("untested"));
+        assertFalse(HostConfigPanel.isFeatureSectionExpandedByDefault("unknown"));
+    }
+
+    @Test
+    public void persistentNativeDownloadButtonIsARealTestedSwitch() {
+        assertTrue(HostConfigPanel.isTestedEnhancementFeature(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
+        ));
+        assertFalse(HostConfigPanel.isTestedEnhancementFeature(
+                EnhancementConfig.Feature.DOWNLOAD_BOOST
+        ));
+        assertTrue(HostConfigPanel.testedCapabilityKeys().contains("download_select_all"));
+        assertTrue(HostConfigPanel.testedCapabilityKeys().contains("mark_jump"));
+        assertTrue(HostConfigPanel.testedCapabilityKeys().contains("original_media_viewer"));
+    }
+
     @Test
     public void applyGlobalDraftUpdatesGlobalSettingsAndRules() {
         FilterConfig original = FilterConfig.createDefault();

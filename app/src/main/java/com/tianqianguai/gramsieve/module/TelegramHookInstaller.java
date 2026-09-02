@@ -833,6 +833,10 @@ final class TelegramHookInstaller {
                 return cliUiConfigOpen(response);
             case "ui.config.close":
                 return cliUiConfigClose(response);
+            case "ui.config.sections":
+                return cliUiConfigSections(response, intent, false);
+            case "ui.config.section.set":
+                return cliUiConfigSections(response, intent, true);
             case "ui.log-console.state":
                 return cliUiLogConsole(response, intent, false);
             case "ui.log-console.select":
@@ -871,7 +875,8 @@ final class TelegramHookInstaller {
                 "ui.download-select-all.state", "ui.download-select-all.click",
                 "ui.message-menu.open", "ui.message-menu.close", "ui.message-delete.state",
                 "ui.menu.state", "ui.menu.open",
-                "ui.config.open", "ui.config.close",
+                "ui.config.open", "ui.config.close", "ui.config.sections",
+                "ui.config.section.set",
                 "ui.log-console.state", "ui.log-console.select",
                 "ui.jump-mark", "ui.first-message", "ui.scroll"
         )));
@@ -1370,7 +1375,7 @@ final class TelegramHookInstaller {
                 "log-console.select", "download-button.state", "download-select-all.state",
                 "download-select-all.click", "message-menu.open", "message-menu.close",
                 "message-delete.state",
-                "menu.state", "menu.open", "jump-mark",
+                "menu.state", "menu.open", "config.sections", "config.section.set", "jump-mark",
                 "first-message", "scroll"
         )));
         return response;
@@ -1786,9 +1791,13 @@ final class TelegramHookInstaller {
         }
         response.put("opened", true);
         response.put("activity", activityName(activity));
-        return appendLogSelectionDiagnostics(
+        appendLogSelectionDiagnostics(
                 response,
                 HostConfigPanel.inspectLogSelection(false, 0, -1, 1_500L)
+        );
+        return appendFeatureSectionDiagnostics(
+                response,
+                HostConfigPanel.inspectFeatureSections(null, null, 1_500L)
         );
     }
 
@@ -1799,6 +1808,46 @@ final class TelegramHookInstaller {
             activeConfigRoot = new WeakReference<>(null);
         }
         response.put("closed", closed);
+        return response;
+    }
+
+    private JSONObject cliUiConfigSections(
+            JSONObject response,
+            Intent intent,
+            boolean mutate
+    ) throws Exception {
+        String section = mutate ? requireExtra(intent, "name") : null;
+        Boolean expanded = mutate
+                ? parseBoolean(requireExtra(intent, "value"))
+                : null;
+        HostConfigPanel.FeatureSectionDiagnostics diagnostics =
+                HostConfigPanel.inspectFeatureSections(section, expanded, 1_500L);
+        if (mutate && (!diagnostics.panelOpen || !diagnostics.globalPanel
+                || !diagnostics.changed)) {
+            throw new IllegalStateException(diagnostics.error.isBlank()
+                    ? "Global GramSieve config sections are unavailable"
+                    : diagnostics.error);
+        }
+        return appendFeatureSectionDiagnostics(response, diagnostics);
+    }
+
+    private JSONObject appendFeatureSectionDiagnostics(
+            JSONObject response,
+            HostConfigPanel.FeatureSectionDiagnostics diagnostics
+    ) throws Exception {
+        JSONObject state = new JSONObject();
+        state.put("panelOpen", diagnostics.panelOpen);
+        state.put("error", diagnostics.error);
+        state.put("globalPanel", diagnostics.globalPanel);
+        state.put("testedAvailable", diagnostics.testedAvailable);
+        state.put("testedExpanded", diagnostics.testedExpanded);
+        state.put("untestedAvailable", diagnostics.untestedAvailable);
+        state.put("untestedExpanded", diagnostics.untestedExpanded);
+        state.put("changed", diagnostics.changed);
+        state.put("testedCapabilities", new JSONArray(diagnostics.testedCapabilities));
+        state.put("testedControls", new JSONArray(diagnostics.testedControls));
+        state.put("untestedControls", new JSONArray(diagnostics.untestedControls));
+        response.put("featureSections", state);
         return response;
     }
 
