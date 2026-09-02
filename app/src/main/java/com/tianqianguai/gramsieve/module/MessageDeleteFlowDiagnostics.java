@@ -8,6 +8,11 @@ final class MessageDeleteFlowDiagnostics {
     private int controllerRequestCount;
     private int deleteRpcCount;
     private int originRecoveryCount;
+    private int storageOriginCount;
+    private int notificationOriginCount;
+    private int networkOriginCount;
+    private int nativeDispatchCount;
+    private int deleteCallbackCount;
     private long lastUpdatedAtMs;
     private long lastAlertAtMs;
     private long lastAlertDialogId;
@@ -23,7 +28,13 @@ final class MessageDeleteFlowDiagnostics {
     private int lastPopupHeight;
     private int lastAlertParameterCount;
     private int lastControllerMessageCount;
+    private int lastRequestToken;
+    private boolean lastCallbackSucceeded;
     private String lastRpcType = "";
+    private String lastNetworkStage = "";
+    private String lastResponseType = "";
+    private int lastErrorCode;
+    private String lastErrorText = "";
 
     synchronized void recordPopup(
             long dialogId,
@@ -99,6 +110,46 @@ final class MessageDeleteFlowDiagnostics {
         lastUpdatedAtMs = System.currentTimeMillis();
     }
 
+    synchronized void recordStorageOrigin() {
+        storageOriginCount++;
+        lastUpdatedAtMs = System.currentTimeMillis();
+    }
+
+    synchronized void recordNotificationOrigin() {
+        notificationOriginCount++;
+        lastUpdatedAtMs = System.currentTimeMillis();
+    }
+
+    synchronized void recordNetworkOrigin(String stage) {
+        networkOriginCount++;
+        lastUpdatedAtMs = System.currentTimeMillis();
+        lastNetworkStage = stage == null ? "" : stage;
+    }
+
+    synchronized void recordNativeDispatch() {
+        nativeDispatchCount++;
+        lastUpdatedAtMs = System.currentTimeMillis();
+    }
+
+    synchronized void recordRequestToken(int requestToken) {
+        lastRequestToken = Math.max(0, requestToken);
+        lastUpdatedAtMs = System.currentTimeMillis();
+    }
+
+    synchronized void recordDeleteCallback(
+            boolean succeeded,
+            String responseType,
+            int errorCode,
+            String errorText
+    ) {
+        deleteCallbackCount++;
+        lastUpdatedAtMs = System.currentTimeMillis();
+        lastResponseType = responseType == null ? "" : responseType;
+        lastErrorCode = errorCode;
+        lastErrorText = errorText == null ? "" : errorText;
+        lastCallbackSucceeded = succeeded;
+    }
+
     synchronized Snapshot snapshot() {
         return new Snapshot(
                 popupCount,
@@ -107,6 +158,11 @@ final class MessageDeleteFlowDiagnostics {
                 controllerRequestCount,
                 deleteRpcCount,
                 originRecoveryCount,
+                storageOriginCount,
+                notificationOriginCount,
+                networkOriginCount,
+                nativeDispatchCount,
+                deleteCallbackCount,
                 lastUpdatedAtMs,
                 lastDialogId,
                 lastMessageId,
@@ -119,7 +175,13 @@ final class MessageDeleteFlowDiagnostics {
                 lastPopupHeight,
                 lastAlertParameterCount,
                 lastControllerMessageCount,
-                lastRpcType
+                lastRequestToken,
+                lastCallbackSucceeded,
+                lastRpcType,
+                lastNetworkStage,
+                lastResponseType,
+                lastErrorCode,
+                lastErrorText
         );
     }
 
@@ -130,6 +192,11 @@ final class MessageDeleteFlowDiagnostics {
         final int controllerRequestCount;
         final int deleteRpcCount;
         final int originRecoveryCount;
+        final int storageOriginCount;
+        final int notificationOriginCount;
+        final int networkOriginCount;
+        final int nativeDispatchCount;
+        final int deleteCallbackCount;
         final long lastUpdatedAtMs;
         final long lastDialogId;
         final int lastMessageId;
@@ -142,7 +209,13 @@ final class MessageDeleteFlowDiagnostics {
         final int lastPopupHeight;
         final int lastAlertParameterCount;
         final int lastControllerMessageCount;
+        final int lastRequestToken;
+        final boolean lastCallbackSucceeded;
         final String lastRpcType;
+        final String lastNetworkStage;
+        final String lastResponseType;
+        final int lastErrorCode;
+        final String lastErrorText;
 
         Snapshot(
                 int popupCount,
@@ -151,6 +224,11 @@ final class MessageDeleteFlowDiagnostics {
                 int controllerRequestCount,
                 int deleteRpcCount,
                 int originRecoveryCount,
+                int storageOriginCount,
+                int notificationOriginCount,
+                int networkOriginCount,
+                int nativeDispatchCount,
+                int deleteCallbackCount,
                 long lastUpdatedAtMs,
                 long lastDialogId,
                 int lastMessageId,
@@ -163,7 +241,13 @@ final class MessageDeleteFlowDiagnostics {
                 int lastPopupHeight,
                 int lastAlertParameterCount,
                 int lastControllerMessageCount,
-                String lastRpcType
+                int lastRequestToken,
+                boolean lastCallbackSucceeded,
+                String lastRpcType,
+                String lastNetworkStage,
+                String lastResponseType,
+                int lastErrorCode,
+                String lastErrorText
         ) {
             this.popupCount = popupCount;
             this.alertEntryCount = alertEntryCount;
@@ -171,6 +255,11 @@ final class MessageDeleteFlowDiagnostics {
             this.controllerRequestCount = controllerRequestCount;
             this.deleteRpcCount = deleteRpcCount;
             this.originRecoveryCount = originRecoveryCount;
+            this.storageOriginCount = storageOriginCount;
+            this.notificationOriginCount = notificationOriginCount;
+            this.networkOriginCount = networkOriginCount;
+            this.nativeDispatchCount = nativeDispatchCount;
+            this.deleteCallbackCount = deleteCallbackCount;
             this.lastUpdatedAtMs = lastUpdatedAtMs;
             this.lastDialogId = lastDialogId;
             this.lastMessageId = lastMessageId;
@@ -183,7 +272,14 @@ final class MessageDeleteFlowDiagnostics {
             this.lastPopupHeight = lastPopupHeight;
             this.lastAlertParameterCount = lastAlertParameterCount;
             this.lastControllerMessageCount = lastControllerMessageCount;
+            this.lastRequestToken = lastRequestToken;
+            this.lastCallbackSucceeded = lastCallbackSucceeded;
             this.lastRpcType = lastRpcType;
+            this.lastNetworkStage = lastNetworkStage;
+            this.lastResponseType = lastResponseType;
+            this.lastErrorCode = lastErrorCode;
+            this.lastErrorText = lastErrorText;
         }
     }
+
 }

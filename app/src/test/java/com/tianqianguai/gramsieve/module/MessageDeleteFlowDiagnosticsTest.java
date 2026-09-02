@@ -1,6 +1,7 @@
 package com.tianqianguai.gramsieve.module;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -18,6 +19,12 @@ public final class MessageDeleteFlowDiagnosticsTest {
         assertTrue(diagnostics.consumeRecentAlert(-100L, 120_000L));
         diagnostics.recordDeleteRpc("TL_channels_deleteMessages");
         diagnostics.recordOriginRecovery();
+        diagnostics.recordStorageOrigin();
+        diagnostics.recordNotificationOrigin();
+        diagnostics.recordNetworkOrigin("sendRequest/10");
+        diagnostics.recordRequestToken(77);
+        diagnostics.recordNativeDispatch();
+        diagnostics.recordDeleteCallback(true, "TL_messages_affectedMessages", 0, "");
 
         MessageDeleteFlowDiagnostics.Snapshot snapshot = diagnostics.snapshot();
         assertEquals(1, snapshot.popupCount);
@@ -26,6 +33,11 @@ public final class MessageDeleteFlowDiagnosticsTest {
         assertEquals(1, snapshot.controllerRequestCount);
         assertEquals(1, snapshot.deleteRpcCount);
         assertEquals(1, snapshot.originRecoveryCount);
+        assertEquals(1, snapshot.storageOriginCount);
+        assertEquals(1, snapshot.notificationOriginCount);
+        assertEquals(1, snapshot.networkOriginCount);
+        assertEquals(1, snapshot.nativeDispatchCount);
+        assertEquals(1, snapshot.deleteCallbackCount);
         assertEquals(-100L, snapshot.lastDialogId);
         assertEquals(42, snapshot.lastMessageId);
         assertTrue(snapshot.lastDeleteItemPresent);
@@ -37,8 +49,27 @@ public final class MessageDeleteFlowDiagnosticsTest {
         assertEquals(700, snapshot.lastPopupHeight);
         assertEquals(3, snapshot.lastAlertParameterCount);
         assertEquals(1, snapshot.lastControllerMessageCount);
+        assertEquals(77, snapshot.lastRequestToken);
+        assertTrue(snapshot.lastCallbackSucceeded);
         assertEquals("TL_channels_deleteMessages", snapshot.lastRpcType);
+        assertEquals("sendRequest/10", snapshot.lastNetworkStage);
+        assertEquals("TL_messages_affectedMessages", snapshot.lastResponseType);
+        assertEquals(0, snapshot.lastErrorCode);
+        assertEquals("", snapshot.lastErrorText);
         assertTrue(snapshot.lastUpdatedAtMs > 0L);
+    }
+
+    @Test
+    public void recordsProtocolErrorWithoutAnyMessageContent() {
+        MessageDeleteFlowDiagnostics diagnostics = new MessageDeleteFlowDiagnostics();
+
+        diagnostics.recordDeleteCallback(false, "", 400, "MESSAGE_DELETE_FORBIDDEN");
+
+        MessageDeleteFlowDiagnostics.Snapshot snapshot = diagnostics.snapshot();
+        assertEquals(1, snapshot.deleteCallbackCount);
+        assertFalse(snapshot.lastCallbackSucceeded);
+        assertEquals(400, snapshot.lastErrorCode);
+        assertEquals("MESSAGE_DELETE_FORBIDDEN", snapshot.lastErrorText);
     }
 
     @Test

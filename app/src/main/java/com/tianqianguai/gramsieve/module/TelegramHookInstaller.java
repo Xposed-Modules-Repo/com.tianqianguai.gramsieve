@@ -823,6 +823,12 @@ final class TelegramHookInstaller {
                 return cliUiMessageMenuClose(response, intent);
             case "ui.message-delete.state":
                 return cliUiMessageDeleteState(response);
+            case "message-delete.residue.scan":
+                return cliDeleteResidue(response, context, intent, false);
+            case "message-delete.residue.purge":
+                return cliDeleteResidue(response, context, intent, true);
+            case "message-delete.pending.scan":
+                return cliPendingDeleteTasks(response, context, intent);
             case "ui.menu.state":
                 return cliUiMenuState(response);
             case "ui.menu.open":
@@ -874,6 +880,8 @@ final class TelegramHookInstaller {
                 "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
                 "ui.download-select-all.state", "ui.download-select-all.click",
                 "ui.message-menu.open", "ui.message-menu.close", "ui.message-delete.state",
+                "message-delete.residue.scan", "message-delete.residue.purge",
+                "message-delete.pending.scan",
                 "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close", "ui.config.sections",
                 "ui.config.section.set",
@@ -1357,6 +1365,85 @@ final class TelegramHookInstaller {
         return response;
     }
 
+    private JSONObject cliDeleteResidue(
+            JSONObject response,
+            Context context,
+            Intent intent,
+            boolean purge
+    ) throws Exception {
+        int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+        long dialogId = requireDialogId(intent);
+        if (purge) {
+            int messageId = intExtra(intent, "message_id", 0);
+            if (messageId <= 0) {
+                throw new IllegalArgumentException("message_id must be positive");
+            }
+            TelegramDeleteResidueStore.PurgeResult result =
+                    TelegramDeleteResidueStore.purgeFlagged(
+                            context, accountId, dialogId, messageId);
+            response.put("accountId", accountId);
+            response.put("dialogId", dialogId);
+            response.put("messageId", messageId);
+            response.put("database", result.databasePath);
+            response.put("deletedRows", result.deletedRows);
+            response.put("tables", new JSONArray(result.tables));
+            response.put("restartRequired", result.deletedRows > 0);
+            if (!result.error.isEmpty()) {
+                response.put("error", result.error);
+            }
+            return response;
+        }
+        int limit = Math.max(1, Math.min(500, intExtra(intent, "limit", 200)));
+        TelegramDeleteResidueStore.ScanResult result =
+                TelegramDeleteResidueStore.scan(context, accountId, dialogId, limit);
+        JSONArray residues = new JSONArray();
+        for (TelegramDeleteResidueStore.Residue residue : result.residues) {
+            JSONObject item = new JSONObject();
+            item.put("messageId", residue.messageId);
+            item.put("flagsHex", String.format(Locale.ROOT, "0x%08X", residue.flags));
+            item.put("tables", new JSONArray(residue.tables));
+            residues.put(item);
+        }
+        response.put("accountId", accountId);
+        response.put("dialogId", dialogId);
+        response.put("database", result.databasePath);
+        response.put("rowsScanned", result.rowsScanned);
+        response.put("flaggedCount", result.residues.size());
+        response.put("residues", residues);
+        if (!result.error.isEmpty()) {
+            response.put("error", result.error);
+        }
+        return response;
+    }
+
+    private JSONObject cliPendingDeleteTasks(
+            JSONObject response,
+            Context context,
+            Intent intent
+    ) throws Exception {
+        int accountId = intExtra(intent, "account_id", resolveSelectedTelegramAccount(savedClassLoader));
+        TelegramDeleteResidueStore.PendingTaskScanResult result =
+                TelegramDeleteResidueStore.scanPendingDeleteTasks(context, accountId);
+        JSONArray tasks = new JSONArray();
+        for (TelegramDeleteResidueStore.PendingDeleteTask task : result.deleteTasks) {
+            JSONObject item = new JSONObject();
+            item.put("taskId", task.taskId);
+            item.put("taskType", task.taskType);
+            item.put("dialogId", task.dialogId);
+            item.put("serializedBytes", task.serializedBytes);
+            tasks.put(item);
+        }
+        response.put("accountId", accountId);
+        response.put("database", result.databasePath);
+        response.put("rowsScanned", result.rowsScanned);
+        response.put("pendingDeleteCount", result.deleteTasks.size());
+        response.put("pendingDeletes", tasks);
+        if (!result.error.isEmpty()) {
+            response.put("error", result.error);
+        }
+        return response;
+    }
+
     private JSONObject cliUiState(JSONObject response) throws Exception {
         Object chatActivity = activeChatActivity.get();
         HostConfigPanel.LogSelectionDiagnostics logConsole =
@@ -1591,6 +1678,11 @@ final class TelegramHookInstaller {
         state.put("controllerRequestCount", snapshot.controllerRequestCount);
         state.put("deleteRpcCount", snapshot.deleteRpcCount);
         state.put("originRecoveryCount", snapshot.originRecoveryCount);
+        state.put("storageOriginCount", snapshot.storageOriginCount);
+        state.put("notificationOriginCount", snapshot.notificationOriginCount);
+        state.put("networkOriginCount", snapshot.networkOriginCount);
+        state.put("nativeDispatchCount", snapshot.nativeDispatchCount);
+        state.put("deleteCallbackCount", snapshot.deleteCallbackCount);
         state.put("lastUpdatedAtMs", snapshot.lastUpdatedAtMs);
         state.put("lastDialogId", snapshot.lastDialogId);
         state.put("lastMessageId", snapshot.lastMessageId);
@@ -1603,7 +1695,13 @@ final class TelegramHookInstaller {
         state.put("lastPopupHeight", snapshot.lastPopupHeight);
         state.put("lastAlertParameterCount", snapshot.lastAlertParameterCount);
         state.put("lastControllerMessageCount", snapshot.lastControllerMessageCount);
+        state.put("lastRequestToken", snapshot.lastRequestToken);
+        state.put("lastCallbackSucceeded", snapshot.lastCallbackSucceeded);
         state.put("lastRpcType", snapshot.lastRpcType);
+        state.put("lastNetworkStage", snapshot.lastNetworkStage);
+        state.put("lastResponseType", snapshot.lastResponseType);
+        state.put("lastErrorCode", snapshot.lastErrorCode);
+        state.put("lastErrorText", snapshot.lastErrorText);
         return state;
     }
 
@@ -1618,8 +1716,10 @@ final class TelegramHookInstaller {
         int recognized = 0;
         int minId = Integer.MAX_VALUE;
         int maxId = 0;
+        JSONArray items = new JSONArray();
         for (int i = 0; i < group.getChildCount(); i++) {
-            Object messageObject = resolveMessageObject(group.getChildAt(i));
+            View child = group.getChildAt(i);
+            Object messageObject = resolveMessageObject(child);
             int messageId = resolveMessageId(messageObject);
             if (messageId <= 0) {
                 continue;
@@ -1627,11 +1727,31 @@ final class TelegramHookInstaller {
             recognized++;
             minId = Math.min(minId, messageId);
             maxId = Math.max(maxId, messageId);
+            Object owner = Reflect.field(messageObject, "messageOwner");
+            if (owner == null) {
+                owner = messageObject;
+            }
+            JSONObject item = new JSONObject();
+            item.put("messageId", messageId);
+            item.put("flagsHex", String.format(
+                    Locale.ROOT,
+                    "0x%08X",
+                    Reflect.asInt(Reflect.field(owner, "flags"), 0)
+            ));
+            item.put("sendState", Reflect.asInt(Reflect.field(owner, "send_state"), 0));
+            item.put("destroyTime", Reflect.asInt(Reflect.field(owner, "destroyTime"), 0));
+            item.put("out", Boolean.TRUE.equals(Reflect.field(owner, "out")));
+            item.put("messageDeleted", Boolean.TRUE.equals(Reflect.field(messageObject, "deleted")));
+            item.put("ownerDeleted", Boolean.TRUE.equals(Reflect.field(owner, "deleted")));
+            item.put("cellAlpha", child.getAlpha());
+            item.put("cellVisibility", child.getVisibility());
+            items.put(item);
         }
         state.put("childViews", group.getChildCount());
         state.put("recognized", recognized);
         state.put("minId", recognized == 0 ? JSONObject.NULL : minId);
         state.put("maxId", recognized == 0 ? JSONObject.NULL : maxId);
+        state.put("items", items);
         return state;
     }
 
