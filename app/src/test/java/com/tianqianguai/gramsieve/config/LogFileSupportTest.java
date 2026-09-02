@@ -52,7 +52,7 @@ public class LogFileSupportTest {
     public void exportFileNameIsSafeAndTimestamped() {
         String name = LogFileSupport.exportFileName(0L);
 
-        assertTrue(name.matches("gramsieve-log-[0-9]{8}-[0-9]{6}-[0-9]{3}\\.log"));
+        assertTrue(name.matches("gramsieve-log-[0-9]{8}-[0-9]{6}-[0-9]{3}\\.txt"));
         assertFalse(name.contains(":"));
     }
 
