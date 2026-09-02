@@ -72,6 +72,8 @@ import io.github.libxposed.api.XposedModule;
 
 @SuppressLint({"UseSwitchCompatOrMaterialCode", "SetTextI18n"})
 final class HostConfigPanel {
+    static final String FEATURE_SECTION_TESTED = "tested";
+    static final String FEATURE_SECTION_UNTESTED = "untested";
     private static volatile WeakReference<HostConfigPanel> activePanel =
             new WeakReference<>(null);
 
@@ -144,6 +146,10 @@ final class HostConfigPanel {
     private Switch excludeChatSwitch;
     private Switch chatAntiRecallSwitch;
     private Switch editHistoryEnabledSwitch;
+    private LinearLayout testedFeaturesContent;
+    private LinearLayout untestedFeaturesContent;
+    private TextView testedFeaturesAction;
+    private TextView untestedFeaturesAction;
     private RadioGroup languageGroup;
     private RadioGroup actionGroup;
     private RadioGroup editHistoryModeGroup;
@@ -279,6 +285,79 @@ final class HostConfigPanel {
             return LogSelectionDiagnostics.unavailable("Timed out waiting for Telegram UI thread");
         }
         return result[0];
+    }
+
+    static FeatureSectionDiagnostics inspectFeatureSections(
+            String requestedSection,
+            Boolean expanded,
+            long timeoutMs
+    ) {
+        String section = normalizeFeatureSectionName(requestedSection);
+        if (requestedSection != null && section == null) {
+            return FeatureSectionDiagnostics.unavailable(
+                    "Expected section tested or untested"
+            );
+        }
+        HostConfigPanel panel = activePanel.get();
+        if (panel == null) {
+            return FeatureSectionDiagnostics.unavailable("GramSieve config panel is not open");
+        }
+        FeatureSectionDiagnostics[] result = new FeatureSectionDiagnostics[1];
+        boolean completed = runOnMainAndWait(() -> {
+            boolean changed = expanded != null
+                    && section != null
+                    && panel.setFeatureSectionExpandedOnMain(section, expanded);
+            result[0] = panel.collectFeatureSectionDiagnostics(changed);
+        }, timeoutMs);
+        if (!completed || result[0] == null) {
+            return FeatureSectionDiagnostics.unavailable(
+                    "Timed out waiting for Telegram UI thread"
+            );
+        }
+        return result[0];
+    }
+
+    static boolean isTestedEnhancementFeature(EnhancementConfig.Feature feature) {
+        return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE;
+    }
+
+    static boolean isFeatureSectionExpandedByDefault(String section) {
+        return FEATURE_SECTION_TESTED.equals(normalizeFeatureSectionName(section));
+    }
+
+    static List<String> testedCapabilityKeys() {
+        List<String> keys = new ArrayList<>();
+        Collections.addAll(
+                keys,
+                "local_filtering",
+                "global_and_chat_rules",
+                "rich_match_targets",
+                "whitelist_priority",
+                "filter_actions",
+                "host_native_settings",
+                "mark_jump",
+                "browse_position",
+                "persistent_download_button",
+                "download_select_all",
+                "proactive_loading_anti_recall",
+                "versioned_edit_history",
+                "original_media_viewer",
+                "persistent_logs",
+                "bilingual_ui"
+        );
+        return Collections.unmodifiableList(keys);
+    }
+
+    private static String normalizeFeatureSectionName(String section) {
+        if (section == null) {
+            return null;
+        }
+        String normalized = section.trim().toLowerCase(Locale.ROOT);
+        if (FEATURE_SECTION_TESTED.equals(normalized)
+                || FEATURE_SECTION_UNTESTED.equals(normalized)) {
+            return normalized;
+        }
+        return null;
     }
 
     static boolean closeExisting(ViewGroup root) {
@@ -461,11 +540,12 @@ final class HostConfigPanel {
         buildGeneralCard(container);
         if (chatMode) {
             buildChatAntiRecallCard(container);
+            buildEditHistoryCard(container);
         } else {
             buildConflictCard(container);
+            buildTestedFeaturesEntry(container);
             buildUntestedFeaturesEntry(container);
         }
-        buildEditHistoryCard(container);
         buildLogCard(container);
         buildRulesCard(container);
 
@@ -538,7 +618,7 @@ final class HostConfigPanel {
         TextView summary = new TextView(context);
         summary.setText(chatMode
                 ? t("规则、防撤回与标记仍按聊天独立管理。", "Rules, anti-recall, and marks stay scoped to this chat.")
-                : t("核心设置保持直接可见；未经逐项验证的增强统一收纳并默认关闭。", "Core settings stay visible. Enhancements without per-feature verification are grouped separately and remain opt-in."));
+                : t("已测试功能默认展开；未测试增强单独收纳、默认收起并保持可选。", "Tested features start expanded. Untested enhancements stay grouped, collapsed, and opt-in."));
         summary.setTextColor(adjustAlpha(Color.WHITE, 0.88f));
         summary.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f);
         addView(hero, summary, 0);
@@ -559,10 +639,9 @@ final class HostConfigPanel {
                 ? baseConfig.getOrCreateChatRuleSet(dialogId).deepCopy().sanitize()
                 : null;
 
-        enabledSwitch = addSwitch(card, t("启用过滤", "Enable filtering"));
-        enabledSwitch.setChecked(chatMode ? chatRuleSet.enabled : baseConfig.enabled);
-
         if (chatMode) {
+            enabledSwitch = addSwitch(card, t("启用过滤", "Enable filtering"));
+            enabledSwitch.setChecked(chatRuleSet.enabled);
             excludeChatSwitch = addSwitch(card, t("这个聊天不使用全局规则", "Do not apply global rules to this chat"));
             excludeChatSwitch.setChecked(chatRuleSet.excludeFromGlobal);
             String scope = chatTitle.isBlank()
@@ -666,7 +745,9 @@ final class HostConfigPanel {
             LinearLayout card = addCard(container);
             addCategoryHeader(card, category);
             for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
-                if (feature.category != category || !feature.isAvailableInCurrentBuild()) {
+                if (feature.category != category
+                        || !feature.isAvailableInCurrentBuild()
+                        || isTestedEnhancementFeature(feature)) {
                     continue;
                 }
                 Switch toggle = addFeatureSwitch(card, featureTitle(feature));
@@ -705,6 +786,88 @@ final class HostConfigPanel {
         }
     }
 
+    private void buildTestedFeaturesEntry(LinearLayout container) {
+        LinearLayout entry = addCard(container);
+        addTitle(entry, t("已测试功能", "Tested features"));
+        addInfo(entry, t(
+                "当前发布版已有实现、测试与目标 Hook；可配置项沿用原有配置，默认生效项在下方说明。",
+                "These features have implementations, tests, and target hooks in the current release. Existing settings are preserved; always-on features are described below."
+        ));
+        testedFeaturesAction = addInfo(entry, "");
+        testedFeaturesAction.setTextColor(accentColor);
+        testedFeaturesAction.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        entry.setClickable(true);
+        entry.setFocusable(true);
+
+        testedFeaturesContent = new LinearLayout(context);
+        testedFeaturesContent.setOrientation(LinearLayout.VERTICAL);
+        container.addView(testedFeaturesContent, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT
+        ));
+        buildTestedFeatureCards(testedFeaturesContent);
+        setFeatureSectionExpandedOnMain(
+                FEATURE_SECTION_TESTED,
+                isFeatureSectionExpandedByDefault(FEATURE_SECTION_TESTED)
+        );
+        entry.setOnClickListener(view -> setFeatureSectionExpandedOnMain(
+                FEATURE_SECTION_TESTED,
+                testedFeaturesContent.getVisibility() != View.VISIBLE
+        ));
+    }
+
+    private void buildTestedFeatureCards(LinearLayout container) {
+        LinearLayout filtering = addCard(container);
+        addTitle(filtering, t("本地过滤", "Local filtering"));
+        enabledSwitch = addSwitch(filtering, t("启用过滤", "Enable filtering"));
+        enabledSwitch.setChecked(baseConfig.enabled);
+        addInfo(filtering, t(
+                "支持全局与单聊规则，匹配文字、说明、按钮、发送者和聊天；保留规则优先，动作仍在全局配置中选择。",
+                "Supports global and per-chat rules across text, captions, buttons, senders, and chats. Keep rules win; choose the action in Global Settings."
+        ));
+
+        LinearLayout navigation = addCard(container);
+        addTitle(navigation, t("消息导航", "Message navigation"));
+        addInfo(navigation, t(
+                "消息标记与跳转、每个聊天独立标记、浏览位置自动记忆和一键返回均默认生效。",
+                "Mark and jump, per-chat marks, automatic browse-position memory, and one-tap return are always available."
+        ));
+
+        LinearLayout downloads = addCard(container);
+        addTitle(downloads, t("下载工具", "Download tools"));
+        Switch keepDownloadButton = addFeatureSwitch(
+                downloads,
+                featureTitle(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE)
+        );
+        keepDownloadButton.setChecked(baseConfig.enhancements.isEnabled(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
+        ));
+        enhancementSwitches.put(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE,
+                keepDownloadButton
+        );
+        addInfo(downloads, t(
+                "下载管理页多选模式的“全选”默认生效；常驻开关只控制 Telegram 原生下载入口是否始终可见。",
+                "Select All is always available in download-manager selection mode. The switch only keeps Telegram's native download entry visible."
+        ));
+
+        buildEditHistoryCard(container);
+
+        LinearLayout preservation = addCard(container);
+        addTitle(preservation, t("原始内容保留", "Original-content retention"));
+        addInfo(preservation, t(
+                "主动加载与防撤回按聊天开启；多版本编辑历史按上方策略记录，原始图片优先使用 Telegram 官方 PhotoViewer。",
+                "Enable proactive loading and anti-recall per chat. Multi-version edit history follows the policy above, and original images prefer Telegram's official PhotoViewer."
+        ));
+
+        LinearLayout host = addCard(container);
+        addTitle(host, t("宿主与诊断", "Host integration and diagnostics"));
+        addInfo(host, t(
+                "设置完全寄生于 Telegram 并跟随主题；持久日志支持时间范围导出与自由复制；界面支持中英文及跟随系统。",
+                "Settings live entirely inside Telegram and follow its theme. Persistent logs support time-range export and free copying; the UI supports English, Simplified Chinese, and system language."
+        ));
+    }
+
     private void buildUntestedFeaturesEntry(LinearLayout container) {
         LinearLayout entry = addCard(container);
         addTitle(entry, t("未测试功能", "Untested features"));
@@ -712,28 +875,83 @@ final class HostConfigPanel {
                 "隐私、消息、媒体、界面、传输和工具增强尚未逐项完成设备验证。现有开关和配置会完整保留。",
                 "Privacy, messaging, media, interface, transfer, and tool enhancements have not completed per-feature device verification. Existing switches and configuration are preserved."
         ));
-        TextView action = addInfo(entry, t("点击展开  ›", "Tap to expand  ›"));
-        action.setTextColor(accentColor);
-        action.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        untestedFeaturesAction = addInfo(entry, "");
+        untestedFeaturesAction.setTextColor(accentColor);
+        untestedFeaturesAction.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         entry.setClickable(true);
         entry.setFocusable(true);
 
-        LinearLayout features = new LinearLayout(context);
-        features.setOrientation(LinearLayout.VERTICAL);
-        features.setVisibility(View.GONE);
-        container.addView(features, new LinearLayout.LayoutParams(
+        untestedFeaturesContent = new LinearLayout(context);
+        untestedFeaturesContent.setOrientation(LinearLayout.VERTICAL);
+        container.addView(untestedFeaturesContent, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT
         ));
-        buildEnhancementCards(features);
+        buildEnhancementCards(untestedFeaturesContent);
+        setFeatureSectionExpandedOnMain(
+                FEATURE_SECTION_UNTESTED,
+                isFeatureSectionExpandedByDefault(FEATURE_SECTION_UNTESTED)
+        );
+        entry.setOnClickListener(view -> setFeatureSectionExpandedOnMain(
+                FEATURE_SECTION_UNTESTED,
+                untestedFeaturesContent.getVisibility() != View.VISIBLE
+        ));
+    }
 
-        entry.setOnClickListener(view -> {
-            boolean expand = features.getVisibility() != View.VISIBLE;
-            features.setVisibility(expand ? View.VISIBLE : View.GONE);
-            action.setText(expand
-                    ? t("点击收起  ‹", "Tap to collapse  ‹")
-                    : t("点击展开  ›", "Tap to expand  ›"));
-        });
+    private boolean setFeatureSectionExpandedOnMain(String section, boolean expanded) {
+        LinearLayout content = FEATURE_SECTION_TESTED.equals(section)
+                ? testedFeaturesContent
+                : FEATURE_SECTION_UNTESTED.equals(section)
+                ? untestedFeaturesContent
+                : null;
+        TextView action = FEATURE_SECTION_TESTED.equals(section)
+                ? testedFeaturesAction
+                : FEATURE_SECTION_UNTESTED.equals(section)
+                ? untestedFeaturesAction
+                : null;
+        if (content == null || action == null) {
+            return false;
+        }
+        content.setVisibility(expanded ? View.VISIBLE : View.GONE);
+        action.setText(expanded
+                ? t("点击收起  ‹", "Tap to collapse  ‹")
+                : t("点击展开  ›", "Tap to expand  ›"));
+        return true;
+    }
+
+    private FeatureSectionDiagnostics collectFeatureSectionDiagnostics(boolean changed) {
+        List<String> testedControls = new ArrayList<>();
+        if (!chatMode && enabledSwitch != null) {
+            testedControls.add("filter_enabled");
+        }
+        if (enhancementSwitches.containsKey(
+                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE)) {
+            testedControls.add(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE.key);
+        }
+        if (!chatMode && editHistoryEnabledSwitch != null) {
+            testedControls.add("edit_history_enabled");
+        }
+        List<String> untestedControls = new ArrayList<>();
+        for (EnhancementConfig.Feature feature : enhancementSwitches.keySet()) {
+            if (!isTestedEnhancementFeature(feature)) {
+                untestedControls.add(feature.key);
+            }
+        }
+        return new FeatureSectionDiagnostics(
+                true,
+                "",
+                !chatMode,
+                testedFeaturesContent != null,
+                testedFeaturesContent != null
+                        && testedFeaturesContent.getVisibility() == View.VISIBLE,
+                untestedFeaturesContent != null,
+                untestedFeaturesContent != null
+                        && untestedFeaturesContent.getVisibility() == View.VISIBLE,
+                changed,
+                testedCapabilityKeys(),
+                Collections.unmodifiableList(testedControls),
+                Collections.unmodifiableList(untestedControls)
+        );
     }
 
     private void buildLogCard(LinearLayout container) {
@@ -2470,6 +2688,53 @@ final class HostConfigPanel {
                     result.available, true, result.sourcePath, result.totalBytes,
                     result.returnedBytes, result.lineCount, result.matchedEntries,
                     result.truncated, result.text, result.error
+            );
+        }
+    }
+
+    static final class FeatureSectionDiagnostics {
+        final boolean panelOpen;
+        final String error;
+        final boolean globalPanel;
+        final boolean testedAvailable;
+        final boolean testedExpanded;
+        final boolean untestedAvailable;
+        final boolean untestedExpanded;
+        final boolean changed;
+        final List<String> testedCapabilities;
+        final List<String> testedControls;
+        final List<String> untestedControls;
+
+        private FeatureSectionDiagnostics(
+                boolean panelOpen,
+                String error,
+                boolean globalPanel,
+                boolean testedAvailable,
+                boolean testedExpanded,
+                boolean untestedAvailable,
+                boolean untestedExpanded,
+                boolean changed,
+                List<String> testedCapabilities,
+                List<String> testedControls,
+                List<String> untestedControls
+        ) {
+            this.panelOpen = panelOpen;
+            this.error = error;
+            this.globalPanel = globalPanel;
+            this.testedAvailable = testedAvailable;
+            this.testedExpanded = testedExpanded;
+            this.untestedAvailable = untestedAvailable;
+            this.untestedExpanded = untestedExpanded;
+            this.changed = changed;
+            this.testedCapabilities = testedCapabilities;
+            this.testedControls = testedControls;
+            this.untestedControls = untestedControls;
+        }
+
+        static FeatureSectionDiagnostics unavailable(String error) {
+            return new FeatureSectionDiagnostics(
+                    false, error, false, false, false, false, false, false,
+                    Collections.emptyList(), Collections.emptyList(), Collections.emptyList()
             );
         }
     }
