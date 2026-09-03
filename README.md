@@ -13,6 +13,7 @@
 <p align="center">
   <a href="https://github.com/Xposed-Modules-Repo/com.tianqianguai.gramsieve/stargazers"><img src="https://img.shields.io/github/stars/Xposed-Modules-Repo/com.tianqianguai.gramsieve?style=for-the-badge&amp;logo=github&amp;label=Star" alt="GitHub Stars"></a>
   <a href="https://t.me/Gramsieve_Offical"><img src="https://img.shields.io/badge/Telegram-Official_Group-26A5E4?style=for-the-badge&amp;logo=telegram&amp;logoColor=white" alt="Telegram Official Group"></a>
+  <a href="https://t.me/zhongjitianqianguai3"><img src="https://img.shields.io/badge/Telegram-Release_Channel-26A5E4?style=for-the-badge&amp;logo=telegram&amp;logoColor=white" alt="Telegram Release Channel"></a>
 </p>
 
 <p align="center">
@@ -27,6 +28,7 @@
 - **全局 + 单聊规则** — 全局设置宽泛规则，再针对特定聊天覆盖或排除
 - **丰富的匹配目标** — 消息文字、媒体说明、内联按钮文字/链接、发送者名称/ID、聊天名称/ID
 - **白名单优先** — 排除规则始终优先于过滤规则，适合管理员、公告或信任联系人
+- **一键重置规则** — 可一次清空全局与所有聊天的过滤规则，同时保留防撤回、编辑历史、消息标记、日志和功能设置
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
 - **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，保存后立即生效
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
@@ -43,6 +45,7 @@
 - **Global + per-chat rules** — set broad filters globally, then override or exclude specific chats
 - **Rich match targets** — message text, media captions, inline button labels/URLs, sender names/IDs, chat names/IDs
 - **Whitelist wins first** — exclusion rules always override filter rules; use them for admins, notices, or trusted contacts
+- **One-tap rule reset** — clear global and per-chat filter rules at once while preserving anti-recall, edit history, message marks, logs, and feature settings
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
 - **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and apply immediately after saving
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
