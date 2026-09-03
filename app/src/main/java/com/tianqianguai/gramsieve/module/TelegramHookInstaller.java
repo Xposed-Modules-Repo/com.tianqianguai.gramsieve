@@ -11,11 +11,13 @@ import android.content.ContextWrapper;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.SharedPreferences;
+import android.content.res.Configuration;
 import android.content.res.Resources;
 import android.graphics.Rect;
 import android.os.Bundle;
 import android.os.SystemClock;
 import android.util.Base64;
+import android.util.TypedValue;
 import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
@@ -813,6 +815,10 @@ final class TelegramHookInstaller {
                 return cliUiState(response);
             case "ui.download-button.state":
                 return cliUiDownloadButtonState(response);
+            case "ui.downloads.open":
+                return cliUiDownloadsOpen(response);
+            case "ui.download-selection.start":
+                return cliUiDownloadSelectionStart(response);
             case "ui.download-select-all.state":
                 return cliUiDownloadSelectAll(response, false);
             case "ui.download-select-all.click":
@@ -878,6 +884,7 @@ final class TelegramHookInstaller {
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
                 "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
+                "ui.downloads.open", "ui.download-selection.start",
                 "ui.download-select-all.state", "ui.download-select-all.click",
                 "ui.message-menu.open", "ui.message-menu.close", "ui.message-delete.state",
                 "message-delete.residue.scan", "message-delete.residue.purge",
@@ -1459,7 +1466,9 @@ final class TelegramHookInstaller {
         response.put("downloadSelectAll", downloadSelectAllState());
         response.put("directActions", new JSONArray(Arrays.asList(
                 "config.open", "config.close", "log-console.state",
-                "log-console.select", "download-button.state", "download-select-all.state",
+                "log-console.select", "download-button.state", "downloads.open",
+                "download-selection.start",
+                "download-select-all.state",
                 "download-select-all.click", "message-menu.open", "message-menu.close",
                 "message-delete.state",
                 "menu.state", "menu.open", "config.sections", "config.section.set", "jump-mark",
@@ -1470,6 +1479,50 @@ final class TelegramHookInstaller {
 
     private JSONObject cliUiDownloadButtonState(JSONObject response) throws Exception {
         response.put("downloadButton", downloadButtonState());
+        return response;
+    }
+
+    private JSONObject cliUiDownloadsOpen(JSONObject response) throws Exception {
+        Object activity = activeDialogsActivity.get();
+        Object actionBar = Reflect.field(activity, "actionBar");
+        if (!(actionBar instanceof ViewGroup)) {
+            throw new IllegalStateException("Telegram dialogs action bar is unavailable");
+        }
+        View item = nativeDownloadItem(activity, (ViewGroup) actionBar);
+        if (item == null || !item.performClick()) {
+            throw new IllegalStateException("Telegram native downloads action is unavailable");
+        }
+        response.put("opened", true);
+        response.put("downloadButton", downloadButtonState());
+        return response;
+    }
+
+    private JSONObject cliUiDownloadSelectionStart(JSONObject response) throws Exception {
+        Object activity = activeDialogsActivity.get();
+        Object pager = Reflect.field(activity, "searchViewPager");
+        Object container = Reflect.invokeIfExists(
+                pager,
+                "getDownloadsContainer",
+                new Class<?>[0]
+        );
+        Object current = Reflect.invokeIfExists(pager, "getCurrentView", new Class<?>[0]);
+        if (!(container instanceof ViewGroup) || current != container) {
+            throw new IllegalStateException("Telegram downloads page is not active");
+        }
+        RecyclerView list = findRecyclerView((ViewGroup) container);
+        if (list == null || list.getChildCount() == 0) {
+            throw new IllegalStateException("No visible download item is available");
+        }
+        boolean started = false;
+        for (int index = 0; index < list.getChildCount() && !started; index++) {
+            View child = list.getChildAt(index);
+            started = child != null && child.performLongClick();
+        }
+        if (!started) {
+            throw new IllegalStateException("Telegram did not enter download selection mode");
+        }
+        response.put("started", true);
+        response.put("visibleItems", list.getChildCount());
         return response;
     }
 
@@ -1516,7 +1569,27 @@ final class TelegramHookInstaller {
         state.put("selectedCount", selectedFiles instanceof Map<?, ?>
                 ? ((Map<?, ?>) selectedFiles).size()
                 : 0);
-        state.put("selectAll", viewState(button));
+        state.put("selectAll", selectAllViewState(button));
+        return state;
+    }
+
+    private JSONObject selectAllViewState(View button) throws Exception {
+        JSONObject state = viewState(button);
+        if (button == null) {
+            return state;
+        }
+        state.put("width", button.getWidth());
+        state.put("height", button.getHeight());
+        state.put("measuredWidth", button.getMeasuredWidth());
+        state.put("measuredHeight", button.getMeasuredHeight());
+        state.put("alpha", button.getAlpha());
+        if (button instanceof TextView) {
+            TextView text = (TextView) button;
+            int color = text.getCurrentTextColor();
+            state.put("text", String.valueOf(text.getText()));
+            state.put("textColorHex", String.format(Locale.ROOT, "0x%08X", color));
+            state.put("textColorAlpha", (color >>> 24) & 0xFF);
+        }
         return state;
     }
 
@@ -3507,6 +3580,8 @@ final class TelegramHookInstaller {
                         if (existing == null || !existing.hasOnClickListeners()) {
                             info("SelectAll: action mode detected, injecting or rebinding Select All");
                             injectSelectAllIntoActionModeForDownload(actionModeMenu, fragmentViewRef);
+                        } else {
+                            refreshSelectAllAppearance(existing, actionModeMenu);
                         }
                     }
                     uiCallbacks.post(actionBar, this, 500);
@@ -3555,12 +3630,9 @@ final class TelegramHookInstaller {
         View button = menu.findViewWithTag(MENU_ID_SELECT_ALL);
         if (button == null) {
             Context context = actionBar.getContext();
-            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(label);
             created.setTextSize(14);
-            created.setTextColor(0xFFFFFFFF);
             created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
             created.setGravity(android.view.Gravity.CENTER);
             created.setBackgroundColor(0x33FFFFFF);
@@ -3576,6 +3648,7 @@ final class TelegramHookInstaller {
                     + " children=" + menu.getChildCount());
             button = created;
         }
+        refreshSelectAllAppearance(button, menu);
         View boundButton = button;
         uiCallbacks.setClickListener(boundButton, v -> {
             try {
@@ -4273,18 +4346,16 @@ final class TelegramHookInstaller {
         View button = menuView.findViewWithTag(MENU_ID_SELECT_ALL);
         if (button == null) {
             Context context = menuView.getContext();
-            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(label);
             created.setTextSize(14);
-            created.setTextColor(0xFFFFFFFF);
             created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
             created.setGravity(android.view.Gravity.CENTER);
             menuView.addView(created);
             info("SelectAll: injected into action mode bar");
             button = created;
         }
+        refreshSelectAllAppearance(button, menuView);
         View boundButton = button;
         uiCallbacks.setClickListener(boundButton, v -> {
             try {
@@ -4303,12 +4374,9 @@ final class TelegramHookInstaller {
         View button = menuView.findViewWithTag(MENU_ID_SELECT_ALL);
         if (button == null) {
             Context context = menuView.getContext();
-            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(label);
             created.setTextSize(14);
-            created.setTextColor(0xFFFFFFFF);
             created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
             created.setGravity(android.view.Gravity.CENTER);
             // No background - match the delete button style
@@ -4318,6 +4386,7 @@ final class TelegramHookInstaller {
             info("SelectAll: injected into action mode bar for download page");
             button = created;
         }
+        refreshSelectAllAppearance(button, menuView);
         View boundButton = button;
         uiCallbacks.setClickListener(boundButton, v -> {
             try {
@@ -4327,6 +4396,129 @@ final class TelegramHookInstaller {
                 error("SelectAll: download select all failed: " + t.getMessage(), t);
             }
         });
+    }
+
+    private void refreshSelectAllAppearance(View button, ViewGroup actionMode) {
+        if (!(button instanceof TextView)) {
+            return;
+        }
+        TextView textView = (TextView) button;
+        Context context = textView.getContext();
+        String label = SelectAllAppearance.label(
+                telegramSelectAllLabel(context),
+                isChineseLocale(context)
+        );
+        int color = SelectAllAppearance.foregroundColor(
+                actionModePeerTextColor(actionMode),
+                telegramActionModeForegroundColor(context),
+                platformPrimaryTextColor(context),
+                isNightMode(context)
+        );
+        boolean changed = !label.contentEquals(textView.getText())
+                || textView.getCurrentTextColor() != color
+                || textView.getVisibility() != View.VISIBLE
+                || !textView.isEnabled()
+                || textView.getAlpha() != 1f;
+        if (!changed) {
+            return;
+        }
+        textView.setText(label);
+        textView.setContentDescription(label);
+        textView.setTextColor(color);
+        textView.setSingleLine(true);
+        textView.setVisibility(View.VISIBLE);
+        textView.setEnabled(true);
+        textView.setAlpha(1f);
+        textView.requestLayout();
+        textView.invalidate();
+        info("SelectAll: appearance refreshed labelChars=" + label.length()
+                + " color=" + String.format(Locale.ROOT, "0x%08X", color));
+    }
+
+    private CharSequence telegramSelectAllLabel(Context context) {
+        if (context == null) {
+            return null;
+        }
+        try {
+            int id = context.getResources().getIdentifier(
+                    "SelectAll",
+                    "string",
+                    telegramResourcePackageName
+            );
+            return id == 0 ? null : context.getText(id);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Integer actionModePeerTextColor(ViewGroup actionMode) {
+        View current = actionMode;
+        for (int depth = 0; current != null && depth < 4; depth++) {
+            if (current instanceof ViewGroup) {
+                View count = findCountTextView((ViewGroup) current);
+                if (count instanceof TextView) {
+                    return ((TextView) count).getCurrentTextColor();
+                }
+            }
+            ViewParent parent = current.getParent();
+            current = parent instanceof View ? (View) parent : null;
+        }
+        return null;
+    }
+
+    private Integer telegramActionModeForegroundColor(Context context) {
+        try {
+            ClassLoader classLoader = savedClassLoader == null
+                    ? context.getClassLoader()
+                    : savedClassLoader;
+            Class<?> themeClass = Class.forName(
+                    "org.telegram.ui.ActionBar.Theme",
+                    false,
+                    classLoader
+            );
+            int key = Reflect.asInt(
+                    Reflect.staticField(themeClass, "key_actionBarActionModeDefaultIcon"),
+                    0
+            );
+            Object color = key == 0 ? null : Reflect.invokeStatic(
+                    themeClass,
+                    "getColor",
+                    new Class<?>[]{int.class},
+                    key
+            );
+            return color instanceof Number ? ((Number) color).intValue() : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    private Integer platformPrimaryTextColor(Context context) {
+        try {
+            TypedValue value = new TypedValue();
+            if (!context.getTheme().resolveAttribute(
+                    android.R.attr.textColorPrimary,
+                    value,
+                    true
+            )) {
+                return null;
+            }
+            if (value.resourceId != 0) {
+                return context.getColor(value.resourceId);
+            }
+            if (value.type >= TypedValue.TYPE_FIRST_COLOR_INT
+                    && value.type <= TypedValue.TYPE_LAST_COLOR_INT) {
+                return value.data;
+            }
+        } catch (Throwable ignored) {
+            // Fall through to the deterministic day/night default.
+        }
+        return null;
+    }
+
+    private boolean isNightMode(Context context) {
+        int mode = context.getResources().getConfiguration().uiMode
+                & Configuration.UI_MODE_NIGHT_MASK;
+        return mode == Configuration.UI_MODE_NIGHT_YES;
     }
 
     private void selectAllInActionMode(ViewGroup menuView) {
