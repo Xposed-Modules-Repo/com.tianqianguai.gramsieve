@@ -4439,13 +4439,43 @@ final class TelegramHookInstaller {
         if (context == null) {
             return null;
         }
+        int id;
         try {
-            int id = context.getResources().getIdentifier(
+            id = context.getResources().getIdentifier(
                     "SelectAll",
                     "string",
                     telegramResourcePackageName
             );
-            return id == 0 ? null : context.getText(id);
+        } catch (Throwable ignored) {
+            return null;
+        }
+        if (id == 0) {
+            return null;
+        }
+        try {
+            ClassLoader classLoader = savedClassLoader == null
+                    ? context.getClassLoader()
+                    : savedClassLoader;
+            Class<?> localeController = Class.forName(
+                    "org.telegram.messenger.LocaleController",
+                    false,
+                    classLoader
+            );
+            Object currentLabel = Reflect.invokeStatic(
+                    localeController,
+                    "getString",
+                    new Class<?>[]{int.class},
+                    id
+            );
+            String localized = Reflect.asString(currentLabel).trim();
+            if (!localized.isEmpty()) {
+                return localized;
+            }
+        } catch (Throwable ignored) {
+            // Fall back to Android resources on older Telegram builds.
+        }
+        try {
+            return context.getText(id);
         } catch (Throwable ignored) {
             return null;
         }
@@ -9243,6 +9273,31 @@ final class TelegramHookInstaller {
     }
 
     private boolean isChineseLocale(Context context) {
+        try {
+            ClassLoader classLoader = savedClassLoader == null
+                    ? context.getClassLoader()
+                    : savedClassLoader;
+            Class<?> localeController = Class.forName(
+                    "org.telegram.messenger.LocaleController",
+                    false,
+                    classLoader
+            );
+            Object instance = Reflect.invokeStatic(
+                    localeController,
+                    "getInstance",
+                    new Class<?>[0]
+            );
+            Object current = Reflect.invokeIfExists(
+                    instance,
+                    "getCurrentLocale",
+                    new Class<?>[0]
+            );
+            if (current instanceof Locale) {
+                return "zh".equalsIgnoreCase(((Locale) current).getLanguage());
+            }
+        } catch (Throwable ignored) {
+            // Fall back to the Android configuration when Telegram internals are unavailable.
+        }
         try {
             Locale locale = context.getResources().getConfiguration().locale;
             return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
