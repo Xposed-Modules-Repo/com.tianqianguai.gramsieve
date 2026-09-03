@@ -2711,12 +2711,10 @@ final class HostConfigPanel {
     }
 
     private static boolean isChineseLocale(Context context) {
-        try {
-            Locale locale = context.getResources().getConfiguration().locale;
-            return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
-        } catch (Throwable ignored) {
-            return false;
-        }
+        return TelegramLocale.isChinese(
+                context,
+                context == null ? null : context.getClassLoader()
+        );
     }
 
     private static String valueOf(EditText editText) {

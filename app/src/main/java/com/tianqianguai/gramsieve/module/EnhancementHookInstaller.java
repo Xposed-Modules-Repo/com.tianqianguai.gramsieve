@@ -833,12 +833,10 @@ final class EnhancementHookInstaller {
     }
 
     private static boolean isChinese(Context context) {
-        try {
-            Locale locale = context.getResources().getConfiguration().locale;
-            return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
-        } catch (RuntimeException ignored) {
-            return false;
-        }
+        return TelegramLocale.isChinese(
+                context,
+                context == null ? null : context.getClassLoader()
+        );
     }
 
     private void hook(Method method, XposedInterface.Hooker hooker) {
