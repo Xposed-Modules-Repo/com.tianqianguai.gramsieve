@@ -758,6 +758,10 @@ final class TelegramHookInstaller {
                 return response;
             case "config.set":
                 return cliSetConfig(response, context, intent);
+            case "rules.summary":
+                return cliRuleSummary(response, context);
+            case "rules.clear-all":
+                return cliClearAllRules(response, context, intent);
             case "feature.list":
                 return cliFeatureList(response, context);
             case "feature.get":
@@ -876,6 +880,7 @@ final class TelegramHookInstaller {
         response.put("commands", new JSONArray(Arrays.asList(
                 "help", "ping", "state", "modules.scan", "log.tail", "log.range", "log.info", "log.export",
                 "config.get", "config.set",
+                "rules.summary", "rules.clear-all",
                 "feature.list", "feature.get", "feature.set",
                 "fallback.list", "fallback.get", "fallback.set",
                 "anti-recall.list", "anti-recall.get", "anti-recall.set",
@@ -896,6 +901,7 @@ final class TelegramHookInstaller {
                 "ui.jump-mark", "ui.first-message", "ui.scroll"
         )));
         response.put("configSetExtras", new JSONArray(Arrays.asList("config_json", "config_b64")));
+        response.put("rulesClearAllExtras", new JSONArray(Arrays.asList("confirm", "dry_run")));
         response.put("maxResponseChars", MAX_CLI_RESPONSE_CHARS);
         response.put("logTailBytes", LogFileSupport.MAX_TAIL_BYTES);
         response.put("logTailLines", LogFileSupport.MAX_TAIL_LINES);
@@ -1070,6 +1076,88 @@ final class TelegramHookInstaller {
         response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
         response.put("config", new JSONObject(ModuleConfigStore.toJson(saved)));
         return response;
+    }
+
+    private JSONObject cliRuleSummary(JSONObject response, Context context) throws Exception {
+        response.put("rules", ruleSummary(currentCliConfig(context)));
+        return response;
+    }
+
+    private JSONObject cliClearAllRules(
+            JSONObject response,
+            Context context,
+            Intent intent
+    ) throws Exception {
+        FilterConfig current = currentCliConfig(context);
+        boolean dryRun = !stringExtra(intent, "dry_run").isBlank()
+                && parseBoolean(stringExtra(intent, "dry_run"));
+        if (!dryRun) {
+            String confirmation = stringExtra(intent, "confirm");
+            if (confirmation.isBlank() || !parseBoolean(confirmation)) {
+                throw new IllegalArgumentException(
+                        "rules.clear-all requires --es confirm true (or --es dry_run true)"
+                );
+            }
+        }
+
+        FilterConfig cleared = current.copyWithoutRules();
+        response.put("dryRun", dryRun);
+        response.put("before", ruleSummary(current));
+        response.put("after", ruleSummary(cleared));
+        response.put("preserved", new JSONArray(Arrays.asList(
+                "moduleEnabled",
+                "debugLogging",
+                "matchAction",
+                "interfaceLanguage",
+                "enhancementSettings",
+                "antiRecallData",
+                "editHistoryData",
+                "messageMarks",
+                "readPositions",
+                "logs"
+        )));
+        if (dryRun) {
+            response.put("cleared", false);
+            return response;
+        }
+
+        FilterConfig saved = saveUpdatedConfig(context, cleared);
+        decisionCache.clear();
+        response.put("cleared", true);
+        response.put("updatedAtEpochMs", saved.updatedAtEpochMs);
+        info("CLI cleared all filter rules globalRules="
+                + (safeRuleSize(current.globalRules) + safeRuleSize(current.globalExclusions))
+                + " chatRuleSets=" + (current.chatRules == null ? 0 : current.chatRules.size()));
+        return response;
+    }
+
+    private JSONObject ruleSummary(FilterConfig config) throws Exception {
+        JSONObject summary = new JSONObject();
+        int globalMatches = safeRuleSize(config == null ? null : config.globalRules);
+        int globalExclusions = safeRuleSize(config == null ? null : config.globalExclusions);
+        int chatMatches = 0;
+        int chatExclusions = 0;
+        int chatRuleSets = 0;
+        if (config != null && config.chatRules != null) {
+            chatRuleSets = config.chatRules.size();
+            for (FilterConfig.ChatRuleSet rules : config.chatRules.values()) {
+                if (rules != null) {
+                    chatMatches += safeRuleSize(rules.rules);
+                    chatExclusions += safeRuleSize(rules.exclusions);
+                }
+            }
+        }
+        summary.put("globalMatches", globalMatches);
+        summary.put("globalExclusions", globalExclusions);
+        summary.put("chatRuleSets", chatRuleSets);
+        summary.put("chatMatches", chatMatches);
+        summary.put("chatExclusions", chatExclusions);
+        summary.put("totalRules", globalMatches + globalExclusions + chatMatches + chatExclusions);
+        return summary;
+    }
+
+    private int safeRuleSize(List<?> values) {
+        return values == null ? 0 : values.size();
     }
 
     private JSONObject cliFeatureList(JSONObject response, Context context) throws Exception {

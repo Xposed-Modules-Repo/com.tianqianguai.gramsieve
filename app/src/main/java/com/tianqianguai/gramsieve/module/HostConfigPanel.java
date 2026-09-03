@@ -2,6 +2,7 @@ package com.tianqianguai.gramsieve.module;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -547,6 +548,9 @@ final class HostConfigPanel {
             buildUntestedFeaturesEntry(container);
         }
         buildLogCard(container);
+        if (!chatMode) {
+            buildRuleResetCard(container);
+        }
         buildRulesCard(container);
 
         root.addView(overlay, new ViewGroup.LayoutParams(
@@ -1617,6 +1621,86 @@ final class HostConfigPanel {
             inputs.keepRegex = addInput(card, t("保留正则", "Keep regex"), exclusionMatrix.get(target, FilterConfig.RuleMode.REGEX));
             ruleInputs.put(target, inputs);
         }
+    }
+
+    private void buildRuleResetCard(LinearLayout container) {
+        LinearLayout card = addCard(container);
+        addTitle(card, t("规则数据", "Rule Data"));
+        addInfo(card, t(
+                "想从头编写规则时，可一次清空全局规则与所有聊天规则。防撤回、编辑历史、消息标记、浏览位置、日志和功能开关不会改变。",
+                "Start over with one tap by clearing global and per-chat filter rules. Anti-recall, edit history, message marks, read positions, logs, and feature settings stay unchanged."
+        ));
+
+        Button clearButton = new Button(context);
+        clearButton.setAllCaps(false);
+        clearButton.setText(t("清空全部过滤规则", "Clear all filter rules"));
+        clearButton.setTextColor(Color.WHITE);
+        clearButton.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14f);
+        clearButton.setBackgroundTintList(ColorStateList.valueOf(Color.rgb(211, 47, 47)));
+        clearButton.setOnClickListener(v -> confirmClearAllRules());
+        addView(card, clearButton, 0);
+    }
+
+    private void confirmClearAllRules() {
+        int globalRuleCount = safeSize(baseConfig.globalRules)
+                + safeSize(baseConfig.globalExclusions);
+        int chatRuleCount = 0;
+        if (baseConfig.chatRules != null) {
+            for (FilterConfig.ChatRuleSet rules : baseConfig.chatRules.values()) {
+                if (rules != null) {
+                    chatRuleCount += safeSize(rules.rules) + safeSize(rules.exclusions);
+                }
+            }
+        }
+        int chatCount = baseConfig.chatRules == null ? 0 : baseConfig.chatRules.size();
+        String message = chinese
+                ? "将删除 " + globalRuleCount + " 条全局规则，以及 " + chatCount
+                + " 个聊天中的 " + chatRuleCount
+                + " 条规则。其他模块数据与设置不会改变。此操作无法撤销。"
+                : "This removes " + globalRuleCount + " global rules and " + chatRuleCount
+                + " rules across " + chatCount
+                + " chats. Other module data and settings stay unchanged. This cannot be undone.";
+        new AlertDialog.Builder(context)
+                .setTitle(t("清空全部过滤规则？", "Clear all filter rules?"))
+                .setMessage(message)
+                .setNegativeButton(t("取消", "Cancel"), null)
+                .setPositiveButton(t("清空", "Clear"), (dialog, which) -> clearAllRules())
+                .show();
+    }
+
+    private void clearAllRules() {
+        int globalRuleCount = safeSize(baseConfig.globalRules)
+                + safeSize(baseConfig.globalExclusions);
+        int chatCount = baseConfig.chatRules == null ? 0 : baseConfig.chatRules.size();
+        try {
+            saver.save(baseConfig.copyWithoutRules());
+            if (afterSave != null) {
+                afterSave.run();
+            }
+            ModuleLogger.info(
+                    ModuleLogger.CAT_CONFIG,
+                    ModuleLogger.TAG,
+                    "All filter rules cleared globalRules=" + globalRuleCount
+                            + " chatRuleSets=" + chatCount
+            );
+            Toast.makeText(
+                    context,
+                    t("全部过滤规则已清空", "All filter rules cleared"),
+                    Toast.LENGTH_SHORT
+            ).show();
+            close();
+        } catch (Throwable throwable) {
+            Toast.makeText(
+                    context,
+                    t("清空失败：", "Could not clear rules: ")
+                            + throwable.getClass().getSimpleName(),
+                    Toast.LENGTH_LONG
+            ).show();
+        }
+    }
+
+    private static int safeSize(List<?> values) {
+        return values == null ? 0 : values.size();
     }
 
     private void save() {

@@ -103,6 +103,16 @@ public final class FilterConfig {
         return copy;
     }
 
+    /** Returns an independent copy with only filtering rules removed. */
+    public FilterConfig copyWithoutRules() {
+        FilterConfig copy = deepCopy().sanitize();
+        copy.globalRules.clear();
+        copy.globalExclusions.clear();
+        copy.chatRules.clear();
+        copy.updatedAtEpochMs = System.currentTimeMillis();
+        return copy;
+    }
+
     public static String normalizeAppLanguageTag(String appLanguageTag) {
         if (appLanguageTag == null || appLanguageTag.isBlank()) {
             return APP_LANGUAGE_SYSTEM;
