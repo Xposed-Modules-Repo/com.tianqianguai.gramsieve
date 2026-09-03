@@ -817,6 +817,8 @@ final class TelegramHookInstaller {
                 return cliCleanup(response, intent, true);
             case "ui.state":
                 return cliUiState(response);
+            case "ui.locale.state":
+                return cliUiLocaleState(response, context);
             case "ui.download-button.state":
                 return cliUiDownloadButtonState(response);
             case "ui.downloads.open":
@@ -888,7 +890,8 @@ final class TelegramHookInstaller {
                 "mark.list", "mark.set", "mark.clear",
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
-                "cleanup.get", "cleanup.set", "ui.state", "ui.download-button.state",
+                "cleanup.get", "cleanup.set", "ui.state", "ui.locale.state",
+                "ui.download-button.state",
                 "ui.downloads.open", "ui.download-selection.start",
                 "ui.download-select-all.state", "ui.download-select-all.click",
                 "ui.message-menu.open", "ui.message-menu.close", "ui.message-delete.state",
@@ -1632,6 +1635,14 @@ final class TelegramHookInstaller {
             response.put("clicked", true);
         }
         response.put("downloadSelectAll", downloadSelectAllState());
+        return response;
+    }
+
+    private JSONObject cliUiLocaleState(JSONObject response, Context context) throws Exception {
+        Locale locale = TelegramLocale.current(context, savedClassLoader);
+        response.put("languageTag", locale == null ? "" : locale.toLanguageTag());
+        response.put("chinese", TelegramLocale.isChinese(locale));
+        response.put("selectAllLabel", Reflect.asString(telegramSelectAllLabel(context)));
         return response;
     }
 
@@ -4210,12 +4221,9 @@ final class TelegramHookInstaller {
                         + " vis=" + c.getVisibility() + " w=" + c.getWidth());
             }
             Context context = content.getContext();
-            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(label);
             created.setTextSize(14);
-            created.setTextColor(0xFFFFFFFF);
             created.setPadding(dp(context, 16), 0, dp(context, 16), 0);
             created.setGravity(android.view.Gravity.CENTER);
             ViewGroup.LayoutParams lp = new ViewGroup.LayoutParams(
@@ -4233,6 +4241,7 @@ final class TelegramHookInstaller {
             info("SelectAll: inserted at index " + insertIdx);
             button = created;
         }
+        refreshSelectAllAppearance(button, bar);
         ViewGroup parent = bar.getParent() instanceof ViewGroup ? (ViewGroup) bar.getParent() : null;
         View boundButton = button;
         uiCallbacks.setClickListener(boundButton, v -> {
@@ -4407,7 +4416,6 @@ final class TelegramHookInstaller {
             Context context = bar.getContext();
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(isChineseLocale(context) ? "全选" : "Select All");
             created.setTextSize(14);
             created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
             created.setGravity(android.view.Gravity.CENTER);
@@ -4416,6 +4424,7 @@ final class TelegramHookInstaller {
                     + " actionBar");
             button = created;
         }
+        refreshSelectAllAppearance(button, bar);
         View boundButton = button;
         uiCallbacks.setClickListener(boundButton, v -> {
             try {
@@ -4540,33 +4549,7 @@ final class TelegramHookInstaller {
         if (id == 0) {
             return null;
         }
-        try {
-            ClassLoader classLoader = savedClassLoader == null
-                    ? context.getClassLoader()
-                    : savedClassLoader;
-            Class<?> localeController = Class.forName(
-                    "org.telegram.messenger.LocaleController",
-                    false,
-                    classLoader
-            );
-            Object currentLabel = Reflect.invokeStatic(
-                    localeController,
-                    "getString",
-                    new Class<?>[]{int.class},
-                    id
-            );
-            String localized = Reflect.asString(currentLabel).trim();
-            if (!localized.isEmpty()) {
-                return localized;
-            }
-        } catch (Throwable ignored) {
-            // Fall back to Android resources on older Telegram builds.
-        }
-        try {
-            return context.getText(id);
-        } catch (Throwable ignored) {
-            return null;
-        }
+        return TelegramLocale.string(context, savedClassLoader, id);
     }
 
     private Integer actionModePeerTextColor(ViewGroup actionMode) {
@@ -4826,12 +4809,9 @@ final class TelegramHookInstaller {
         View button = bar.findViewWithTag(MENU_ID_SELECT_ALL);
         if (button == null) {
             Context context = bar.getContext();
-            CharSequence label = isChineseLocale(context) ? "全选" : "Select All";
             TextView created = new TextView(context);
             created.setTag(MENU_ID_SELECT_ALL);
-            created.setText(label);
             created.setTextSize(14);
-            created.setTextColor(0xFFFFFFFF);
             created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
             created.setGravity(android.view.Gravity.CENTER);
             created.setBackgroundColor(0x33FFFFFF);
@@ -4859,6 +4839,7 @@ final class TelegramHookInstaller {
             }
             button = created;
         }
+        refreshSelectAllAppearance(button, bar);
         button.bringToFront();
         button.setClickable(true);
         button.setFocusable(true);
@@ -9361,37 +9342,7 @@ final class TelegramHookInstaller {
     }
 
     private boolean isChineseLocale(Context context) {
-        try {
-            ClassLoader classLoader = savedClassLoader == null
-                    ? context.getClassLoader()
-                    : savedClassLoader;
-            Class<?> localeController = Class.forName(
-                    "org.telegram.messenger.LocaleController",
-                    false,
-                    classLoader
-            );
-            Object instance = Reflect.invokeStatic(
-                    localeController,
-                    "getInstance",
-                    new Class<?>[0]
-            );
-            Object current = Reflect.invokeIfExists(
-                    instance,
-                    "getCurrentLocale",
-                    new Class<?>[0]
-            );
-            if (current instanceof Locale) {
-                return "zh".equalsIgnoreCase(((Locale) current).getLanguage());
-            }
-        } catch (Throwable ignored) {
-            // Fall back to the Android configuration when Telegram internals are unavailable.
-        }
-        try {
-            Locale locale = context.getResources().getConfiguration().locale;
-            return locale != null && "zh".equalsIgnoreCase(locale.getLanguage());
-        } catch (Throwable ignored) {
-            return false;
-        }
+        return TelegramLocale.isChinese(context, savedClassLoader);
     }
 
     private int dp(Context context, float value) {
