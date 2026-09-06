@@ -6,6 +6,9 @@ import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
+
 public class TelegramHookInstallerTest {
     @Test
     public void onlyCommittedDialogDeleteCallMutatesLocalState() {
@@ -27,5 +30,16 @@ public class TelegramHookInstallerTest {
             return;
         }
         throw new AssertionError("limit above the bounded tail must be rejected");
+    }
+
+    @Test
+    public void filteringDoesNotHookGlobalViewMeasureHotPath() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/com/tianqianguai/gramsieve/module/TelegramHookInstaller.java"
+        ));
+
+        assertFalse(source.contains("Reflect.method(View.class, \"measure\""));
+        assertTrue(source.contains("tryHookCellMeasureMethod("));
+        assertTrue(source.contains("UiMutation.overrideMeasuredHeight(messageView, context.decision)"));
     }
 }
