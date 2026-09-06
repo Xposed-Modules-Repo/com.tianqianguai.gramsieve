@@ -41,5 +41,24 @@ public class TelegramHookInstallerTest {
         assertFalse(source.contains("Reflect.method(View.class, \"measure\""));
         assertTrue(source.contains("tryHookCellMeasureMethod("));
         assertTrue(source.contains("UiMutation.overrideMeasuredHeight(messageView, context.decision)"));
+        assertTrue(source.contains("this::handleCellLayout"));
+        assertTrue(source.contains("messageBindingDepth"));
+    }
+
+    @Test
+    public void dedicatedChatAdapterSkipsGenericDuplicateBinding() {
+        assertTrue(TelegramHookInstaller.shouldRunGenericMessageBinding(true, null));
+        assertTrue(TelegramHookInstaller.shouldRunGenericMessageBinding(
+                false,
+                "org.telegram.ui.ChatActivity$ChatActivityAdapter"
+        ));
+        assertFalse(TelegramHookInstaller.shouldRunGenericMessageBinding(
+                true,
+                "org.telegram.ui.ChatActivity$ChatActivityAdapter"
+        ));
+        assertTrue(TelegramHookInstaller.shouldRunGenericMessageBinding(
+                true,
+                "org.telegram.ui.DialogsActivity$19"
+        ));
     }
 }
