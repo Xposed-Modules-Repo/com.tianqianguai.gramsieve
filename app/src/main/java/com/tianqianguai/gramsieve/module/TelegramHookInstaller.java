@@ -208,7 +208,6 @@ final class TelegramHookInstaller {
         logRemoteCapabilities();
         logTelegramVersion(classLoader, applicationInfo);
         hookPushNotificationTriggers(classLoader);
-        hookTaggedViewMeasure();
         reliableDownloadHooks.install(classLoader);
         hookChatMessageCell(classLoader);
         hookRecyclerViewBinding(classLoader);
@@ -2512,23 +2511,6 @@ final class TelegramHookInstaller {
 
     private void invalidateModuleFallbackSnapshot() {
         moduleFallbackCheckedAt = -MODULE_FALLBACK_SNAPSHOT_MS;
-    }
-
-    private void hookTaggedViewMeasure() {
-        try {
-            Method measure = Reflect.method(View.class, "measure", int.class, int.class);
-            hook(measure, chain -> {
-                Object result = chain.proceed();
-                Object view = chain.getThisObject();
-                if (view instanceof View) {
-                    UiMutation.overrideMeasuredHeight((View) view, null);
-                }
-                return result;
-            });
-            info("Hooked View.measure for tagged hidden rows");
-        } catch (Throwable throwable) {
-            error("Failed to hook View.measure", throwable);
-        }
     }
 
     private void logRemoteCapabilities() {
