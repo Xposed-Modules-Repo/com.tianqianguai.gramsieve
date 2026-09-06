@@ -145,6 +145,7 @@ final class TelegramHookInstaller {
     private final AtomicInteger decisionProbeBudget = new AtomicInteger(12);
     private final AtomicInteger refreshProbeBudget = new AtomicInteger(12);
     private final AtomicInteger readMarkProbeBudget = new AtomicInteger(16);
+    private final LogProbeBudget readMarkSkipLogBudget = new LogProbeBudget(4);
     private final Map<String, Long> recentDiagnosticKeys = new LinkedHashMap<String, Long>(128, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
@@ -320,6 +321,7 @@ final class TelegramHookInstaller {
         }
         retiring = true;
         boolean clean = true;
+        readMarkSkipLogBudget.reset();
         enhancementHooks.prepareForHotReload();
         clean &= reliableDownloadHooks.prepareForHotReload();
 
@@ -6564,16 +6566,36 @@ final class TelegramHookInstaller {
         }
         Object unread = Reflect.invokeIfExists(messageObject, "isUnread", new Class<?>[0]);
         if (Boolean.FALSE.equals(unread)) {
-            info("ReadMark-skip: isUnread=false dialog=" + snapshot.dialogId + " msg=" + snapshot.messageId);
+            emitReadMarkSkipProbe("isUnread=false", snapshot, decision);
             return false;
         }
         Object messageOwner = Reflect.field(messageObject, "messageOwner");
         Object ownerUnread = Reflect.field(messageOwner, "unread");
         if (Boolean.FALSE.equals(ownerUnread)) {
-            info("ReadMark-skip: ownerUnread=false dialog=" + snapshot.dialogId + " msg=" + snapshot.messageId);
+            emitReadMarkSkipProbe("ownerUnread=false", snapshot, decision);
             return false;
         }
         return true;
+    }
+
+    private void emitReadMarkSkipProbe(
+            String state,
+            MessageSnapshot snapshot,
+            FilterDecision decision
+    ) {
+        LogProbeBudget.Permit permit = readMarkSkipLogBudget.acquire();
+        if (permit == LogProbeBudget.Permit.DROP) {
+            return;
+        }
+        if (permit == LogProbeBudget.Permit.SUPPRESSION_NOTICE) {
+            info("ReadMark-skip: routine events suppressed after samples="
+                    + readMarkSkipLogBudget.sampleLimit());
+            return;
+        }
+        info("ReadMark-skip: state=" + state
+                + " dialog=" + snapshot.dialogId
+                + " msg=" + snapshot.messageId
+                + " ruleId=" + (decision == null ? "" : decision.ruleId));
     }
 
     private boolean rememberReadMarkKey(String key) {

@@ -28,6 +28,7 @@ final class ReliableVideoDownloadManager {
     private final Set<String> loggedCancelledPlayerCleanup = ConcurrentHashMap.newKeySet();
     private final Map<String, Long> lastForcedCancelAt = new ConcurrentHashMap<>();
     private final Map<String, Long> lastVideoStateClearAt = new ConcurrentHashMap<>();
+    private final LogProbeBudget untrackedCancelLogBudget = new LogProbeBudget(8);
     private final DownloadCancellationRegistry cancellationRegistry;
     private final BooleanSupplier useExternalDownload;
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor(r -> {
@@ -65,6 +66,7 @@ final class ReliableVideoDownloadManager {
         loggedCancelledPlayerCleanup.clear();
         lastForcedCancelAt.clear();
         lastVideoStateClearAt.clear();
+        untrackedCancelLogBudget.reset();
         CANCEL_ORIGIN.remove();
         return ExecutorShutdown.now(scheduler, 3_000L);
     }
@@ -401,6 +403,18 @@ final class ReliableVideoDownloadManager {
         }
         boolean explicitCancel = key != null && cancellationRegistry.isCancelled(key);
         String source = ReliableDownloadDiagnostics.cancelSource(origin, explicitCancel);
+        if (!tracked && !explicitCancel) {
+            emitUntrackedCancelProbe(
+                    source,
+                    account,
+                    key,
+                    file,
+                    overloadShape,
+                    args,
+                    origin
+            );
+            return;
+        }
         StringBuilder message = new StringBuilder("cancel observed source=")
                 .append(source)
                 .append(" externalMode=").append(usesExternalDownload())
@@ -418,6 +432,36 @@ final class ReliableVideoDownloadManager {
                             Thread.currentThread().getStackTrace()));
         }
         ModuleLogger.hook(TAG, message.toString());
+    }
+
+    private void emitUntrackedCancelProbe(
+            String source,
+            int account,
+            String key,
+            String file,
+            String overloadShape,
+            Object[] args,
+            String origin
+    ) {
+        LogProbeBudget.Permit permit = untrackedCancelLogBudget.acquire();
+        if (permit == LogProbeBudget.Permit.DROP) {
+            return;
+        }
+        if (permit == LogProbeBudget.Permit.SUPPRESSION_NOTICE) {
+            ModuleLogger.hook(TAG, "routine untracked cancel events suppressed after samples="
+                    + untrackedCancelLogBudget.sampleLimit()
+                    + "; tracked download diagnostics remain detailed");
+            return;
+        }
+        ModuleLogger.hook(TAG, "routine untracked cancel sample source=" + source
+                + " externalMode=" + usesExternalDownload()
+                + " account=" + account
+                + " key=" + (key == null ? "unknown" : key)
+                + " file=" + (file == null ? "unknown" : file)
+                + " overload=" + (overloadShape == null ? "unknown" : overloadShape)
+                + " argsShape=" + ReliableDownloadDiagnostics.argumentShape(args)
+                + " thread=" + Thread.currentThread().getName()
+                + " origin=" + (origin == null ? "none" : origin));
     }
 
     private void scanForStalls() {
