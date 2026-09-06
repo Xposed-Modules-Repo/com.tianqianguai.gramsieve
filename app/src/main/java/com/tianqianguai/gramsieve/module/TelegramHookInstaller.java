@@ -146,6 +146,8 @@ final class TelegramHookInstaller {
     private final AtomicInteger refreshProbeBudget = new AtomicInteger(12);
     private final AtomicInteger readMarkProbeBudget = new AtomicInteger(16);
     private final LogProbeBudget readMarkSkipLogBudget = new LogProbeBudget(4);
+    private final ThreadLocal<Integer> messageBindingDepth =
+            ThreadLocal.withInitial(() -> 0);
     private final Map<String, Long> recentDiagnosticKeys = new LinkedHashMap<String, Long>(128, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Long> eldest) {
@@ -176,6 +178,7 @@ final class TelegramHookInstaller {
     private volatile boolean settingsListRowLogged;
     private volatile Boolean keepDownloadButtonVisibleEnabled;
     private volatile boolean persistentDownloadHookErrorLogged;
+    private volatile boolean chatActivityAdapterHooked;
     private volatile boolean retiring;
 
     TelegramHookInstaller(XposedModule module) {
@@ -401,6 +404,7 @@ final class TelegramHookInstaller {
         resumedHostActivity = new WeakReference<>(null);
         keepDownloadButtonVisibleEnabled = null;
         persistentDownloadHookErrorLogged = false;
+        chatActivityAdapterHooked = false;
         locallyHiddenDialogs.clear();
         decisionCache.clear();
         installed = false;
@@ -2559,12 +2563,14 @@ final class TelegramHookInstaller {
             hooked |= tryHookCellLifecycleMethod(
                     cellClass,
                     "onLayout",
-                    new Class<?>[]{boolean.class, int.class, int.class, int.class, int.class}
+                    new Class<?>[]{boolean.class, int.class, int.class, int.class, int.class},
+                    this::handleCellLayout
             );
             hooked |= tryHookCellLifecycleMethod(
                     cellClass,
                     "onAttachedToWindow",
-                    new Class<?>[0]
+                    new Class<?>[0],
+                    this::handleCellLifecycle
             );
             hooked |= tryHookCellMeasureMethod(
                     cellClass,
@@ -2595,12 +2601,17 @@ final class TelegramHookInstaller {
         }
     }
 
-    private boolean tryHookCellLifecycleMethod(Class<?> cellClass, String methodName, Class<?>[] parameterTypes) {
+    private boolean tryHookCellLifecycleMethod(
+            Class<?> cellClass,
+            String methodName,
+            Class<?>[] parameterTypes,
+            XposedInterface.Hooker hooker
+    ) {
         String signature = methodName + signatureOf(parameterTypes);
         try {
             Method method = Reflect.method(cellClass, methodName, parameterTypes);
             deoptimize(method, "ChatMessageCell." + signature);
-            hook(method, this::handleCellLifecycle);
+            hook(method, hooker);
             info("Hooked ChatMessageCell." + signature);
             return true;
         } catch (NoSuchMethodException ignored) {
@@ -2828,8 +2839,10 @@ final class TelegramHookInstaller {
             Method onBindViewHolder = Reflect.method(adapterClass, "onBindViewHolder", viewHolderClass, int.class);
             deoptimize(onBindViewHolder, "ChatActivityAdapter.onBindViewHolder(ViewHolder, int)");
             hook(onBindViewHolder, this::handleChatRowBinding);
+            chatActivityAdapterHooked = true;
             info("Hooked ChatActivityAdapter.onBindViewHolder(ViewHolder, int)");
         } catch (Throwable throwable) {
+            chatActivityAdapterHooked = false;
             error("Failed to hook ChatActivityAdapter", throwable);
         }
     }
@@ -5227,11 +5240,25 @@ final class TelegramHookInstaller {
     private static volatile int bindingCallCount = 0;
 
     private Object handleMessageBinding(XposedInterface.Chain chain) throws Throwable {
+        int depth = messageBindingDepth.get();
+        messageBindingDepth.set(depth + 1);
+        Object result;
+        try {
+            result = chain.proceed();
+        } finally {
+            if (depth == 0) {
+                messageBindingDepth.remove();
+            } else {
+                messageBindingDepth.set(depth);
+            }
+        }
+        if (depth > 0) {
+            return result;
+        }
         int count = ++bindingCallCount;
         if (count <= 3) {
             info("handleMessageBinding #" + count);
         }
-        Object result = chain.proceed();
         try {
             Object cell = chain.getThisObject();
             Object messageObject = chain.getArg(0);
@@ -5898,6 +5925,19 @@ final class TelegramHookInstaller {
         return result;
     }
 
+    private Object handleCellLayout(XposedInterface.Chain chain) throws Throwable {
+        Object result = chain.proceed();
+        try {
+            Object cell = chain.getThisObject();
+            if (cell instanceof View) {
+                trackTopmostMessage((View) cell);
+            }
+        } catch (Throwable throwable) {
+            error("Cell layout read-position tracking failed", throwable);
+        }
+        return result;
+    }
+
     private Object handleCellMeasure(XposedInterface.Chain chain) throws Throwable {
         Object result = chain.proceed();
         try {
@@ -5950,6 +5990,12 @@ final class TelegramHookInstaller {
             if (applyLocalDialogHide(adapter, itemView)) {
                 return result;
             }
+            if (!shouldRunGenericMessageBinding(
+                    chatActivityAdapterHooked,
+                    adapter == null ? "" : adapter.getClass().getName()
+            )) {
+                return result;
+            }
             applyDecisionToBoundViews(itemView);
         } catch (Throwable throwable) {
             error("RecyclerView binding filter failed", throwable);
@@ -5967,11 +6013,28 @@ final class TelegramHookInstaller {
             if (applyLocalDialogHide(adapter, itemView)) {
                 return result;
             }
+            if (!shouldRunGenericMessageBinding(
+                    chatActivityAdapterHooked,
+                    adapter == null ? "" : adapter.getClass().getName()
+            )) {
+                return result;
+            }
             applyDecisionToBoundViews(itemView);
         } catch (Throwable throwable) {
             error("RecyclerView attachment filter failed", throwable);
         }
         return result;
+    }
+
+    static boolean shouldRunGenericMessageBinding(
+            boolean dedicatedChatAdapterHooked,
+            String adapterClassName
+    ) {
+        if (!dedicatedChatAdapterHooked || adapterClassName == null) {
+            return true;
+        }
+        return !"org.telegram.ui.ChatActivity$ChatActivityAdapter"
+                .equals(adapterClassName);
     }
 
     private boolean applyLocalDialogHide(Object adapter, Object itemView) {
