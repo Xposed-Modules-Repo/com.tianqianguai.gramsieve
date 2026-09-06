@@ -16,19 +16,40 @@
 ```
 
 ## Release Notes & Publishing Workflow
+
 中文：
+
+- 正式发布仓库固定为 `Xposed-Modules-Repo/com.tianqianguai.gramsieve`。所有 `gh release` 查询、创建、编辑和验证命令都必须显式使用这个仓库，不再使用旧名 `Xposed-Modules-Repo/Gramsieve`。
+- 用户说“发版”时，默认创建一个新版本。只要上一个公开版本之后包含代码、行为、界面、配置或兼容性变化，就必须递增 `versionCode`，并按语义递增 `versionName`；不得沿用更早对“原位更新旧版本”的授权。只有用户在当前发布请求中明确指定现有 tag 并要求“不升版本号/原位更新”时，才允许覆盖旧 Release。
+- 新版本使用 tag `<versionCode>-<versionName>`、标题 `GramSieve <versionName>`、资产名 `GramSieve-v<versionName>.apk`。发布前同时核对 `app/build.gradle.kts`、`output-metadata.json` 和 `aapt dump badging`，三处版本必须一致。
+- 必须从最终已集成并推送的发布 commit 重新构建 APK，不得上传版本号修改前、合并前或其他工作树遗留的制品。创建 Release 前先 `fetch` 并确认本地 `main` 与远端没有意外分叉，再推送准确的发布 commit。
+- 隔离 worktree 通常没有被 Git 忽略的 `keystore.properties`，而当前 Gradle 配置会在缺少正式签名时回退到 Debug 签名。因此 `assembleRelease` 成功不代表制品可发布。上传前必须运行 `apksigner verify --print-certs`：证书 SHA-256 必须是 GramSieve 正式指纹 `1d13359dd77d6da41d2d9aaa8fc099e92dd6e76861e0558d8e3bd822e5d6a055`，且不得是 `CN=Android Debug`。worktree 无正式签名时，先提交并合并，再从具备正式签名配置的主工作区重建。
+- 发布门禁为：`testDebugUnitTest`、`lintDebug`、`assembleRelease`、`git diff --check`、APK 元数据检查、正式签名检查和 SHA-256 记录。仅修改发布文档时可跳过无关业务测试，但只要 APK 内容或版本变化就必须重新执行 APK 门禁。
 - GitHub Release 正文只写更新日志，不写下载说明、校验说明或发布机制解释。
 - Release notes 必须先中文后英文；中文区标题用 `## 更新日志`，英文区标题用 `## Changelog`。
+- 更新日志只描述相对上一个公开版本新增或修正的内容，不把旧版本日志累计复制进新版本；保留适用的 API 102 兼容说明和 Star 提示。不得提及群内先行热修复或内部发布过程。
 - 在 PowerShell 中不要用内联 `--notes "..."` 传包含 Markdown 反引号的内容；反引号会把 `a`、`v` 等字符转成控制字符并导致页面乱码。先写 UTF-8 notes 文件，再使用 `gh release edit/create --notes-file <file>`。
-- Xposed-Modules-Repo 上传原始 APK 资产时可能会把 release tag 自动规范化成 `versionCode-versionName`，例如 `2-0.2.0`。如果需要用户可见 tag 保持 `v0.2.0`，发布资产使用 zip 包承载 APK，并在发布后核对 release 列表。
-- 发布后必须验证：`gh release list --repo Xposed-Modules-Repo/Gramsieve --limit 5`，以及 `gh release view <tag> --json body,tagName,url`。
+- 禁止在未获当前请求明确授权时使用 `gh release upload --clobber` 或 `gh release edit` 修改既有版本。若误覆盖旧 Release，必须先用发布前保存的原 APK 和原正文恢复旧版本，再创建正确的新版本；资产被重建后的历史下载计数无法恢复，必须如实报告。
+- 创建新版本使用 `gh release create <tag> <apk> --repo Xposed-Modules-Repo/com.tianqianguai.gramsieve --title "GramSieve <versionName>" --notes-file <file> --target main --latest`。
+- 发布后必须验证 `gh release list --repo Xposed-Modules-Repo/com.tianqianguai.gramsieve --limit 5`，并使用 `gh release view <tag> --json body,tagName,url,assets,targetCommitish,name,isDraft,isPrerelease` 核对 Latest 顺序、正文、tag、目标分支、资产名称/大小和 GitHub 返回的 SHA-256 digest。线上 digest 必须与本地 APK 一致。
+- 如果还要在 Telegram 发布频道发版，必须先完成 GitHub Release 验证，再发送同一版本的 APK、对应 Release 链接和简明中文更新说明；频道文案中的版本号、兼容说明与 Star 提示必须与 GitHub Release 一致。
 
 English:
+
+- The canonical release repository is `Xposed-Modules-Repo/com.tianqianguai.gramsieve`. Every `gh release` read or mutation must specify it explicitly; do not use the obsolete `Xposed-Modules-Repo/Gramsieve` name.
+- A user request to “release” means creating a new version by default. Any code, behavior, UI, configuration, or compatibility change since the last public release requires incrementing `versionCode` and applying the appropriate semantic `versionName` bump. Authorization from an earlier task to update a release in place does not carry forward. Replacing an existing release is allowed only when the current request names the existing tag and explicitly asks to keep the version unchanged.
+- New releases use tag `<versionCode>-<versionName>`, title `GramSieve <versionName>`, and asset name `GramSieve-v<versionName>.apk`. Before publishing, the versions in `app/build.gradle.kts`, `output-metadata.json`, and `aapt dump badging` must agree.
+- Rebuild the APK from the final integrated and pushed release commit. Never publish an artifact produced before the version bump, before integration, or by a stale worktree. Fetch and check for unexpected divergence before pushing the exact release commit.
+- Isolated worktrees usually lack the git-ignored `keystore.properties`, and the current Gradle setup falls back to debug signing when release credentials are absent. Therefore, a successful `assembleRelease` is not sufficient. Before upload, `apksigner verify --print-certs` must report the GramSieve production certificate SHA-256 `1d13359dd77d6da41d2d9aaa8fc099e92dd6e76861e0558d8e3bd822e5d6a055` and must not report `CN=Android Debug`. If the task worktree lacks production signing, commit and integrate first, then rebuild from the production-signing main checkout.
+- The APK release gate is `testDebugUnitTest`, `lintDebug`, `assembleRelease`, `git diff --check`, APK metadata verification, production certificate verification, and recording the APK SHA-256. Documentation-only release edits may skip unrelated business tests, but any APK or version change requires the APK gate again.
 - GitHub Release bodies should contain changelog entries only, not download instructions, verification details, or publishing-mechanism notes.
 - Release notes must be bilingual with Chinese first and English second; use `## 更新日志` for Chinese and `## Changelog` for English.
+- Describe only changes since the immediately preceding public release; do not accumulate prior release notes. Keep the API 102 compatibility note and Star request when applicable. Do not mention advance group hotfixes or internal publishing mechanics.
 - Do not pass Markdown notes containing backticks through inline PowerShell `--notes "..."`; PowerShell can turn sequences such as `a` and `v` into control characters. Write a UTF-8 notes file and use `gh release edit/create --notes-file <file>`.
-- Raw APK assets in Xposed-Modules-Repo may normalize the visible release tag to `versionCode-versionName`, such as `2-0.2.0`. If the public tag must remain `v0.2.0`, upload a zip that contains the APK and verify the release list afterward.
-- After publishing, verify with `gh release list --repo Xposed-Modules-Repo/Gramsieve --limit 5` and `gh release view <tag> --json body,tagName,url`.
+- Do not use `gh release upload --clobber` or `gh release edit` on an existing version without explicit authorization in the current request. If an old release is overwritten accidentally, restore its saved original APK and body before creating the correct new release. Recreating an asset resets its download count; report that fact accurately.
+- Create a new release with `gh release create <tag> <apk> --repo Xposed-Modules-Repo/com.tianqianguai.gramsieve --title "GramSieve <versionName>" --notes-file <file> --target main --latest`.
+- After publishing, run `gh release list --repo Xposed-Modules-Repo/com.tianqianguai.gramsieve --limit 5` and `gh release view <tag> --json body,tagName,url,assets,targetCommitish,name,isDraft,isPrerelease`. Verify the Latest ordering, body, tag, target, asset name/size, and GitHub SHA-256 digest against the local APK.
+- For a Telegram channel release, complete GitHub verification first, then send the same-version APK, matching Release link, and concise Chinese changelog. The version, compatibility note, and Star request must match GitHub.
 
 ## Device Connection & Log Capture
 ```powershell
