@@ -2,6 +2,7 @@ package com.tianqianguai.gramsieve.module;
 
 import com.tianqianguai.gramsieve.core.MessageSnapshot;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.regex.Pattern;
 
@@ -10,6 +11,68 @@ final class TelegramMessageNormalizer {
     private static final Pattern WHITESPACE = Pattern.compile("\\s+");
 
     private TelegramMessageNormalizer() {
+    }
+
+    /** Rule creation may start from an uncaptioned tile in a captioned album. */
+    static List<MessageSnapshot> normalizeRuleSources(Object cell, Object messageObject,
+                                                      Object groupedMessages) {
+        List<MessageSnapshot> snapshots = new ArrayList<>();
+        MessageSnapshot selected = normalize(cell, messageObject);
+        if (selected == null) {
+            return snapshots;
+        }
+        snapshots.add(selected);
+        if (!isRuleGroupFor(groupedMessages, messageObject)) {
+            return snapshots;
+        }
+        for (Object member : (List<?>) Reflect.field(groupedMessages, "messages")) {
+            if (sameMessage(member, messageObject) || !sameConversation(member, messageObject)) {
+                continue;
+            }
+            MessageSnapshot snapshot = normalize(cell, member);
+            if (snapshot != null) {
+                // Keep each caption separate: filtering evaluates one member at a time.
+                snapshots.add(snapshot);
+            }
+        }
+        return snapshots;
+    }
+
+    static boolean isRuleGroupFor(Object groupedMessages, Object messageObject) {
+        Object members = Reflect.field(groupedMessages, "messages");
+        if (messageObject == null || !(members instanceof List<?>)) {
+            return false;
+        }
+        for (Object member : (List<?>) members) {
+            if (sameMessage(member, messageObject)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean sameMessage(Object first, Object second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        if (first == second) {
+            return true;
+        }
+        long id = Reflect.asLong(Reflect.invokeIfExists(first, "getId", new Class<?>[0]), 0L);
+        return id != 0L
+                && id == Reflect.asLong(Reflect.invokeIfExists(second, "getId", new Class<?>[0]), 0L)
+                && sameConversation(first, second);
+    }
+
+    private static boolean sameConversation(Object first, Object second) {
+        if (first == null || second == null) {
+            return false;
+        }
+        long dialogId = Reflect.asLong(Reflect.invokeIfExists(first, "getDialogId", new Class<?>[0]), 0L);
+        return dialogId != 0L
+                && dialogId == Reflect.asLong(Reflect.invokeIfExists(second, "getDialogId", new Class<?>[0]), 0L)
+                && Reflect.asInt(Reflect.field(first, "currentAccount"), 0)
+                == Reflect.asInt(Reflect.field(second, "currentAccount"), 0);
     }
 
     static MessageSnapshot normalize(Object cell, Object messageObject) {
