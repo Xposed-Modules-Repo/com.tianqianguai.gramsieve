@@ -21,7 +21,7 @@ final class TelegramMessageNormalizer {
         int currentAccount = Reflect.asInt(Reflect.field(messageObject, "currentAccount"), 0);
         Object messageOwner = Reflect.field(messageObject, "messageOwner");
 
-        String text = normalizeText(Reflect.field(messageObject, "messageText"));
+        String text = resolveText(messageObject, messageOwner);
         String caption = normalizeText(Reflect.field(messageObject, "caption"));
         String buttonText = collectInlineButtons(messageOwner);
         long senderId = resolveSenderId(messageObject, messageOwner);
@@ -59,6 +59,13 @@ final class TelegramMessageNormalizer {
                 collectInlineButtons(pinnedOwner),
                 resolveSenderName(cell, pinnedMessageObject, account, pinnedSenderId)
         );
+    }
+
+    private static String resolveText(Object messageObject, Object messageOwner) {
+        if (Reflect.field(messageOwner, "media") != null) {
+            return normalizeText(Reflect.field(messageOwner, "message"));
+        }
+        return normalizeText(Reflect.field(messageObject, "messageText"));
     }
 
     private static Object resolvePinnedMessageObject(Object messageObject) {

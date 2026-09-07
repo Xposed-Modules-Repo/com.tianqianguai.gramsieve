@@ -104,6 +104,26 @@ public class MessageRuleFactoryTest {
     }
 
     @Test
+    public void exactContentRuleUsesRealCaptionWhenSyntheticMediaTextIsBlank() {
+        MessageSnapshot snapshot = new MessageSnapshot(
+                -1001L,
+                42L,
+                7L,
+                "",
+                "真实媒体说明",
+                "",
+                "sender",
+                "chat",
+                false
+        );
+
+        FilterConfig.RuleSpec rule = MessageRuleFactory.exactContentRule(snapshot);
+
+        assertEquals(FilterConfig.RuleTarget.CAPTION, rule.target);
+        assertTrue(rule.pattern.contains("真实媒体说明"));
+    }
+
+    @Test
     public void equivalentRuleDetectionAvoidsDuplicateAutoRules() {
         FilterConfig.RuleSpec rule = MessageRuleFactory.exactContentRule(new MessageSnapshot(
                 -1001L,
