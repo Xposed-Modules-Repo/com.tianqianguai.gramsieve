@@ -7081,10 +7081,11 @@ final class TelegramHookInstaller {
             return;
         }
         Object selectedMessageObject = messageObject;
+        Object selectedRuleGroup = resolveSelectedRuleGroup(chatActivity, messageView, messageObject);
         blockItem.setTag(R.id.gramsieve_menu_item_id, MENU_ID_BLOCK_MESSAGE);
         uiCallbacks.setClickListener(blockItem, v -> {
             dismissScrimPopup(chatActivity);
-            addRuleForSelectedMessage(v.getContext(), messageView, selectedMessageObject);
+            addRuleForSelectedMessage(v.getContext(), messageView, selectedMessageObject, selectedRuleGroup);
         });
 
         View markItem = createMessageMarkMenuItem(((View) contentView).getContext(), chatActivity);
@@ -8186,10 +8187,32 @@ final class TelegramHookInstaller {
         }
     }
 
-    private void addRuleForSelectedMessage(Context context, View messageView, Object messageObject) {
+    private Object resolveSelectedRuleGroup(Object chatActivity, View messageView, Object messageObject) {
+        Object group = Reflect.invokeIfExists(chatActivity, "getValidGroupedMessage",
+                new Class<?>[]{messageObject.getClass()}, messageObject);
+        if (TelegramMessageNormalizer.isRuleGroupFor(group, messageObject)) {
+            return group;
+        }
+        group = groupedMessagesFromArgs(null, messageView, messageObject);
+        return TelegramMessageNormalizer.isRuleGroupFor(group, messageObject) ? group : null;
+    }
+
+    private void addRuleForSelectedMessage(Context context, View messageView, Object messageObject,
+                                           Object groupedMessages) {
         info("Block-message menu clicked");
-        MessageSnapshot snapshot = TelegramMessageNormalizer.normalize(messageView, messageObject);
-        List<FilterConfig.RuleSpec> rules = MessageRuleFactory.automaticRules(snapshot);
+        Object ruleGroup = TelegramMessageNormalizer.isRuleGroupFor(groupedMessages, messageObject)
+                ? groupedMessages : null;
+        List<MessageSnapshot> sources = TelegramMessageNormalizer.normalizeRuleSources(
+                messageView, messageObject, ruleGroup);
+        MessageSnapshot snapshot = sources.isEmpty() ? null : sources.get(0);
+        List<FilterConfig.RuleSpec> rules = new ArrayList<>();
+        for (MessageSnapshot source : sources) {
+            for (FilterConfig.RuleSpec rule : MessageRuleFactory.automaticRules(source)) {
+                if (!MessageRuleFactory.containsEquivalentRule(rules, rule)) {
+                    rules.add(rule);
+                }
+            }
+        }
         if (snapshot == null || rules.isEmpty()) {
             Toast.makeText(context, localizedNoTextToast(context), Toast.LENGTH_SHORT).show();
             return;
@@ -8211,8 +8234,11 @@ final class TelegramHookInstaller {
         FilterDecision decision = filterEngine.evaluate(updated, snapshot);
         decisionCache.clear();
         if (messageView != null) {
-            UiMutation.apply(messageView, decision, snapshot.stableKey());
-            messageView.requestLayout();
+            DecisionContext decisionContext = ruleGroup == null
+                    ? evaluateSingleDecisionContext(messageView, messageObject, GroupInfo.NONE, true)
+                    : evaluateDecisionContext(messageView, messageObject, ruleGroup);
+            decision = decisionContext.decision;
+            applyDecisionContext(messageView, messageView, decisionContext);
         }
         refreshFilteringAround(messageView);
         info(
