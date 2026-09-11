@@ -264,6 +264,7 @@ final class EnhancementHookInstaller {
     }
 
     private void installInterfaceHooks(ClassLoader classLoader) {
+        hookStoryBar(classLoader);
         hookStoryMarkAsRead(classLoader);
         hookPinnedMessage(classLoader);
         hookSponsoredMessageLoaders(classLoader);
@@ -283,6 +284,29 @@ final class EnhancementHookInstaller {
         hookHomeActions(classLoader);
         hookPremiumStickerTab(classLoader);
         hookServiceStories(classLoader);
+    }
+
+    private void hookStoryBar(ClassLoader classLoader) {
+        Class<?> storiesCell = load(classLoader, "org.telegram.ui.Stories.DialogStoriesCell");
+        if (storiesCell == null) {
+            return;
+        }
+        for (Method method : storiesCell.getDeclaredMethods()) {
+            String name = method.getName();
+            if (!(name.equals("setStories") || name.equals("update") || name.equals("onAttachedToWindow")
+                    || name.equals("onMeasure") || name.equals("onLayout"))) {
+                continue;
+            }
+            hook(method, chain -> {
+                Object result = chain.proceed();
+                if (enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
+                        && chain.getThisObject() instanceof View) {
+                    ((View) chain.getThisObject()).setVisibility(View.GONE);
+                }
+                return result;
+            });
+        }
+        info("Enhancements: installed Story bar visibility hooks");
     }
 
     private void hookStoryMarkAsRead(ClassLoader classLoader) {
