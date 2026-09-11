@@ -286,11 +286,16 @@ final class EnhancementHookInstaller {
     }
 
     private void hookStoryMarkAsRead(ClassLoader classLoader) {
-        Class<?> storiesList = load(classLoader, "org.telegram.ui.Stories.StoriesController$StoriesList");
-        if (storiesList == null) {
-            return;
-        }
-        for (Method method : storiesList.getDeclaredMethods()) {
+        String[] storyListTypes = {
+                "StoriesList", "SearchStoriesList", "BotPreviewsList", "StoryRepostsList"
+        };
+        for (String typeName : storyListTypes) {
+            Class<?> storiesList = load(classLoader,
+                    "org.telegram.ui.Stories.StoriesController$" + typeName);
+            if (storiesList == null) {
+                continue;
+            }
+            for (Method method : storiesList.getDeclaredMethods()) {
             if (!(method.getName().equals("markAsRead") || method.getName().equals("markStoryAsRead"))
                     || method.getReturnType() != boolean.class || method.getParameterCount() != 1) {
                 continue;
@@ -298,6 +303,7 @@ final class EnhancementHookInstaller {
             hook(method, chain -> enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
                     ? false : chain.proceed());
             info("Enhancements: installed Story mark-as-read hook " + method.getName());
+            }
         }
     }
 
