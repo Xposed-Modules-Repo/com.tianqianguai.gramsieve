@@ -293,7 +293,8 @@ final class EnhancementHookInstaller {
         }
         for (Method method : storiesCell.getDeclaredMethods()) {
             String name = method.getName();
-            if (!(name.equals("setStories") || name.equals("update") || name.equals("onAttachedToWindow")
+            if (!(name.equals("setStories") || name.equals("update") || name.equals("updateItems")
+                    || name.equals("onResume") || name.equals("onAttachedToWindow")
                     || name.equals("onMeasure") || name.equals("onLayout"))) {
                 continue;
             }
