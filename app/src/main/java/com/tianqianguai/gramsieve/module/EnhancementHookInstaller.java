@@ -109,7 +109,8 @@ final class EnhancementHookInstaller {
             Class<?>[] parameters = method.getParameterTypes();
             if (!("sendRequest".equals(name) || "sendRequestInternal".equals(name))
                     || parameters.length == 0
-                    || !tlObject.isAssignableFrom(parameters[0])) {
+                    || (!tlObject.isAssignableFrom(parameters[0])
+                    && !"java.lang.Object".equals(parameters[0].getName()))) {
                 continue;
             }
             hook(method, chain -> {
@@ -137,7 +138,7 @@ final class EnhancementHookInstaller {
             return true;
         }
         if (config.isEnabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
-                && containsAny(name, STORY_VIEW_REQUESTS)) {
+                && isStoryViewRequest(name)) {
             return true;
         }
         if (containsAny(name, READ_REQUESTS)) {
@@ -152,6 +153,15 @@ final class EnhancementHookInstaller {
         }
         return config.isEnabled(EnhancementConfig.Feature.DISABLE_PERSONALIZED_ADS)
                 && (name.contains("saveAppLog") || name.contains("saveRecentMeUrls"));
+    }
+
+    private static boolean isStoryViewRequest(String className) {
+        if (containsAny(className, STORY_VIEW_REQUESTS)) {
+            return true;
+        }
+        String lower = className == null ? "" : className.toLowerCase(Locale.ROOT);
+        return lower.contains("stories")
+                && (lower.contains("incrementstoryviews") || lower.contains("readstories"));
     }
 
     private void applyMessageAffixes(Object request, EnhancementConfig config) {
