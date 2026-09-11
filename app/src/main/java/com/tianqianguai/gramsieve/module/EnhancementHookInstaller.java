@@ -8,6 +8,7 @@ import android.os.SystemClock;
 import android.text.SpannableStringBuilder;
 import android.text.TextPaint;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Toast;
 
 import com.tianqianguai.gramsieve.config.ModuleLogger;
@@ -301,7 +302,14 @@ final class EnhancementHookInstaller {
                 if (enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
                     Object cell = Reflect.field(chain.getThisObject(), "dialogStoriesCell");
                     if (cell instanceof View) {
-                        ((View) cell).setVisibility(View.GONE);
+                        View storyView = (View) cell;
+                        storyView.setVisibility(View.GONE);
+                        ViewGroup.LayoutParams params = storyView.getLayoutParams();
+                        if (params != null && params.height != 0) {
+                            params.height = 0;
+                            storyView.setLayoutParams(params);
+                        }
+                        storyView.requestLayout();
                     }
                     Reflect.setField(chain.getThisObject(), "dialogStoriesCellVisible", false);
                 }
