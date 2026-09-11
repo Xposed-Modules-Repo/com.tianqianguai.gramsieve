@@ -264,6 +264,7 @@ final class EnhancementHookInstaller {
     }
 
     private void installInterfaceHooks(ClassLoader classLoader) {
+        hookStoryMarkAsRead(classLoader);
         hookPinnedMessage(classLoader);
         hookSponsoredMessageLoaders(classLoader);
         hookSwipeBack(classLoader, "org.telegram.ui.ChatActivity", EnhancementConfig.Feature.DISABLE_CHAT_SWIPE_BACK);
@@ -282,6 +283,22 @@ final class EnhancementHookInstaller {
         hookHomeActions(classLoader);
         hookPremiumStickerTab(classLoader);
         hookServiceStories(classLoader);
+    }
+
+    private void hookStoryMarkAsRead(ClassLoader classLoader) {
+        Class<?> storiesList = load(classLoader, "org.telegram.ui.Stories.StoriesController$StoriesList");
+        if (storiesList == null) {
+            return;
+        }
+        for (Method method : storiesList.getDeclaredMethods()) {
+            if (!(method.getName().equals("markAsRead") || method.getName().equals("markStoryAsRead"))
+                    || method.getReturnType() != boolean.class || method.getParameterCount() != 1) {
+                continue;
+            }
+            hook(method, chain -> enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
+                    ? false : chain.proceed());
+            info("Enhancements: installed Story mark-as-read hook " + method.getName());
+        }
     }
 
     private void hookPinnedMessage(ClassLoader classLoader) {
