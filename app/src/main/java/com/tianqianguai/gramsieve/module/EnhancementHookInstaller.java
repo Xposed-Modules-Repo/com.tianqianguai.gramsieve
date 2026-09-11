@@ -264,6 +264,7 @@ final class EnhancementHookInstaller {
     }
 
     private void installInterfaceHooks(ClassLoader classLoader) {
+        hookDialogsStoryVisibility(classLoader);
         hookStoryBar(classLoader);
         hookStoryMarkAsRead(classLoader);
         hookPinnedMessage(classLoader);
@@ -284,6 +285,30 @@ final class EnhancementHookInstaller {
         hookHomeActions(classLoader);
         hookPremiumStickerTab(classLoader);
         hookServiceStories(classLoader);
+    }
+
+    private void hookDialogsStoryVisibility(ClassLoader classLoader) {
+        Class<?> dialogs = load(classLoader, "org.telegram.ui.DialogsActivity");
+        if (dialogs == null) {
+            return;
+        }
+        for (Method method : dialogs.getDeclaredMethods()) {
+            if (!method.getName().equals("updateStoriesVisibility") || method.getParameterCount() != 1) {
+                continue;
+            }
+            hook(method, chain -> {
+                Object result = chain.proceed();
+                if (enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
+                    Object cell = Reflect.field(chain.getThisObject(), "dialogStoriesCell");
+                    if (cell instanceof View) {
+                        ((View) cell).setVisibility(View.GONE);
+                    }
+                    Reflect.setField(chain.getThisObject(), "dialogStoriesCellVisible", false);
+                }
+                return result;
+            });
+        }
+        info("Enhancements: installed DialogsActivity Story visibility hook");
     }
 
     private void hookStoryBar(ClassLoader classLoader) {
