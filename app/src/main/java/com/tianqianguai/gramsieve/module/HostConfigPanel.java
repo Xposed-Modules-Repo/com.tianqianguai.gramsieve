@@ -319,7 +319,8 @@ final class HostConfigPanel {
     }
 
     static boolean isTestedEnhancementFeature(EnhancementConfig.Feature feature) {
-        return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE;
+        return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
+                || feature == EnhancementConfig.Feature.HIDE_STORY_BAR;
     }
 
     static boolean isFeatureSectionExpandedByDefault(String section) {
@@ -339,6 +340,7 @@ final class HostConfigPanel {
                 "mark_jump",
                 "browse_position",
                 "persistent_download_button",
+                "hide_story_bar",
                 "download_select_all",
                 "proactive_loading_anti_recall",
                 "versioned_edit_history",
@@ -855,6 +857,16 @@ final class HostConfigPanel {
                 "Select All is always available in download-manager selection mode. The switch only keeps Telegram's native download entry visible."
         ));
 
+        LinearLayout home = addCard(container);
+        addTitle(home, t("首页界面", "Home screen"));
+        Switch hideStoryBar = addFeatureSwitch(home, featureTitle(EnhancementConfig.Feature.HIDE_STORY_BAR));
+        hideStoryBar.setChecked(baseConfig.enhancements.isEnabled(EnhancementConfig.Feature.HIDE_STORY_BAR));
+        enhancementSwitches.put(EnhancementConfig.Feature.HIDE_STORY_BAR, hideStoryBar);
+        addInfo(home, t(
+                "隐藏搜索聊天框上方的 Story 横栏并收起占位；关闭后恢复显示。",
+                "Hide the Story bar above Search chats and remove its space. Turn off to restore it."
+        ));
+
         buildEditHistoryCard(container);
 
         LinearLayout preservation = addCard(container);
@@ -931,6 +943,9 @@ final class HostConfigPanel {
         if (enhancementSwitches.containsKey(
                 EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE)) {
             testedControls.add(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE.key);
+        }
+        if (enhancementSwitches.containsKey(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
+            testedControls.add(EnhancementConfig.Feature.HIDE_STORY_BAR.key);
         }
         if (!chatMode && editHistoryEnabledSwitch != null) {
             testedControls.add("edit_history_enabled");

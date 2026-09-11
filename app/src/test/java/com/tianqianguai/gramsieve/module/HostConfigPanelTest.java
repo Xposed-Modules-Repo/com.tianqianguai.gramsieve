@@ -32,6 +32,9 @@ public class HostConfigPanelTest {
         assertTrue(HostConfigPanel.testedCapabilityKeys().contains("download_select_all"));
         assertTrue(HostConfigPanel.testedCapabilityKeys().contains("mark_jump"));
         assertTrue(HostConfigPanel.testedCapabilityKeys().contains("original_media_viewer"));
+        assertTrue(HostConfigPanel.isTestedEnhancementFeature(EnhancementConfig.Feature.HIDE_STORY_BAR));
+        assertFalse(HostConfigPanel.isTestedEnhancementFeature(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS));
+        assertTrue(HostConfigPanel.testedCapabilityKeys().contains("hide_story_bar"));
     }
 
     @Test
