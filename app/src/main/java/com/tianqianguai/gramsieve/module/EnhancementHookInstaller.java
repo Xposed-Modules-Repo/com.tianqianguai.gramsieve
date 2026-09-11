@@ -299,7 +299,7 @@ final class EnhancementHookInstaller {
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
+                if (storyBarHidden()) {
                     Object cell = Reflect.field(chain.getThisObject(), "dialogStoriesCell");
                     if (cell instanceof View) {
                         View storyView = (View) cell;
@@ -333,7 +333,7 @@ final class EnhancementHookInstaller {
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)
+                if (storyBarHidden()
                         && chain.getThisObject() instanceof View) {
                     ((View) chain.getThisObject()).setVisibility(View.GONE);
                 }
@@ -341,6 +341,11 @@ final class EnhancementHookInstaller {
             });
         }
         info("Enhancements: installed Story bar visibility hooks");
+    }
+
+    private boolean storyBarHidden() {
+        return enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)
+                || enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS);
     }
 
     private void hookStoryMarkAsRead(ClassLoader classLoader) {
