@@ -259,6 +259,9 @@ final class TelegramHookInstaller {
                 refreshSettingsList(host);
             } else if (isFragment(host, "DialogsActivity")) {
                 ensureDownloadUiLifecycle(host);
+                enhancementHooks.refreshStoryBar(host, currentCliConfig(hostApplicationContext).enhancements);
+            } else if (isFragment(host, "MainTabsActivity")) {
+                enhancementHooks.refreshStoryBar(host, currentCliConfig(hostApplicationContext).enhancements);
             }
             info("UIRebind: completed fragment=" + host.getClass().getSimpleName());
         };
@@ -8271,7 +8274,24 @@ final class TelegramHookInstaller {
                 && updated.enhancements.isEnabledForGramSieve(
                 EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE);
         refreshPersistentDownloadButtonUi("config-save");
+        refreshStoryBarUi(updated.enhancements);
         return updated;
+    }
+
+    private void refreshStoryBarUi(EnhancementConfig enhancements) {
+        Object host = resolveCurrentTelegramFragment(savedClassLoader);
+        if (!isFragment(host, "DialogsActivity") && !isFragment(host, "MainTabsActivity")) {
+            return;
+        }
+        View anchor = resolveHostFragmentView(host);
+        if (anchor != null) {
+            EnhancementConfig snapshot = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
+            uiCallbacks.post(anchor, () -> {
+                if (!retiring) {
+                    enhancementHooks.refreshStoryBar(host, snapshot);
+                }
+            });
+        }
     }
 
     private boolean isModuleProviderVisible(Context hostContext) {

@@ -1,6 +1,7 @@
 package com.tianqianguai.gramsieve.module;
 
 import android.annotation.SuppressLint;
+import android.animation.Animator;
 import android.content.Context;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -266,7 +267,6 @@ final class EnhancementHookInstaller {
 
     private void installInterfaceHooks(ClassLoader classLoader) {
         hookDialogsStoryVisibility(classLoader);
-        hookStoryBar(classLoader);
         hookStoryMarkAsRead(classLoader);
         hookPinnedMessage(classLoader);
         hookSponsoredMessageLoaders(classLoader);
@@ -294,58 +294,103 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : dialogs.getDeclaredMethods()) {
-            if (!method.getName().equals("updateStoriesVisibility") || method.getParameterCount() != 1) {
-                continue;
-            }
-            hook(method, chain -> {
-                Object result = chain.proceed();
-                if (storyBarHidden()) {
-                    Object cell = Reflect.field(chain.getThisObject(), "dialogStoriesCell");
-                    if (cell instanceof View) {
-                        View storyView = (View) cell;
-                        storyView.setVisibility(View.GONE);
-                        ViewGroup.LayoutParams params = storyView.getLayoutParams();
-                        if (params != null && params.height != 0) {
-                            params.height = 0;
-                            storyView.setLayoutParams(params);
-                        }
-                        storyView.requestLayout();
+            if (method.getName().equals("updateStoriesVisibility")
+                    && method.getReturnType() == void.class
+                    && method.getParameterCount() == 1
+                    && method.getParameterTypes()[0] == boolean.class) {
+                hook(method, chain -> {
+                    if (shouldHideStoryBar(config())) {
+                        collapseStoryBar(chain.getThisObject());
+                        return null;
                     }
-                    Reflect.setField(chain.getThisObject(), "dialogStoriesCellVisible", false);
-                }
-                return result;
-            });
+                    restoreStoryBarHeight(chain.getThisObject());
+                    return chain.proceed();
+                });
+            } else if (method.getName().equals("onResume") || method.getName().equals("createView")) {
+                hook(method, chain -> {
+                    Object result = chain.proceed();
+                    refreshStoryBar(chain.getThisObject(), config());
+                    return result;
+                });
+            }
         }
         info("Enhancements: installed DialogsActivity Story visibility hook");
     }
 
-    private void hookStoryBar(ClassLoader classLoader) {
-        Class<?> storiesCell = load(classLoader, "org.telegram.ui.Stories.DialogStoriesCell");
-        if (storiesCell == null) {
+    void refreshStoryBar(Object dialogs, EnhancementConfig enhancements) {
+        if (dialogs != null && "org.telegram.ui.MainTabsActivity".equals(dialogs.getClass().getName())) {
+            dialogs = Reflect.invokeIfExists(dialogs, "getDialogsActivity", new Class<?>[0]);
+        }
+        if (!active || dialogs == null || !"org.telegram.ui.DialogsActivity".equals(dialogs.getClass().getName())) {
             return;
         }
-        for (Method method : storiesCell.getDeclaredMethods()) {
-            String name = method.getName();
-            if (!(name.equals("setStories") || name.equals("update") || name.equals("updateItems")
-                    || name.equals("onResume") || name.equals("onAttachedToWindow")
-                    || name.equals("onMeasure") || name.equals("onLayout"))) {
-                continue;
-            }
-            hook(method, chain -> {
-                Object result = chain.proceed();
-                if (storyBarHidden()
-                        && chain.getThisObject() instanceof View) {
-                    ((View) chain.getThisObject()).setVisibility(View.GONE);
-                }
-                return result;
-            });
-        }
-        info("Enhancements: installed Story bar visibility hooks");
+        cachedEnhancements = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
+        lastConfigRefreshAt = SystemClock.elapsedRealtime();
+        restoreStoryBarHeight(dialogs);
+        Reflect.invokeIfExists(dialogs, "updateStoriesVisibility", new Class<?>[]{boolean.class}, false);
+        info("StoryBar: refreshed hidden=" + shouldHideStoryBar(cachedEnhancements)
+                + " visible=" + Reflect.field(dialogs, "dialogStoriesCellVisible")
+                + " hasStories=" + Reflect.field(dialogs, "hasStories")
+                + " progress=" + Reflect.field(dialogs, "progressToShowStories"));
     }
 
-    private boolean storyBarHidden() {
-        return enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)
-                || enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS);
+    static boolean shouldHideStoryBar(EnhancementConfig config) {
+        return config != null && config.isEnabledForGramSieve(EnhancementConfig.Feature.HIDE_STORY_BAR);
+    }
+
+    private void collapseStoryBar(Object dialogs) {
+        Object cell = Reflect.field(dialogs, "dialogStoriesCell");
+        if (!(cell instanceof View)) {
+            return;
+        }
+        for (String field : new String[]{"storiesVisibilityAnimator", "storiesVisibilityAnimator2"}) {
+            Object animator = Reflect.field(dialogs, field);
+            if (animator instanceof Animator) {
+                ((Animator) animator).cancel();
+                Reflect.setField(dialogs, field, null);
+            }
+        }
+        collapseStoryBarLayoutState(dialogs);
+        ((View) cell).setVisibility(View.GONE);
+        Object pages = Reflect.field(dialogs, "viewPages");
+        if (pages instanceof Object[]) {
+            for (Object page : (Object[]) pages) {
+                requestStoryLayout(Reflect.field(page, "listView"));
+            }
+        }
+        requestStoryLayout(Reflect.field(dialogs, "fragmentView"));
+    }
+
+    static void collapseStoryBarLayoutState(Object dialogs) {
+        // Match Telegram's no-Stories layout; the parent reserves space independently of the cell height.
+        Reflect.setField(dialogs, "dialogStoriesCellVisible", false);
+        Reflect.setField(dialogs, "hasStories", false);
+        Reflect.setField(dialogs, "hasOnlySlefStories", false);
+        Reflect.setField(dialogs, "animateToHasStories", false);
+        Reflect.setField(dialogs, "progressToDialogStoriesCell", 0f);
+        Reflect.setField(dialogs, "progressToShowStories", 0f);
+        Reflect.setField(dialogs, "scrollAdditionalOffset", 0f);
+        Reflect.invokeIfExists(dialogs, "setScrollY", new Class<?>[]{float.class}, 0f);
+    }
+
+    private void restoreStoryBarHeight(Object dialogs) {
+        Object cell = Reflect.field(dialogs, "dialogStoriesCell");
+        if (cell instanceof View) {
+            View storyView = (View) cell;
+            ViewGroup.LayoutParams params = storyView.getLayoutParams();
+            // Repair height=0 left on a live view by the earlier implementation during hot reload.
+            if (params != null && params.height == 0) {
+                params.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+                storyView.setLayoutParams(params);
+            }
+        }
+    }
+
+    private void requestStoryLayout(Object value) {
+        if (value instanceof View) {
+            ((View) value).requestLayout();
+            ((View) value).invalidate();
+        }
     }
 
     private void hookStoryMarkAsRead(ClassLoader classLoader) {
