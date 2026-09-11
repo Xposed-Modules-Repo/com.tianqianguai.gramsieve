@@ -299,7 +299,7 @@ final class EnhancementHookInstaller {
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
+                if (enabled(EnhancementConfig.Feature.HIDE_STORY_BAR)
                         && chain.getThisObject() instanceof View) {
                     ((View) chain.getThisObject()).setVisibility(View.GONE);
                 }

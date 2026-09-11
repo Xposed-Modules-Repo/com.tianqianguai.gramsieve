@@ -2557,6 +2557,8 @@ final class HostConfigPanel {
                 return t("隐藏聊天置顶横幅", "Hide pinned-message banner");
             case HIDE_SERVICE_STORIES:
                 return t("隐藏服务账号 Story", "Hide service-account Stories");
+            case HIDE_STORY_BAR:
+                return t("隐藏 Story 横栏", "Hide Story bar");
             case HIDE_PREMIUM_STICKER_TAB:
                 return t("隐藏高级贴纸页", "Hide premium sticker tab");
             case HIDE_CONTACTS_TAB:

@@ -208,6 +208,7 @@ public final class EnhancementConfig {
         HIDE_SPONSORED_MESSAGES("hide_sponsored_messages", Category.INTERFACE),
         HIDE_PINNED_MESSAGE("hide_pinned_message", Category.INTERFACE),
         HIDE_SERVICE_STORIES("hide_service_stories", Category.INTERFACE),
+        HIDE_STORY_BAR("hide_story_bar", Category.INTERFACE),
         HIDE_PREMIUM_STICKER_TAB("hide_premium_sticker_tab", Category.INTERFACE),
         HIDE_CONTACTS_TAB("hide_contacts_tab", Category.INTERFACE),
         HIDE_HOME_ACTION_BUTTONS("hide_home_action_buttons", Category.INTERFACE),
