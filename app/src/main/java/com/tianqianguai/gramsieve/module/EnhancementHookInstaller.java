@@ -253,6 +253,7 @@ final class EnhancementHookInstaller {
             return;
         }
         hookBooleanMethods(messageObject, "canForwardMessage", EnhancementConfig.Feature.ALLOW_FORWARD, true);
+        hookSecretMediaSavePolicy(classLoader);
         hookBooleanMethodsAny(
                 messageObject,
                 "canSaveMedia",
@@ -263,6 +264,32 @@ final class EnhancementHookInstaller {
                 EnhancementConfig.Feature.SAVE_STORIES
         );
         hookBooleanMethods(messageObject, "isPremiumSticker", EnhancementConfig.Feature.DISABLE_PREMIUM_STICKER_ANIMATION, false);
+    }
+
+    private void hookSecretMediaSavePolicy(ClassLoader classLoader) {
+        Class<?> helper = load(classLoader, "org.telegram.messenger.SaveToGallerySettingsHelper");
+        if (helper == null) {
+            return;
+        }
+        for (Method method : helper.getDeclaredMethods()) {
+            if (!"needSave".equals(method.getName()) || method.getReturnType() != boolean.class
+                    || !Modifier.isStatic(method.getModifiers())) {
+                continue;
+            }
+            hook(method, chain -> {
+                if (enabled(EnhancementConfig.Feature.SAVE_SECRET_MEDIA)) {
+                    for (Object arg : chain.getArgs()) {
+                        if (arg != null && Boolean.TRUE.equals(
+                                Reflect.invokeIfExists(arg, "isSecretMedia", new Class<?>[0]))) {
+                            info("SaveToGallery: allowing secret media");
+                            return true;
+                        }
+                    }
+                }
+                return chain.proceed();
+            });
+        }
+        info("Enhancements: installed secret-media save policy hooks");
     }
 
     private void installInterfaceHooks(ClassLoader classLoader) {
