@@ -761,6 +761,7 @@ final class HostConfigPanel {
                 Switch toggle = addFeatureSwitch(card, featureTitle(feature));
                 toggle.setChecked(baseConfig.enhancements.isEnabled(feature));
                 enhancementSwitches.put(feature, toggle);
+                bindImmediateFeatureSave(feature, toggle);
             }
             if (category == EnhancementConfig.Category.MESSAGES) {
                 addDivider(card);
@@ -854,6 +855,7 @@ final class HostConfigPanel {
                 EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE,
                 keepDownloadButton
         );
+        bindImmediateFeatureSave(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE, keepDownloadButton);
         addInfo(downloads, t(
                 "下载管理页多选模式的“全选”默认生效；常驻开关只控制 Telegram 原生下载入口是否始终可见。",
                 "Select All is always available in download-manager selection mode. The switch only keeps Telegram's native download entry visible."
@@ -864,6 +866,7 @@ final class HostConfigPanel {
         Switch hideStoryBar = addFeatureSwitch(home, featureTitle(EnhancementConfig.Feature.HIDE_STORY_BAR));
         hideStoryBar.setChecked(baseConfig.enhancements.isEnabled(EnhancementConfig.Feature.HIDE_STORY_BAR));
         enhancementSwitches.put(EnhancementConfig.Feature.HIDE_STORY_BAR, hideStoryBar);
+        bindImmediateFeatureSave(EnhancementConfig.Feature.HIDE_STORY_BAR, hideStoryBar);
         addInfo(home, t(
                 "隐藏搜索聊天框上方的 Story 横栏并收起占位；关闭后恢复显示。",
                 "Hide the Story bar above Search chats and remove its space. Turn off to restore it."
@@ -879,6 +882,7 @@ final class HostConfigPanel {
                 EnhancementConfig.Feature.SAVE_SECRET_MEDIA
         ));
         enhancementSwitches.put(EnhancementConfig.Feature.SAVE_SECRET_MEDIA, saveSecretMedia);
+        bindImmediateFeatureSave(EnhancementConfig.Feature.SAVE_SECRET_MEDIA, saveSecretMedia);
         addInfo(secretMedia, t(
                 "允许保存 Telegram 私密媒体；关闭后恢复 Telegram 原生限制。",
                 "Allow saving Telegram secret media; turn off to restore Telegram's native restriction."
@@ -1804,6 +1808,36 @@ final class HostConfigPanel {
         config.outgoingPrefix = valueOf(outgoingPrefixInput);
         config.outgoingSuffix = valueOf(outgoingSuffixInput);
         return config.sanitize();
+    }
+
+    private void bindImmediateFeatureSave(EnhancementConfig.Feature feature, Switch toggle) {
+        if (feature == null || toggle == null) {
+            return;
+        }
+        toggle.setOnCheckedChangeListener((button, checked) -> persistFeatureImmediately(feature, checked));
+    }
+
+    private void persistFeatureImmediately(EnhancementConfig.Feature feature, boolean checked) {
+        if (!acceptingWorkers || chatMode) {
+            return;
+        }
+        try {
+            FilterConfig updated = baseConfig.deepCopy();
+            updated.enhancements.setEnabled(feature, checked);
+            updated.updatedAtEpochMs = System.currentTimeMillis();
+            FilterConfig saved = saver.save(updated);
+            FilterConfig effective = saved == null ? updated : saved;
+            baseConfig.enhancements = effective.enhancements == null
+                    ? new EnhancementConfig() : effective.enhancements.deepCopy();
+            baseConfig.updatedAtEpochMs = effective.updatedAtEpochMs;
+            if (afterSave != null) {
+                afterSave.run();
+            }
+        } catch (Throwable throwable) {
+            ModuleLogger.warn(ModuleLogger.CAT_CONFIG, ModuleLogger.TAG,
+                    "Immediate feature save failed feature=" + feature.key + " reason="
+                            + throwable.getClass().getSimpleName());
+        }
     }
 
     private RuleDraftMatrix collectMatrix(int kind) {
