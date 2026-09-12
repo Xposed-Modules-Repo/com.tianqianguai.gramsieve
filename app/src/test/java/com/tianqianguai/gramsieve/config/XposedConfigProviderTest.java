@@ -45,6 +45,30 @@ public final class XposedConfigProviderTest {
     }
 
     @Test
+    public void existingTelegramHostPreferencesWinEvenWhenRemoteTimestampIsNewer() {
+        FilterConfig hostConfig = FilterConfig.createDefault();
+        hostConfig.updatedAtEpochMs = 20L;
+        hostConfig.globalRules.add(new FilterConfig.RuleSpec());
+        SharedPreferences hostPreferences = preferencesWith(hostConfig);
+
+        FilterConfig remoteConfig = FilterConfig.createDefault();
+        remoteConfig.updatedAtEpochMs = 30L;
+        SharedPreferences remotePreferences = preferencesWith(remoteConfig);
+
+        Context context = mock(Context.class);
+        when(context.getSharedPreferences("gramsieve_host_rules", Context.MODE_PRIVATE))
+                .thenReturn(hostPreferences);
+        XposedConfigProvider provider = new XposedConfigProvider(
+                "com.tianqianguai.gramsieve", () -> remotePreferences, () -> 1_000L
+        );
+
+        FilterConfig loaded = provider.getConfig(context);
+
+        assertTrue(loaded.globalRules.size() == 1);
+        assertTrue(loaded.updatedAtEpochMs == 20L);
+    }
+
+    @Test
     public void persistsCompleteSnapshotInsideTelegramHostPreferences() {
         FilterConfig config = FilterConfig.createDefault();
         config.updatedAtEpochMs = 50L;
