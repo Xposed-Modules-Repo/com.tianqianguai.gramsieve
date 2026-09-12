@@ -24,11 +24,26 @@ final class FeatureUiProbe {
         Object profile = isOwner(visible, "ProfileActivity") ? visible : null;
         result.put("home", fields(home, "dialogStoriesCell", "dialogStoriesCellVisible", "hasStories",
                 "progressToShowStories", "scrollYOffset", "floatingButton", "floatingButtonContainer",
-                "floatingButton2", "contactsItem", "contactsButton", "contactsTab"));
+                "floatingButton2", "floatingButton3", "floatingButtonStories", "contactsItem", "contactsButton", "contactsTab"));
         result.put("tabs", fields(isOwner(foreground, "MainTabsActivity") ? foreground : null, "tabs"));
-        result.put("profile", fields(profile, "phoneTextView", "phoneRow", "nameTextView", "onlineTextView"));
+        result.put("profile", fields(profile, "phoneTextView", "phoneRow", "rowCount", "nameTextView", "onlineTextView"));
         result.put("chat", fields(chat, "pinnedMessageView", "pinnedMessageViewAnimator", "avatarContainer"));
         result.put("subtitle", fields(Reflect.field(chat, "avatarContainer"), "subtitleTextView"));
+        Object enter = Reflect.field(chat, "chatActivityEnterView");
+        result.put("input", fields(enter, "isInVideoMode", "recordingAudioVideo", "audioVideoSendButton"));
+        result.put("stickers", fields(Reflect.field(enter, "emojiView"), "premiumTabNum", "stickersTab"));
+        result.put("mediaAction", EnhancementMediaActions.result());
+        Object popup = Reflect.field(chat, "scrimPopupWindow");
+        Object content = Reflect.invokeIfExists(popup, "getContentView", new Class<?>[0]);
+        List<Map<String, Object>> menuItems = new ArrayList<>();
+        if (content instanceof View) collectMenuItems((View) content, menuItems);
+        result.put("messageMenuItems", menuItems);
+        Object story = EnhancementMediaActions.storyOwner();
+        Object storyPopup = Reflect.field(story, "popupMenu");
+        Object storyLayout = Reflect.field(storyPopup, "popupLayout");
+        List<Map<String, Object>> storyItems = new ArrayList<>();
+        if (storyLayout instanceof View) collectMenuItems((View) storyLayout, storyItems);
+        result.put("storyMenuItems", storyItems);
         List<Map<String, Object>> cells = new ArrayList<>();
         Object list = Reflect.field(chat, "chatListView");
         if (list instanceof ViewGroup) {
@@ -53,9 +68,30 @@ final class FeatureUiProbe {
         return result;
     }
 
+    private static void collectMenuItems(View view, List<Map<String, Object>> items) {
+        if (items.size() >= 30) return;
+        if (view.getClass().getName().equals("org.telegram.ui.ActionBar.ActionBarMenuSubItem")) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            Object tag = view.getTag();
+            item.put("tag", tag instanceof String ? tag : null);
+            item.put("view", value(view));
+            Object textView = Reflect.field(view, "textView");
+            Object label = Reflect.invokeIfExists(textView, "getText", new Class<?>[0]);
+            item.put("label", label instanceof CharSequence ? label.toString() : "");
+            items.add(item);
+        } else if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int i = 0; i < group.getChildCount(); i++) collectMenuItems(group.getChildAt(i), items);
+        }
+    }
+
     private static boolean isOwner(Object value, String name) {
-        for (Class<?> c = value == null ? null : value.getClass(); c != null; c = c.getSuperclass()) {
-            if (c.getName().equals("org.telegram.ui." + name)) {
+        return hasType(value == null ? null : value.getClass(), "org.telegram.ui." + name);
+    }
+
+    static boolean hasType(Class<?> type, String name) {
+        for (Class<?> c = type; c != null; c = c.getSuperclass()) {
+            if (c.getName().equals(name)) {
                 return true;
             }
         }
@@ -126,7 +162,7 @@ final class FeatureUiProbe {
             result.put("globallyVisible", view.getGlobalVisibleRect(bounds));
             result.put("bounds", new int[]{bounds.left, bounds.top, bounds.right, bounds.bottom});
             Object rawText = view instanceof TextView ? ((TextView) view).getText()
-                    : view.getClass().getName().startsWith("org.telegram.ui.ActionBar.SimpleTextView")
+                    : hasType(view.getClass(), "org.telegram.ui.ActionBar.SimpleTextView")
                     ? Reflect.invokeIfExists(view, "getText", new Class<?>[0]) : null;
             if (rawText instanceof CharSequence) {
                 CharSequence text = (CharSequence) rawText;
