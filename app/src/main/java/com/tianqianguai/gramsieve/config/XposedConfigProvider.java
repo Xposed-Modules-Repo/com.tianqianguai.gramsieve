@@ -55,7 +55,10 @@ public final class XposedConfigProvider {
         lastCheckedAt = now;
         FilterConfig hostConfig = loadFromHostPreferences(context);
         FilterConfig remotePrefsConfig = loadFromRemotePreferences();
-        FilterConfig preferredConfig = newerConfig(hostConfig, remotePrefsConfig);
+        // Telegram-host preferences are the authoritative store for all in-host settings.
+        // Remote preferences can lag or contain a partial/default snapshot after an APK update;
+        // allowing that snapshot to win by timestamp can erase rules and feature toggles.
+        FilterConfig preferredConfig = hostConfig != null ? hostConfig : remotePrefsConfig;
         if (preferredConfig != null) {
             if (hasNewerAuthoritativeCache(preferredConfig)) {
                 return cachedConfig;
