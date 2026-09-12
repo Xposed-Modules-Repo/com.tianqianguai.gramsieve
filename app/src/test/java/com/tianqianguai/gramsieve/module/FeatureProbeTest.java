@@ -71,6 +71,14 @@ public class FeatureProbeTest {
         assertTrue(((List<?>) snapshot.get("items")).isEmpty());
     }
 
+    @Test
+    public void anonymousUiSubclassesAreRecognizedByTheirSuperclass() {
+        assertTrue(FeatureUiProbe.hasType(ChildTarget.class, FakeTarget.class.getName()));
+        assertFalse(FeatureUiProbe.hasType(ChildTarget.class, "unknown.View"));
+    }
+
+    static class ChildTarget extends FakeTarget { }
+
     static class FakeTarget {
         static int invoked;
         int phoneRow;

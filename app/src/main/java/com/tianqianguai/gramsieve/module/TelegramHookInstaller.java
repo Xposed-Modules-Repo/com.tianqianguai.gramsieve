@@ -79,6 +79,7 @@ import io.github.libxposed.api.XposedModule;
 final class TelegramHookInstaller {
     private static final String TAG = "GramSieve";
     private static final Gson PROBE_JSON = new GsonBuilder().serializeNulls().create();
+    private volatile Method messageMenuHook;
     private static final String MODULE_PACKAGE = "com.tianqianguai.gramsieve";
     private static final String CONFIG_MODE_GLOBAL = "global";
     private static final String CONFIG_MODE_CHAT = "chat";
@@ -262,10 +263,8 @@ final class TelegramHookInstaller {
                 refreshSettingsList(host);
             } else if (isFragment(host, "DialogsActivity")) {
                 ensureDownloadUiLifecycle(host);
-                enhancementHooks.refreshStoryBar(host, currentCliConfig(hostApplicationContext).enhancements);
-            } else if (isFragment(host, "MainTabsActivity")) {
-                enhancementHooks.refreshStoryBar(host, currentCliConfig(hostApplicationContext).enhancements);
             }
+            enhancementHooks.refreshFeatureUi(host, currentCliConfig(hostApplicationContext).enhancements);
             info("UIRebind: completed fragment=" + host.getClass().getSimpleName());
         };
 
@@ -1227,7 +1226,20 @@ final class TelegramHookInstaller {
                 continue;
             }
             JSONObject item = featureJson(config, feature);
-            item.put("probe", probeJson(enhancementHooks.inspectFeature(feature, savedClassLoader)));
+            Map<String, Object> probe = enhancementHooks.inspectFeature(feature, savedClassLoader);
+            if (feature == EnhancementConfig.Feature.SAVE_VOICE_MESSAGES) {
+                Method target = messageMenuHook;
+                boolean installed = target != null && !retiring;
+                probe.put("status", installed ? "registered_behavior_unverified" : "not_registered");
+                probe.put("owner", "TelegramHookInstaller.hookMessageContextMenu");
+                probe.put("className", "org.telegram.ui.ChatActivity");
+                probe.put("signature", target == null ? null : target.toGenericString());
+                probe.put("registeredMethodCount", installed ? 1 : 0);
+                probe.put("featureHandlerCount", installed ? 1 : 0);
+                probe.put("menuActionTag", EnhancementMediaActions.VOICE_TAG);
+                probe.put("note", "The registered message-menu bridge offers a local save action for voice messages. Inspect menu items and mediaAction for behavior evidence.");
+            }
+            item.put("probe", probeJson(probe));
             items.put(item);
         }
         response.put("features", items);
@@ -2840,6 +2852,7 @@ final class TelegramHookInstaller {
                 }
                 return result;
             });
+            messageMenuHook = createMenu;
             info("Hooked ChatActivity message context menu");
         } catch (Throwable throwable) {
             error("Failed to hook ChatActivity message context menu", throwable);
@@ -7202,6 +7215,8 @@ final class TelegramHookInstaller {
         if (reloadItem != null) {
             targetContainer.addView(reloadItem);
         }
+        enhancementHooks.appendMessageActions(targetContainer, selectedMessageObject, savedClassLoader,
+                () -> dismissScrimPopup(chatActivity));
 
         int deleteItemIndex = nativeDeleteItem != null
                 && nativeDeleteItem.getParent() == targetContainer
@@ -8331,7 +8346,7 @@ final class TelegramHookInstaller {
 
     private void refreshStoryBarUi(EnhancementConfig enhancements) {
         Object host = resolveCurrentTelegramFragment(savedClassLoader);
-        if (!isFragment(host, "DialogsActivity") && !isFragment(host, "MainTabsActivity")) {
+        if (host == null) {
             return;
         }
         View anchor = resolveHostFragmentView(host);
@@ -8339,7 +8354,7 @@ final class TelegramHookInstaller {
             EnhancementConfig snapshot = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
             uiCallbacks.post(anchor, () -> {
                 if (!retiring) {
-                    enhancementHooks.refreshStoryBar(host, snapshot);
+                    enhancementHooks.refreshFeatureUi(host, snapshot);
                 }
             });
         }

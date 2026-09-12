@@ -126,7 +126,8 @@ final class FeatureProbe {
             case HIDE_STORY_VIEW_STATUS: case DISABLE_PERSONALIZED_ADS: case MESSAGE_AFFIXES:
                 return "installNetworkPolicyHooks";
             case SHOW_MESSAGE_ID: return "installMessageIdHook";
-            case ALLOW_COPY: case SAVE_VOICE_MESSAGES: case SAVE_STORIES: return "hookBooleanMethodsAny";
+            case ALLOW_COPY: return "hookCopyPolicy";
+            case SAVE_STORIES: return "hookStorySaveMenu";
             case ALLOW_FORWARD: case DISABLE_PREMIUM_STICKER_ANIMATION: return "hookBooleanMethods";
             case SAVE_SECRET_MEDIA: return "hookSecretMediaSavePolicy";
             case KEEP_VIDEO_MUTED: return "hookVideoMute";
@@ -173,6 +174,9 @@ final class FeatureProbe {
         if ("view".equals(kind)) {
             return View.class.isAssignableFrom(type);
         }
+        if ("view_array".equals(kind)) {
+            return type.isArray() && View.class.isAssignableFrom(type.getComponentType());
+        }
         if ("int".equals(kind)) {
             return type == int.class;
         }
@@ -209,9 +213,11 @@ final class FeatureProbe {
             case SHOW_MESSAGE_ID:
                 return s("ui.Cells.ChatMessageCell", "measureTime", "void", "any", "currentTimeString", "timeTextWidth", "timeWidth");
             case ALLOW_COPY:
+                return s("ui.ChatActivity$ChatActivityTextSelectionHelper", "canCopy", "boolean", "any");
             case SAVE_VOICE_MESSAGES:
+                return null; // The main installer's existing message-menu bridge owns this local action.
             case SAVE_STORIES:
-                return s("messenger.MessageObject", "canSaveMedia", "boolean", "any");
+                return s("ui.Stories.PeerStoriesView$8", "onCreate", "void", "any");
             case SAVE_SECRET_MEDIA:
                 return s("messenger.SaveToGallerySettingsHelper", "needSave", "boolean", "any");
             case ALLOW_FORWARD:
@@ -229,23 +235,23 @@ final class FeatureProbe {
             case HIDE_SERVICE_STORIES:
                 return s("ui.Stories.StoriesController", "hasStories", "boolean", "any");
             case HIDE_PREMIUM_STICKER_TAB:
-                return s("ui.Components.EmojiView", "updateTabs|updateStickerTabs", null, "view", "premiumTab", "premiumButton");
+                return s("ui.Components.EmojiView", "updateStickerTabs", null, "int", "premiumTabNum");
             case HIDE_CONTACTS_TAB:
-                return s("ui.DialogsActivity", "createView|onResume", null, "view", "contactsItem", "contactsButton", "contactsTab");
+                return s("ui.MainTabsActivity", "createView|onResume", null, "view_array", "tabs");
             case HIDE_HOME_ACTION_BUTTONS:
-                return s("ui.DialogsActivity", "createView|onResume", null, "view", "floatingButton", "floatingButtonContainer", "floatingButton2");
+                return s("ui.DialogsActivity", "updateFloatingButtonVisibility", null, "view", "floatingButton3", "floatingButtonStories");
             case HIDE_PHONE_NUMBER:
-                return s("ui.ProfileActivity", "updateProfileData|updateRowsIds", null, "view", "phoneTextView", "phoneRow");
+                return s("ui.ProfileActivity", "updateRowsIds", null, "int", "phoneRow", "rowCount");
             case SHOW_ID_IN_PROFILE:
-                return s("ui.ProfileActivity", "updateProfileData|updateRowsIds", null, "view", "onlineTextView", "nameTextView");
+                return s("ui.ProfileActivity", "updateProfileData|updateRowsIds", null, "view_array", "onlineTextView");
             case COPY_PROFILE_NAME:
-                return s("ui.ProfileActivity", "updateProfileData|updateRowsIds", null, "view", "nameTextView");
+                return s("ui.ProfileActivity", "updateProfileData|updateRowsIds", null, "view_array", "nameTextView");
             case SHOW_EXACT_LAST_SEEN:
                 return s("messenger.LocaleController", "formatDateOnline", "java.lang.String", "any");
             case SHOW_ID_IN_STATUS_LINE:
                 return s("ui.Components.ChatAvatarContainer", "updateSubtitle", null, "view", "subtitleTextView");
             case DISABLE_INSTANT_CAMERA:
-                return s("ui.Components.ChatActivityEnterView", "openCamera|onCameraPressed|showCamera", null, "any");
+                return s("ui.Components.ChatActivityEnterView", "setRecordVideoButtonVisible", "void", "boolean", "isInVideoMode");
             case DISABLE_CHAT_SWIPE_BACK:
                 return s("ui.ChatActivity", "isSwipeBackEnabled|canBeginSlide", "boolean", "any");
             case DISABLE_PROFILE_SWIPE_BACK:

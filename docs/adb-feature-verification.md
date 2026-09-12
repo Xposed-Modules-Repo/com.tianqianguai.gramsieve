@@ -35,4 +35,6 @@ adb -s 192.168.6.90:5555 shell am broadcast -a com.tianqianguai.gramsieve.action
 
 视图的 `globallyVisible` 是 Android `getGlobalVisibleRect()` 的原始返回值，仅作几何参考。实际可见性需要同时检查 `visibility`、`shown`、`attached` 和 `alpha`；隐藏视图可能仍保留旧测量尺寸和坐标。
 
+界面状态还包含 `input`（语音/即时相机模式）、`stickers`（原生高级标签索引）、`messageMenuItems`、`storyMenuItems` 和 `mediaAction`。语音保存由实际已注册的消息菜单桥接处理，`feature.inspect` 返回该桥接方法及 `gramsieve.save_voice_messages` 动作标记。保存动作返回 `saving`、`saved`（原生回调返回 Uri）或 `download_required` 等状态；Story 使用原生保存入口，`native_save_invoked` 不等同于文件已保存。`premiumTabNum < 0` 表示当前没有独立高级标签，不应把其他贴纸包当作高级页隐藏。
+
 计数默认关闭，60 秒到期停止累加，热重载后清零。接口不把目标存在、Hook 被调用或 UI 勾选自动判为端到端通过。发送消息、上传、已读状态等仍需明确测试对象和对端证据；像素布局或动画质量仍可按需截图。

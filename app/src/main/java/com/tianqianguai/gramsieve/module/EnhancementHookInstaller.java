@@ -75,6 +75,7 @@ final class EnhancementHookInstaller {
     private volatile long lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
     private volatile Context applicationContext;
     private volatile boolean active = true;
+    private final EnhancementUiCompat compatibleUi = new EnhancementUiCompat();
     private volatile long traceUntil;
     private final Map<Method, AtomicLong> traceCalls = new ConcurrentHashMap<>();
     private final Map<Method, String> hookOwners = new ConcurrentHashMap<>();
@@ -263,6 +264,8 @@ final class EnhancementHookInstaller {
             return;
         }
         hookBooleanMethods(messageObject, "canForwardMessage", EnhancementConfig.Feature.ALLOW_FORWARD, true);
+        hookCopyPolicy(classLoader);
+        hookStorySaveMenu(classLoader);
         hookSecretMediaSavePolicy(classLoader);
         hookBooleanMethodsAny(
                 messageObject,
@@ -300,6 +303,82 @@ final class EnhancementHookInstaller {
             });
         }
         info("Enhancements: installed secret-media save policy hooks");
+    }
+
+    private void hookCopyPolicy(ClassLoader classLoader) {
+        Class<?> helper = load(classLoader, "org.telegram.ui.ChatActivity$ChatActivityTextSelectionHelper");
+        if (helper == null) return;
+        for (Method method : helper.getDeclaredMethods()) {
+            if (method.getName().equals("canCopy") && method.getReturnType() == boolean.class && method.getParameterCount() == 0) {
+                hook(method, chain -> enabled(EnhancementConfig.Feature.ALLOW_COPY) ? true : chain.proceed());
+            }
+        }
+    }
+
+    private void hookStorySaveMenu(ClassLoader classLoader) {
+        Class<?> menu = load(classLoader, "org.telegram.ui.Stories.PeerStoriesView$8");
+        if (menu == null) return;
+        for (Method method : menu.getDeclaredMethods()) {
+            if (!method.getName().equals("onCreate") || method.getParameterCount() != 1) continue;
+            hook(method, chain -> {
+                Object result = chain.proceed();
+                Object owner = Reflect.field(chain.getThisObject(), "this$0");
+                EnhancementMediaActions.observeStory(owner);
+                Object layout = chain.getArgs().get(0);
+                if (owner != null && layout instanceof ViewGroup && enabled(EnhancementConfig.Feature.SAVE_STORIES)) {
+                    Object popup = chain.getThisObject();
+                    EnhancementMediaActions.appendStory((ViewGroup) layout, owner, classLoader,
+                            () -> Reflect.invokeIfExists(popup, "dismiss", new Class<?>[0]),
+                            () -> active && enabled(EnhancementConfig.Feature.SAVE_STORIES));
+                }
+                return result;
+            });
+        }
+    }
+
+    void appendMessageActions(ViewGroup target, Object message, ClassLoader loader, Runnable dismiss) {
+        if (active) {
+            EnhancementMediaActions.appendMessages(target, message, config(), loader, dismiss, () -> active);
+        }
+    }
+
+    void refreshFeatureUi(Object host, EnhancementConfig enhancements) {
+        if (!active || host == null) return;
+        cachedEnhancements = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
+        lastConfigRefreshAt = SystemClock.elapsedRealtime();
+        Object visible = host;
+        if (host.getClass().getName().equals("org.telegram.ui.MainTabsActivity")) {
+            compatibleUi.contacts(host, enabled(EnhancementConfig.Feature.HIDE_CONTACTS_TAB));
+            visible = Reflect.invokeIfExists(host, "getCurrentVisibleFragment", new Class<?>[0]);
+        }
+        refreshStoryBar(host, cachedEnhancements);
+        Object dialogs = host.getClass().getName().equals("org.telegram.ui.DialogsActivity") ? host : Reflect.field(host, "dialogsActivity");
+        if (dialogs != null) {
+            applyFloatingButtons(dialogs);
+            Reflect.invokeIfExists(dialogs, "updateFloatingButtonVisibility", new Class<?>[]{boolean.class}, false);
+        }
+        if (visible == null) return;
+        String name = visible.getClass().getName();
+        if (name.equals("org.telegram.ui.ProfileActivity")) {
+            Reflect.invokeIfExists(visible, "updateRowsIds", new Class<?>[0]);
+            Reflect.invokeIfExists(visible, "updateProfileData", new Class<?>[]{boolean.class}, false);
+            Reflect.invokeIfExists(Reflect.field(visible, "listAdapter"), "notifyDataSetChanged", new Class<?>[0]);
+            compatibleUi.profileIds(visible, enabled(EnhancementConfig.Feature.SHOW_ID_IN_PROFILE));
+            compatibleUi.profileCopy(visible, enabled(EnhancementConfig.Feature.COPY_PROFILE_NAME),
+                    () -> active && enabled(EnhancementConfig.Feature.COPY_PROFILE_NAME));
+        } else if (name.equals("org.telegram.ui.ChatActivity")) {
+            Object enter = Reflect.field(visible, "chatActivityEnterView");
+            compatibleUi.cameraMode(enter, enabled(EnhancementConfig.Feature.DISABLE_INSTANT_CAMERA));
+            Object emoji = Reflect.field(enter, "emojiView");
+            Reflect.invokeIfExists(emoji, "updateStickerTabs", new Class<?>[]{boolean.class}, false);
+            compatibleUi.premiumTab(emoji, enabled(EnhancementConfig.Feature.HIDE_PREMIUM_STICKER_TAB));
+        }
+    }
+
+    private void applyFloatingButtons(Object dialogs) {
+        boolean hide = enabled(EnhancementConfig.Feature.HIDE_HOME_ACTION_BUTTONS);
+        compatibleUi.visibility(Reflect.field(dialogs, "floatingButton3"), hide);
+        compatibleUi.visibility(Reflect.field(dialogs, "floatingButtonStories"), hide);
     }
 
     private void installInterfaceHooks(ClassLoader classLoader) {
@@ -513,12 +592,19 @@ final class EnhancementHookInstaller {
         }
         for (Method method : enterView.getDeclaredMethods()) {
             String name = method.getName();
-            if (!("openCamera".equals(name) || "onCameraPressed".equals(name) || "showCamera".equals(name))) {
+            if (!"setRecordVideoButtonVisible".equals(name) || method.getParameterCount() != 2
+                    || method.getParameterTypes()[0] != boolean.class || method.getParameterTypes()[1] != boolean.class) {
                 continue;
             }
-            hook(method, chain -> enabled(EnhancementConfig.Feature.DISABLE_INSTANT_CAMERA)
-                    ? defaultValue(method.getReturnType())
-                    : chain.proceed());
+            hook(method, chain -> {
+                if (enabled(EnhancementConfig.Feature.DISABLE_INSTANT_CAMERA)
+                        && !Boolean.TRUE.equals(Reflect.field(chain.getThisObject(), "recordingAudioVideo"))) {
+                    compatibleUi.rememberVideoMode(chain.getThisObject(), Boolean.TRUE.equals(chain.getArgs().get(0)));
+                    chain.getArgs().set(0, false);
+                    chain.getArgs().set(1, false);
+                }
+                return chain.proceed();
+            });
         }
     }
 
@@ -588,71 +674,15 @@ final class EnhancementHookInstaller {
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_PHONE_NUMBER)) {
-                    hideViewField(chain.getThisObject(), "phoneTextView");
-                    hideViewField(chain.getThisObject(), "phoneRow");
+                if ("updateRowsIds".equals(method.getName()) && enabled(EnhancementConfig.Feature.HIDE_PHONE_NUMBER)) {
+                    EnhancementUiCompat.removePhoneRow(chain.getThisObject());
                 }
-                if (enabled(EnhancementConfig.Feature.SHOW_ID_IN_PROFILE)) {
-                    appendProfileId(chain.getThisObject());
-                }
-                if (enabled(EnhancementConfig.Feature.COPY_PROFILE_NAME)) {
-                    enableProfileNameCopy(chain.getThisObject());
-                }
+                compatibleUi.profileIds(chain.getThisObject(), enabled(EnhancementConfig.Feature.SHOW_ID_IN_PROFILE));
+                compatibleUi.profileCopy(chain.getThisObject(), enabled(EnhancementConfig.Feature.COPY_PROFILE_NAME),
+                        () -> active && enabled(EnhancementConfig.Feature.COPY_PROFILE_NAME));
                 return result;
             });
         }
-    }
-
-    private void appendProfileId(Object profile) {
-        long id = Reflect.asLong(Reflect.field(profile, "userId"), 0L);
-        if (id == 0L) {
-            id = Reflect.asLong(Reflect.field(profile, "chatId"), 0L);
-        }
-        if (id == 0L) {
-            Object user = Reflect.field(profile, "userInfo");
-            id = Reflect.asLong(Reflect.field(user, "id"), 0L);
-        }
-        Object textView = Reflect.field(profile, "onlineTextView");
-        if (textView == null) {
-            textView = Reflect.field(profile, "nameTextView");
-        }
-        if (id == 0L || textView == null) {
-            return;
-        }
-        Object raw = Reflect.invokeIfExists(textView, "getText", new Class<?>[0]);
-        String text = Reflect.asString(raw);
-        String suffix = "\nID: " + id;
-        if (!text.contains(suffix)) {
-            Reflect.invokeIfExists(textView, "setMaxLines", new Class<?>[]{int.class}, 2);
-            Reflect.invokeIfExists(textView, "setText", new Class<?>[]{CharSequence.class}, text + suffix);
-        }
-    }
-
-    private void enableProfileNameCopy(Object profile) {
-        Object nameView = Reflect.field(profile, "nameTextView");
-        if (!(nameView instanceof View)) {
-            return;
-        }
-        View view = (View) nameView;
-        view.setLongClickable(true);
-        view.setOnLongClickListener(clicked -> {
-            String name = Reflect.asString(Reflect.invokeIfExists(nameView, "getText", new Class<?>[0])).trim();
-            if (name.isBlank()) {
-                return false;
-            }
-            ClipboardManager clipboard = (ClipboardManager) clicked.getContext()
-                    .getSystemService(Context.CLIPBOARD_SERVICE);
-            if (clipboard == null) {
-                return false;
-            }
-            clipboard.setPrimaryClip(ClipData.newPlainText("Telegram profile name", name));
-            Toast.makeText(
-                    clicked.getContext(),
-                    isChinese(clicked.getContext()) ? "名称已复制" : "Name copied",
-                    Toast.LENGTH_SHORT
-            ).show();
-            return true;
-        });
     }
 
     private void hookExactLastSeen(ClassLoader classLoader) {
@@ -793,23 +823,26 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : dialogs.getDeclaredMethods()) {
-            if (!("createView".equals(method.getName()) || "onResume".equals(method.getName()))) {
+            if (!"updateFloatingButtonVisibility".equals(method.getName())) {
                 continue;
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_HOME_ACTION_BUTTONS)) {
-                    hideViewField(chain.getThisObject(), "floatingButton");
-                    hideViewField(chain.getThisObject(), "floatingButtonContainer");
-                    hideViewField(chain.getThisObject(), "floatingButton2");
-                }
-                if (enabled(EnhancementConfig.Feature.HIDE_CONTACTS_TAB)) {
-                    hideViewField(chain.getThisObject(), "contactsItem");
-                    hideViewField(chain.getThisObject(), "contactsButton");
-                    hideViewField(chain.getThisObject(), "contactsTab");
-                }
+                applyFloatingButtons(chain.getThisObject());
                 return result;
             });
+        }
+        Class<?> tabs = load(classLoader, "org.telegram.ui.MainTabsActivity");
+        if (tabs != null) {
+            for (Method method : tabs.getDeclaredMethods()) {
+                if (method.getName().equals("onResume") || method.getName().equals("createView")) {
+                    hook(method, chain -> {
+                        Object result = chain.proceed();
+                        compatibleUi.contacts(chain.getThisObject(), enabled(EnhancementConfig.Feature.HIDE_CONTACTS_TAB));
+                        return result;
+                    });
+                }
+            }
         }
     }
 
@@ -819,15 +852,12 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : emojiView.getDeclaredMethods()) {
-            if (!("updateTabs".equals(method.getName()) || "updateStickerTabs".equals(method.getName()))) {
+            if (!"updateStickerTabs".equals(method.getName())) {
                 continue;
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if (enabled(EnhancementConfig.Feature.HIDE_PREMIUM_STICKER_TAB)) {
-                    hideViewField(chain.getThisObject(), "premiumTab");
-                    hideViewField(chain.getThisObject(), "premiumButton");
-                }
+                compatibleUi.premiumTab(chain.getThisObject(), enabled(EnhancementConfig.Feature.HIDE_PREMIUM_STICKER_TAB));
                 return result;
             });
         }
