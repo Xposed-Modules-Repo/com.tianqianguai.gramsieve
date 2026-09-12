@@ -320,7 +320,8 @@ final class HostConfigPanel {
 
     static boolean isTestedEnhancementFeature(EnhancementConfig.Feature feature) {
         return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
-                || feature == EnhancementConfig.Feature.HIDE_STORY_BAR;
+                || feature == EnhancementConfig.Feature.HIDE_STORY_BAR
+                || feature == EnhancementConfig.Feature.SAVE_SECRET_MEDIA;
     }
 
     static boolean isFeatureSectionExpandedByDefault(String section) {
@@ -341,6 +342,7 @@ final class HostConfigPanel {
                 "browse_position",
                 "persistent_download_button",
                 "hide_story_bar",
+                "save_secret_media",
                 "download_select_all",
                 "proactive_loading_anti_recall",
                 "versioned_edit_history",
@@ -867,6 +869,21 @@ final class HostConfigPanel {
                 "Hide the Story bar above Search chats and remove its space. Turn off to restore it."
         ));
 
+        LinearLayout secretMedia = addCard(container);
+        addTitle(secretMedia, t("私密媒体", "Secret media"));
+        Switch saveSecretMedia = addFeatureSwitch(
+                secretMedia,
+                featureTitle(EnhancementConfig.Feature.SAVE_SECRET_MEDIA)
+        );
+        saveSecretMedia.setChecked(baseConfig.enhancements.isEnabled(
+                EnhancementConfig.Feature.SAVE_SECRET_MEDIA
+        ));
+        enhancementSwitches.put(EnhancementConfig.Feature.SAVE_SECRET_MEDIA, saveSecretMedia);
+        addInfo(secretMedia, t(
+                "允许保存 Telegram 私密媒体；关闭后恢复 Telegram 原生限制。",
+                "Allow saving Telegram secret media; turn off to restore Telegram's native restriction."
+        ));
+
         buildEditHistoryCard(container);
 
         LinearLayout preservation = addCard(container);
@@ -946,6 +963,9 @@ final class HostConfigPanel {
         }
         if (enhancementSwitches.containsKey(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
             testedControls.add(EnhancementConfig.Feature.HIDE_STORY_BAR.key);
+        }
+        if (enhancementSwitches.containsKey(EnhancementConfig.Feature.SAVE_SECRET_MEDIA)) {
+            testedControls.add(EnhancementConfig.Feature.SAVE_SECRET_MEDIA.key);
         }
         if (!chatMode && editHistoryEnabledSwitch != null) {
             testedControls.add("edit_history_enabled");
