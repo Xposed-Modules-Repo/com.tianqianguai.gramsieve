@@ -53,6 +53,8 @@ import com.tianqianguai.gramsieve.core.ModuleConflictDetector;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
 
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
@@ -76,6 +78,7 @@ import io.github.libxposed.api.XposedModule;
 
 final class TelegramHookInstaller {
     private static final String TAG = "GramSieve";
+    private static final Gson PROBE_JSON = new GsonBuilder().serializeNulls().create();
     private static final String MODULE_PACKAGE = "com.tianqianguai.gramsieve";
     private static final String CONFIG_MODE_GLOBAL = "global";
     private static final String CONFIG_MODE_CHAT = "chat";
@@ -776,6 +779,14 @@ final class TelegramHookInstaller {
                 return cliFeatureGet(response, context, requireExtra(intent, "name"));
             case "feature.set":
                 return cliFeatureSet(response, context, intent);
+            case "feature.inspect":
+                return cliFeatureInspect(response, context, stringExtra(intent, "name"));
+            case "feature.trace.start":
+                response.put("trace", probeJson(enhancementHooks.trace(true)));
+                return response;
+            case "feature.trace.stop":
+                response.put("trace", probeJson(enhancementHooks.trace(false)));
+                return response;
             case "fallback.list":
                 return cliFallbackList(response, context);
             case "fallback.get":
@@ -825,6 +836,11 @@ final class TelegramHookInstaller {
                 return cliCleanup(response, intent, true);
             case "ui.state":
                 return cliUiState(response);
+            case "ui.enhancements.state":
+                Object foreground = resolveCurrentTelegramFragment(savedClassLoader);
+                response.put("ui", probeJson(FeatureUiProbe.inspect(foreground,
+                        isFragment(foreground, "ChatActivity") ? foreground : null)));
+                return response;
             case "ui.locale.state":
                 return cliUiLocaleState(response, context);
             case "ui.download-button.state":
@@ -861,6 +877,17 @@ final class TelegramHookInstaller {
                 return cliUiConfigClose(response);
             case "ui.config.sections":
                 return cliUiConfigSections(response, intent, false);
+            case "ui.config.controls":
+                response.put("ui", probeJson(HostConfigPanel.inspectControls(stringExtra(intent, "name"), null, 3000)));
+                return response;
+            case "ui.config.control.set":
+                Map<String, Object> controls = HostConfigPanel.inspectControls(requireExtra(intent, "name"),
+                        parseBoolean(requireExtra(intent, "value")), 3000);
+                response.put("ui", probeJson(controls));
+                if (controls.containsKey("error")) {
+                    response.put("ok", false);
+                }
+                return response;
             case "ui.config.section.set":
                 return cliUiConfigSections(response, intent, true);
             case "ui.log-console.state":
@@ -892,6 +919,7 @@ final class TelegramHookInstaller {
                 "config.get", "config.set",
                 "rules.summary", "rules.clear-all",
                 "feature.list", "feature.get", "feature.set",
+                "feature.inspect", "feature.trace.start", "feature.trace.stop",
                 "fallback.list", "fallback.get", "fallback.set",
                 "anti-recall.list", "anti-recall.get", "anti-recall.set",
                 "edit-history.get", "edit-history.set", "load.trigger",
@@ -899,6 +927,7 @@ final class TelegramHookInstaller {
                 "read-position.get", "read-position.set", "read-position.clear",
                 "message.get", "message.recalled", "message.edited", "message.history",
                 "cleanup.get", "cleanup.set", "ui.state", "ui.locale.state",
+                "ui.enhancements.state",
                 "ui.download-button.state",
                 "ui.downloads.open", "ui.download-selection.start",
                 "ui.download-select-all.state", "ui.download-select-all.click",
@@ -907,6 +936,7 @@ final class TelegramHookInstaller {
                 "message-delete.pending.scan",
                 "ui.menu.state", "ui.menu.open",
                 "ui.config.open", "ui.config.close", "ui.config.sections",
+                "ui.config.controls", "ui.config.control.set",
                 "ui.config.section.set",
                 "ui.log-console.state", "ui.log-console.select",
                 "ui.jump-mark", "ui.first-message", "ui.scroll"
@@ -1185,6 +1215,27 @@ final class TelegramHookInstaller {
         FilterConfig config = currentCliConfig(context);
         response.put("feature", featureJson(config.enhancements, parseFeature(name)));
         return response;
+    }
+
+    private JSONObject cliFeatureInspect(JSONObject response, Context context, String name) throws Exception {
+        EnhancementConfig config = currentCliConfig(context).enhancements;
+        JSONArray items = new JSONArray();
+        EnhancementConfig.Feature selected = name == null || name.isBlank() || "all".equalsIgnoreCase(name)
+                ? null : parseFeature(name);
+        for (EnhancementConfig.Feature feature : EnhancementConfig.Feature.values()) {
+            if (selected != null && selected != feature) {
+                continue;
+            }
+            JSONObject item = featureJson(config, feature);
+            item.put("probe", probeJson(enhancementHooks.inspectFeature(feature, savedClassLoader)));
+            items.put(item);
+        }
+        response.put("features", items);
+        return response;
+    }
+
+    private JSONObject probeJson(Map<String, Object> probe) throws Exception {
+        return new JSONObject(PROBE_JSON.toJson(probe));
     }
 
     private JSONObject cliFeatureSet(JSONObject response, Context context, Intent intent) throws Exception {

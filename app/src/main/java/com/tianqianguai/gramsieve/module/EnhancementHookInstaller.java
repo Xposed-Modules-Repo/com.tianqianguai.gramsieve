@@ -28,6 +28,10 @@ import java.util.Set;
 import java.util.WeakHashMap;
 import java.text.SimpleDateFormat;
 import java.util.Locale;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import io.github.libxposed.api.XposedInterface;
 import io.github.libxposed.api.XposedModule;
@@ -71,6 +75,9 @@ final class EnhancementHookInstaller {
     private volatile long lastConfigRefreshAt = -CONFIG_SNAPSHOT_MS;
     private volatile Context applicationContext;
     private volatile boolean active = true;
+    private volatile long traceUntil;
+    private final Map<Method, AtomicLong> traceCalls = new ConcurrentHashMap<>();
+    private final Map<Method, String> hookOwners = new ConcurrentHashMap<>();
 
     EnhancementHookInstaller(XposedModule module) {
         this.module = module;
@@ -90,6 +97,9 @@ final class EnhancementHookInstaller {
 
     void prepareForHotReload() {
         active = false;
+        traceUntil = 0L;
+        traceCalls.clear();
+        hookOwners.clear();
         hookedMethods.clear();
         affixedRequests.clear();
         configProvider = null;
@@ -1017,11 +1027,58 @@ final class EnhancementHookInstaller {
                     .setId(HookIdentity.forCaller("enhancement", method))
                     .setPriority(XposedInterface.PRIORITY_LOWEST)
                     .setExceptionMode(XposedInterface.ExceptionMode.DEFAULT)
-                    .intercept(chain -> active ? hooker.intercept(chain) : chain.proceed());
+                    .intercept(chain -> {
+                        if (!active) {
+                            return chain.proceed();
+                        }
+                        long deadline = traceUntil;
+                        if (deadline > 0L && SystemClock.elapsedRealtime() < deadline) {
+                            traceCalls.computeIfAbsent(method, ignored -> new AtomicLong()).incrementAndGet();
+                        }
+                        return hooker.intercept(chain);
+                    });
+            for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
+                if (frame.getClassName().equals(EnhancementHookInstaller.class.getName())
+                        && !frame.getMethodName().equals("hook")) {
+                    hookOwners.put(method, frame.getMethodName());
+                    break;
+                }
+            }
         } catch (Throwable throwable) {
             hookedMethods.remove(method);
             warn("Enhancements: failed to hook " + method.getDeclaringClass().getName() + "." + method.getName());
         }
+    }
+
+    Map<String, Object> inspectFeature(EnhancementConfig.Feature feature, ClassLoader loader) {
+        Set<Method> installed;
+        synchronized (hookedMethods) {
+            installed = new HashSet<>(hookedMethods);
+        }
+        Map<Method, Long> counts = new LinkedHashMap<>();
+        traceCalls.forEach((method, value) -> counts.put(method, value.get()));
+        Map<String, Object> result = FeatureProbe.inspect(feature, loader, installed, counts, hookOwners);
+        result.put("generationActive", active);
+        result.put("traceActive", traceUntil > SystemClock.elapsedRealtime());
+        return result;
+    }
+
+    Map<String, Object> trace(boolean start) {
+        if (start) {
+            traceCalls.clear();
+            traceUntil = SystemClock.elapsedRealtime() + 60_000L;
+        } else {
+            traceUntil = 0L;
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("active", start && active);
+        result.put("durationMs", start ? 60_000 : 0);
+        result.put("generationLocal", true);
+        Map<String, Long> counts = new LinkedHashMap<>();
+        traceCalls.forEach((method, value) -> counts.put(method.toGenericString(), value.get()));
+        result.put("invocations", counts);
+        result.put("note", "Counts are hook invocations, not successful feature actions or unique network requests; no arguments are recorded.");
+        return result;
     }
 
     private static Class<?> load(ClassLoader classLoader, String className) {

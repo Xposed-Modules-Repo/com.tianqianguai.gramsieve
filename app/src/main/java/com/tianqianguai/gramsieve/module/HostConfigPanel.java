@@ -64,6 +64,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Set;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -324,6 +325,58 @@ final class HostConfigPanel {
         return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
                 || feature == EnhancementConfig.Feature.HIDE_STORY_BAR
                 || feature == EnhancementConfig.Feature.SAVE_SECRET_MEDIA;
+    }
+
+    static Map<String, Object> inspectControls(String key, Boolean checked, long timeoutMs) {
+        HostConfigPanel panel = activePanel.get();
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("available", panel != null);
+        if (panel == null) {
+            result.put("error", "config_panel_not_open");
+            return result;
+        }
+        boolean completed = runOnMainAndWait(() -> {
+            Map<String, Switch> controls = new LinkedHashMap<>();
+            controls.put("filter_enabled", panel.enabledSwitch);
+            controls.put("debug_logging", panel.debugLoggingSwitch);
+            controls.put("exclude_global", panel.excludeChatSwitch);
+            controls.put("chat_anti_recall", panel.chatAntiRecallSwitch);
+            controls.put("edit_history_enabled", panel.editHistoryEnabledSwitch);
+            panel.enhancementSwitches.forEach((feature, toggle) -> controls.put(feature.key, toggle));
+            panel.moduleFallbackSwitches.forEach((module, toggle) -> controls.put("fallback." + module.name(), toggle));
+            if (checked != null) {
+                Switch toggle = controls.get(key);
+                if (toggle == null || !toggle.isEnabled()) {
+                    result.put("error", "control_unavailable");
+                } else {
+                    boolean before = toggle.isChecked();
+                    toggle.setChecked(checked);
+                    result.put("changed", before != toggle.isChecked());
+                    result.put("throughUiListener", true);
+                }
+            }
+            List<Map<String, Object>> items = new ArrayList<>();
+            controls.forEach((name, toggle) -> {
+                if (toggle != null && (key == null || key.isBlank() || name.equals(key))) {
+                    Map<String, Object> item = new LinkedHashMap<>();
+                    item.put("key", name);
+                    item.put("checked", toggle.isChecked());
+                    item.put("view", FeatureUiProbe.value(toggle));
+                    items.add(item);
+                }
+            });
+            result.put("chatMode", panel.chatMode);
+            result.put("controls", items);
+            result.put("note", "A checked UI control does not prove persistence; compare feature.get or config.get afterwards.");
+        }, timeoutMs);
+        if (!completed) {
+            // Do not expose a map that a delayed UI task might still mutate.
+            Map<String, Object> timedOut = new LinkedHashMap<>();
+            timedOut.put("available", false);
+            timedOut.put("error", "ui_thread_timeout");
+            return timedOut;
+        }
+        return result;
     }
 
     static boolean isFeatureSectionExpandedByDefault(String section) {
