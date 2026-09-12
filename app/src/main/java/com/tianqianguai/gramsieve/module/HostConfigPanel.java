@@ -78,6 +78,15 @@ import io.github.libxposed.api.XposedModule;
 final class HostConfigPanel {
     static final String FEATURE_SECTION_TESTED = "tested";
     static final String FEATURE_SECTION_UNTESTED = "untested";
+    private static final Set<EnhancementConfig.Feature> DEVICE_TESTED_ENHANCEMENTS = EnumSet.of(
+            EnhancementConfig.Feature.HIDE_PHONE_NUMBER,
+            EnhancementConfig.Feature.SHOW_MESSAGE_ID,
+            EnhancementConfig.Feature.HIDE_CONTACTS_TAB,
+            EnhancementConfig.Feature.HIDE_HOME_ACTION_BUTTONS,
+            EnhancementConfig.Feature.DISABLE_INSTANT_CAMERA,
+            EnhancementConfig.Feature.SHOW_ID_IN_PROFILE,
+            EnhancementConfig.Feature.COPY_PROFILE_NAME
+    );
     private static volatile WeakReference<HostConfigPanel> activePanel =
             new WeakReference<>(null);
 
@@ -324,7 +333,8 @@ final class HostConfigPanel {
     static boolean isTestedEnhancementFeature(EnhancementConfig.Feature feature) {
         return feature == EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE
                 || feature == EnhancementConfig.Feature.HIDE_STORY_BAR
-                || feature == EnhancementConfig.Feature.SAVE_SECRET_MEDIA;
+                || feature == EnhancementConfig.Feature.SAVE_SECRET_MEDIA
+                || DEVICE_TESTED_ENHANCEMENTS.contains(feature);
     }
 
     static Map<String, Object> inspectControls(String key, Boolean checked, long timeoutMs) {
@@ -405,6 +415,9 @@ final class HostConfigPanel {
                 "persistent_logs",
                 "bilingual_ui"
         );
+        for (EnhancementConfig.Feature feature : DEVICE_TESTED_ENHANCEMENTS) {
+            keys.add(feature.key);
+        }
         return Collections.unmodifiableList(keys);
     }
 
@@ -856,8 +869,8 @@ final class HostConfigPanel {
         LinearLayout entry = addCard(container);
         addTitle(entry, t("已测试功能", "Tested features"));
         addInfo(entry, t(
-                "当前发布版已有实现、测试与目标 Hook；可配置项沿用原有配置，默认生效项在下方说明。",
-                "These features have implementations, tests, and target hooks in the current release. Existing settings are preserved; always-on features are described below."
+                "以下功能已有验证记录；可配置项沿用原有配置，默认生效项在下方说明。",
+                "These features have verification records. Existing settings are preserved; always-on features are described below."
         ));
         testedFeaturesAction = addInfo(entry, "");
         testedFeaturesAction.setTextColor(accentColor);
@@ -945,6 +958,23 @@ final class HostConfigPanel {
                 "Allow saving Telegram secret media; turn off to restore Telegram's native restriction."
         ));
 
+        for (EnhancementConfig.Category category : EnhancementConfig.Category.values()) {
+            LinearLayout card = null;
+            for (EnhancementConfig.Feature feature : DEVICE_TESTED_ENHANCEMENTS) {
+                if (feature.category != category || !feature.isAvailableInCurrentBuild()) {
+                    continue;
+                }
+                if (card == null) {
+                    card = addCard(container);
+                    addTitle(card, categoryTitle(category));
+                }
+                Switch toggle = addFeatureSwitch(card, featureTitle(feature));
+                toggle.setChecked(baseConfig.enhancements.isEnabled(feature));
+                enhancementSwitches.put(feature, toggle);
+                bindImmediateFeatureSave(feature, toggle);
+            }
+        }
+
         buildEditHistoryCard(container);
 
         LinearLayout preservation = addCard(container);
@@ -966,8 +996,8 @@ final class HostConfigPanel {
         LinearLayout entry = addCard(container);
         addTitle(entry, t("未测试功能", "Untested features"));
         addInfo(entry, t(
-                "隐私、消息、媒体、界面、传输和工具增强尚未逐项完成设备验证。现有开关和配置会完整保留。",
-                "Privacy, messaging, media, interface, transfer, and tool enhancements have not completed per-feature device verification. Existing switches and configuration are preserved."
+                "以下增强功能尚未完成实际行为验证。现有开关和配置会完整保留。",
+                "These enhancements have not completed behavior verification. Existing switches and configuration are preserved."
         ));
         untestedFeaturesAction = addInfo(entry, "");
         untestedFeaturesAction.setTextColor(accentColor);
@@ -1018,15 +1048,10 @@ final class HostConfigPanel {
         if (!chatMode && enabledSwitch != null) {
             testedControls.add("filter_enabled");
         }
-        if (enhancementSwitches.containsKey(
-                EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE)) {
-            testedControls.add(EnhancementConfig.Feature.KEEP_DOWNLOAD_BUTTON_VISIBLE.key);
-        }
-        if (enhancementSwitches.containsKey(EnhancementConfig.Feature.HIDE_STORY_BAR)) {
-            testedControls.add(EnhancementConfig.Feature.HIDE_STORY_BAR.key);
-        }
-        if (enhancementSwitches.containsKey(EnhancementConfig.Feature.SAVE_SECRET_MEDIA)) {
-            testedControls.add(EnhancementConfig.Feature.SAVE_SECRET_MEDIA.key);
+        for (EnhancementConfig.Feature feature : enhancementSwitches.keySet()) {
+            if (isTestedEnhancementFeature(feature)) {
+                testedControls.add(feature.key);
+            }
         }
         if (!chatMode && editHistoryEnabledSwitch != null) {
             testedControls.add("edit_history_enabled");
