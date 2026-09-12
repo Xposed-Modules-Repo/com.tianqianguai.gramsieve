@@ -48,7 +48,9 @@ public final class XposedConfigProviderTest {
     public void existingTelegramHostPreferencesWinEvenWhenRemoteTimestampIsNewer() {
         FilterConfig hostConfig = FilterConfig.createDefault();
         hostConfig.updatedAtEpochMs = 20L;
-        hostConfig.globalRules.add(new FilterConfig.RuleSpec());
+        FilterConfig.RuleSpec hostRule = new FilterConfig.RuleSpec();
+        hostRule.pattern = "keep";
+        hostConfig.globalRules.add(hostRule);
         SharedPreferences hostPreferences = preferencesWith(hostConfig);
 
         FilterConfig remoteConfig = FilterConfig.createDefault();
