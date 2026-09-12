@@ -17,6 +17,8 @@ import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.text.InputType;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.text.TextUtils;
 import android.util.TypedValue;
 import android.view.ActionMode;
@@ -557,6 +559,8 @@ final class HostConfigPanel {
         }
         buildRulesCard(container);
 
+        bindImmediateSettings();
+
         root.addView(overlay, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -590,7 +594,7 @@ final class HostConfigPanel {
         toolbar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
         Button saveButton = toolbarButton(t("保存", "Save"));
-        saveButton.setOnClickListener(v -> save());
+        saveButton.setOnClickListener(v -> save(true));
         toolbar.addView(saveButton, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT));
         return toolbar;
     }
@@ -1743,6 +1747,10 @@ final class HostConfigPanel {
     }
 
     private void save() {
+        save(true);
+    }
+
+    private void save(boolean closePanel) {
         try {
             RuleDraftMatrix matchMatrix = collectMatrix(0);
             RuleDraftMatrix exclusionMatrix = collectMatrix(1);
@@ -1772,12 +1780,25 @@ final class HostConfigPanel {
                 updated.enhancements = collectEnhancementConfig();
                 updated.updatedAtEpochMs = System.currentTimeMillis();
             }
-            saver.save(updated);
+            FilterConfig saved = saver.save(updated);
+            if (saved != null) {
+                baseConfig.enabled = saved.enabled;
+                baseConfig.debugLogging = saved.debugLogging;
+                baseConfig.appLanguageTag = saved.appLanguageTag;
+                baseConfig.action = saved.action;
+                baseConfig.globalRules = saved.globalRules;
+                baseConfig.globalExclusions = saved.globalExclusions;
+                baseConfig.chatRules = saved.chatRules;
+                baseConfig.enhancements = saved.enhancements;
+                baseConfig.updatedAtEpochMs = saved.updatedAtEpochMs;
+            }
             if (afterSave != null) {
                 afterSave.run();
             }
-            Toast.makeText(context, t("已保存并立即生效", "Saved and applied"), Toast.LENGTH_SHORT).show();
-            close();
+            if (closePanel) {
+                Toast.makeText(context, t("已保存并立即生效", "Saved and applied"), Toast.LENGTH_SHORT).show();
+                close();
+            }
         } catch (Throwable throwable) {
             Toast.makeText(
                     context,
@@ -1785,6 +1806,62 @@ final class HostConfigPanel {
                     Toast.LENGTH_LONG
             ).show();
         }
+    }
+
+    private void bindImmediateSettings() {
+        if (chatMode) {
+            bindImmediateSwitch(enabledSwitch);
+            bindImmediateSwitch(excludeChatSwitch);
+            bindImmediateSwitch(chatAntiRecallSwitch);
+            bindImmediateSwitch(editHistoryEnabledSwitch);
+            bindImmediateRadio(dialogHistoryRuleGroup);
+        } else {
+            bindImmediateSwitch(enabledSwitch);
+            bindImmediateSwitch(debugLoggingSwitch);
+            bindImmediateRadio(languageGroup);
+            bindImmediateRadio(actionGroup);
+            bindImmediateSwitch(editHistoryEnabledSwitch);
+            bindImmediateRadio(editHistoryModeGroup);
+        }
+        for (Switch toggle : enhancementSwitches.values()) {
+            bindImmediateSwitch(toggle);
+        }
+        for (Switch toggle : moduleFallbackSwitches.values()) {
+            bindImmediateSwitch(toggle);
+        }
+        for (RuleInputs inputs : ruleInputs.values()) {
+            bindImmediateInput(inputs.matchKeywords);
+            bindImmediateInput(inputs.matchRegex);
+            bindImmediateInput(inputs.keepKeywords);
+            bindImmediateInput(inputs.keepRegex);
+        }
+        bindImmediateInput(outgoingPrefixInput);
+        bindImmediateInput(outgoingSuffixInput);
+        bindImmediateInput(downloadParallelismInput);
+        bindImmediateInput(uploadParallelismInput);
+    }
+
+    private void bindImmediateSwitch(Switch toggle) {
+        if (toggle != null) {
+            toggle.setOnCheckedChangeListener((button, checked) -> save(false));
+        }
+    }
+
+    private void bindImmediateRadio(RadioGroup group) {
+        if (group != null) {
+            group.setOnCheckedChangeListener((radio, checked) -> save(false));
+        }
+    }
+
+    private void bindImmediateInput(EditText input) {
+        if (input == null) {
+            return;
+        }
+        input.addTextChangedListener(new TextWatcher() {
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            public void afterTextChanged(Editable s) { save(false); }
+        });
     }
 
     private EnhancementConfig collectEnhancementConfig() {
