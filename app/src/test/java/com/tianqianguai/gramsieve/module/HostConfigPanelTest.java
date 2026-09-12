@@ -35,6 +35,8 @@ public class HostConfigPanelTest {
         assertTrue(HostConfigPanel.isTestedEnhancementFeature(EnhancementConfig.Feature.HIDE_STORY_BAR));
         assertFalse(HostConfigPanel.isTestedEnhancementFeature(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS));
         assertTrue(HostConfigPanel.testedCapabilityKeys().contains("hide_story_bar"));
+        assertTrue(HostConfigPanel.isTestedEnhancementFeature(EnhancementConfig.Feature.SAVE_SECRET_MEDIA));
+        assertTrue(HostConfigPanel.testedCapabilityKeys().contains("save_secret_media"));
     }
 
     @Test
