@@ -659,9 +659,6 @@ final class HostConfigPanel {
         title.setGravity(Gravity.CENTER_VERTICAL);
         toolbar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
 
-        Button saveButton = toolbarButton(t("保存", "Save"));
-        saveButton.setOnClickListener(v -> save(true));
-        toolbar.addView(saveButton, new LinearLayout.LayoutParams(dp(80), ViewGroup.LayoutParams.WRAP_CONTENT));
         return toolbar;
     }
 
@@ -766,7 +763,7 @@ final class HostConfigPanel {
                     "Anti-recall is currently delegated to another module. This setting is preserved and resumes when module fallback is disabled."
             ));
         }
-        addInfo(card, t("保存后会立即同步到宿主里的后台加载器。", "Saving updates the host background loader immediately."));
+        addInfo(card, t("修改后自动保存，并立即同步到宿主里的后台加载器。", "Changes save automatically and update the host background loader immediately."));
     }
 
     private void buildEditHistoryCard(LinearLayout container) {
@@ -1825,10 +1822,6 @@ final class HostConfigPanel {
     }
 
     private void save() {
-        save(true);
-    }
-
-    private void save(boolean closePanel) {
         try {
             RuleDraftMatrix matchMatrix = collectMatrix(0);
             RuleDraftMatrix exclusionMatrix = collectMatrix(1);
@@ -1872,10 +1865,6 @@ final class HostConfigPanel {
             }
             if (afterSave != null) {
                 afterSave.run();
-            }
-            if (closePanel) {
-                Toast.makeText(context, t("已保存并立即生效", "Saved and applied"), Toast.LENGTH_SHORT).show();
-                close();
             }
         } catch (Throwable throwable) {
             Toast.makeText(
@@ -1921,13 +1910,13 @@ final class HostConfigPanel {
 
     private void bindImmediateSwitch(Switch toggle) {
         if (toggle != null) {
-            toggle.setOnCheckedChangeListener((button, checked) -> save(false));
+            toggle.setOnCheckedChangeListener((button, checked) -> save());
         }
     }
 
     private void bindImmediateRadio(RadioGroup group) {
         if (group != null) {
-            group.setOnCheckedChangeListener((radio, checked) -> save(false));
+            group.setOnCheckedChangeListener((radio, checked) -> save());
         }
     }
 
@@ -1938,7 +1927,7 @@ final class HostConfigPanel {
         input.addTextChangedListener(new TextWatcher() {
             public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
             public void onTextChanged(CharSequence s, int start, int before, int count) { }
-            public void afterTextChanged(Editable s) { save(false); }
+            public void afterTextChanged(Editable s) { save(); }
         });
     }
 
