@@ -30,7 +30,7 @@
 - **白名单优先** — 排除规则始终优先于过滤规则，适合管理员、公告或信任联系人
 - **一键重置规则** — 可一次清空全局与所有聊天的过滤规则，同时保留防撤回、编辑历史、消息标记、日志和功能设置
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
-- **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，保存后立即生效
+- **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，修改后自动保存并立即生效
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **可选下载按钮常驻** — 默认关闭；开启后始终保留 Telegram 原生下载入口，点击、动画和进度仍由客户端处理
@@ -47,7 +47,7 @@
 - **Whitelist wins first** — exclusion rules always override filter rules; use them for admins, notices, or trusted contacts
 - **One-tap rule reset** — clear global and per-chat filter rules at once while preserving anti-recall, edit history, message marks, logs, and feature settings
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
-- **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and apply immediately after saving
+- **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and save and apply changes automatically
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Optional persistent download button** — off by default; when enabled, Telegram's native download entry stays available while clicks, animation, and progress remain client-controlled
