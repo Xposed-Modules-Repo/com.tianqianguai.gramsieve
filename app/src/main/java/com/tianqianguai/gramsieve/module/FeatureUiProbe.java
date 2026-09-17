@@ -15,10 +15,10 @@ import java.util.Map;
 final class FeatureUiProbe {
     static Map<String, Object> inspect(Object foreground, Object chat) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("foregroundClass", foreground == null ? "" : foreground.getClass().getName());
+        result.put("foregroundClass", foreground == null ? "" : TelegramSymbols.name(foreground.getClass()));
         Object visible = isOwner(foreground, "MainTabsActivity")
                 ? Reflect.invokeIfExists(foreground, "getCurrentVisibleFragment", new Class<?>[0]) : foreground;
-        result.put("visibleFragmentClass", visible == null ? "" : visible.getClass().getName());
+        result.put("visibleFragmentClass", visible == null ? "" : TelegramSymbols.name(visible.getClass()));
         Object home = isOwner(foreground, "DialogsActivity") ? foreground
                 : isOwner(foreground, "MainTabsActivity") ? Reflect.field(foreground, "dialogsActivity") : null;
         Object profile = isOwner(visible, "ProfileActivity") ? visible : null;
@@ -70,7 +70,7 @@ final class FeatureUiProbe {
 
     private static void collectMenuItems(View view, List<Map<String, Object>> items) {
         if (items.size() >= 30) return;
-        if (view.getClass().getName().equals("org.telegram.ui.ActionBar.ActionBarMenuSubItem")) {
+        if (TelegramSymbols.name(view.getClass()).equals("org.telegram.ui.ActionBar.ActionBarMenuSubItem")) {
             Map<String, Object> item = new LinkedHashMap<>();
             Object tag = view.getTag();
             item.put("tag", tag instanceof String ? tag : null);
@@ -91,7 +91,7 @@ final class FeatureUiProbe {
 
     static boolean hasType(Class<?> type, String name) {
         for (Class<?> c = type; c != null; c = c.getSuperclass()) {
-            if (c.getName().equals(name)) {
+            if (TelegramSymbols.name(c).equals(name)) {
                 return true;
             }
         }
@@ -101,7 +101,7 @@ final class FeatureUiProbe {
     static Map<String, Object> fields(Object owner, String... names) {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("available", owner != null);
-        result.put("className", owner == null ? "" : owner.getClass().getName());
+        result.put("className", owner == null ? "" : TelegramSymbols.name(owner.getClass()));
         List<Map<String, Object>> items = new ArrayList<>();
         for (String name : names) {
             Map<String, Object> item = new LinkedHashMap<>();
@@ -109,12 +109,12 @@ final class FeatureUiProbe {
             Field field = owner == null ? null : FeatureProbe.field(owner.getClass(), name);
             item.put("present", field != null);
             if (field != null) {
-                item.put("declaredType", field.getType().getName());
+                item.put("declaredType", TelegramSymbols.name(field.getType()));
                 try {
                     field.setAccessible(true);
                     item.put("value", value(field.get(owner)));
                 } catch (ReflectiveOperationException | RuntimeException failure) {
-                    item.put("error", failure.getClass().getSimpleName());
+                    item.put("error", TelegramSymbols.simpleName(failure.getClass()));
                 }
             }
             items.add(item);
@@ -143,7 +143,7 @@ final class FeatureUiProbe {
             return result;
         }
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("className", value.getClass().getName());
+        result.put("className", TelegramSymbols.name(value.getClass()));
         if (value instanceof View) {
             View view = (View) value;
             result.put("visibility", view.getVisibility());

@@ -49,9 +49,14 @@ final class ReliableDownloadHooks {
 
     private void hookDownloadButton(ClassLoader classLoader) {
         try {
-            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
-            Method method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
-            deoptimize(method, "ChatMessageCell.didPressButton(boolean, boolean)");
+            Class<?> cellClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Cells.ChatMessageCell");
+            Method method;
+            try {
+                method = Reflect.method(cellClass, "didPressButton", boolean.class, boolean.class);
+            } catch (NoSuchMethodException removedArgument) {
+                method = Reflect.method(cellClass, "didPressButton", boolean.class);
+            }
+            deoptimize(method, "ChatMessageCell.didPressButton");
             hook(method, chain -> {
                 if (usesExternalDownload()) {
                     return chain.proceed();
@@ -70,9 +75,14 @@ final class ReliableDownloadHooks {
 
     private void hookDownloadMiniButton(ClassLoader classLoader) {
         try {
-            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
-            Method method = Reflect.method(cellClass, "didPressMiniButton", boolean.class);
-            deoptimize(method, "ChatMessageCell.didPressMiniButton(boolean)");
+            Class<?> cellClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Cells.ChatMessageCell");
+            Method method;
+            try {
+                method = Reflect.method(cellClass, "didPressMiniButton", boolean.class);
+            } catch (NoSuchMethodException removedAnimationArgument) {
+                method = Reflect.method(cellClass, "didPressMiniButton");
+            }
+            deoptimize(method, "ChatMessageCell.didPressMiniButton");
             hook(method, chain -> {
                 if (usesExternalDownload()) {
                     return chain.proceed();
@@ -91,11 +101,11 @@ final class ReliableDownloadHooks {
 
     private void hookDownloadTransport(ClassLoader classLoader) {
         try {
-            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
             boolean hooked = false;
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadFile".equals(method.getName()) || parameters.length != 4
+                if (!"loadFile".equals(TelegramSymbols.name(method)) || parameters.length != 4
                         || parameters[2] != int.class || parameters[3] != int.class
                         || method.getReturnType() != void.class) {
                     continue;
@@ -132,7 +142,7 @@ final class ReliableDownloadHooks {
         try {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
-                if (!"cancelLoadFile".equals(method.getName()) || parameters.length == 0) {
+                if (!"cancelLoadFile".equals(TelegramSymbols.name(method)) || parameters.length == 0) {
                     continue;
                 }
                 String label = "FileLoader.cancelLoadFile" + signatureOf(parameters);
@@ -166,11 +176,11 @@ final class ReliableDownloadHooks {
         try {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadStreamFile".equals(method.getName()) || parameters.length < 4
-                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[1].getName())) {
+                if (!"loadStreamFile".equals(TelegramSymbols.name(method)) || parameters.length < 4
+                        || !"org.telegram.tgnet.TLRPC$Document".equals(TelegramSymbols.name(parameters[1]))) {
                     continue;
                 }
-                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                deoptimize(method, "FileLoader." + TelegramSymbols.name(method) + signatureOf(parameters));
                 hook(method, chain -> {
                     if (usesExternalDownload()) {
                         return chain.proceed();
@@ -199,12 +209,12 @@ final class ReliableDownloadHooks {
         try {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
-                if (!"loadFileInternal".equals(method.getName()) || parameters.length < 6
-                        || !"org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName())
-                        || !"org.telegram.messenger.FileLoadOperation".equals(method.getReturnType().getName())) {
+                if (!"loadFileInternal".equals(TelegramSymbols.name(method)) || parameters.length < 6
+                        || !"org.telegram.tgnet.TLRPC$Document".equals(TelegramSymbols.name(parameters[0]))
+                        || !"org.telegram.messenger.FileLoadOperation".equals(TelegramSymbols.name(method.getReturnType()))) {
                     continue;
                 }
-                deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                deoptimize(method, "FileLoader." + TelegramSymbols.name(method) + signatureOf(parameters));
                 hook(method, chain -> {
                     if (usesExternalDownload()) {
                         return chain.proceed();
@@ -234,7 +244,7 @@ final class ReliableDownloadHooks {
         try {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
-                if (!"isLoadingFile".equals(method.getName()) || parameters.length != 1
+                if (!"isLoadingFile".equals(TelegramSymbols.name(method)) || parameters.length != 1
                         || parameters[0] != String.class || method.getReturnType() != boolean.class) {
                     continue;
                 }
@@ -270,8 +280,8 @@ final class ReliableDownloadHooks {
             for (Method method : fileLoaderClass.getDeclaredMethods()) {
                 Class<?>[] parameters = method.getParameterTypes();
                 boolean documentFirst = parameters.length > 0
-                        && "org.telegram.tgnet.TLRPC$Document".equals(parameters[0].getName());
-                if ("isLoadingVideo".equals(method.getName()) && parameters.length == 2
+                        && "org.telegram.tgnet.TLRPC$Document".equals(TelegramSymbols.name(parameters[0]));
+                if ("isLoadingVideo".equals(TelegramSymbols.name(method)) && parameters.length == 2
                         && documentFirst && parameters[1] == boolean.class
                         && method.getReturnType() == boolean.class) {
                     deoptimize(method, "FileLoader.isLoadingVideo(Document, boolean)");
@@ -286,18 +296,18 @@ final class ReliableDownloadHooks {
                         return chain.proceed();
                     });
                     queries++;
-                } else if ((("setLoadingVideo".equals(method.getName()) && parameters.length == 3)
-                        || ("setLoadingVideoForPlayer".equals(method.getName()) && parameters.length == 2))
+                } else if ((("setLoadingVideo".equals(TelegramSymbols.name(method)) && parameters.length == 3)
+                        || ("setLoadingVideoForPlayer".equals(TelegramSymbols.name(method)) && parameters.length == 2))
                         && documentFirst && parameters[1] == boolean.class
                         && method.getReturnType() == void.class) {
-                    deoptimize(method, "FileLoader." + method.getName() + signatureOf(parameters));
+                    deoptimize(method, "FileLoader." + TelegramSymbols.name(method) + signatureOf(parameters));
                     hook(method, chain -> {
                         if (usesExternalDownload()) {
                             return chain.proceed();
                         }
                         Object[] stateArgs = chain.getArgs().toArray(new Object[0]);
                         if (!downloadManager.onSetLoadingVideo(
-                                chain.getThisObject(), stateArgs, method.getName())) {
+                                chain.getThisObject(), stateArgs, TelegramSymbols.name(method))) {
                             return null;
                         }
                         return chain.proceed();
@@ -318,7 +328,7 @@ final class ReliableDownloadHooks {
 
     private void hookDownloadNotifications(ClassLoader classLoader) {
         try {
-            Class<?> notificationClass = classLoader.loadClass("org.telegram.messenger.NotificationCenter");
+            Class<?> notificationClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.NotificationCenter");
             int progressId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadProgressChanged"), -1);
             int loadedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoaded"), -1);
             int failedId = Reflect.asInt(Reflect.staticField(notificationClass, "fileLoadFailed"), -1);
@@ -378,7 +388,7 @@ final class ReliableDownloadHooks {
                 builder.append(", ");
             }
             Class<?> parameterType = parameterTypes[i];
-            builder.append(parameterType == null ? "null" : parameterType.getSimpleName());
+            builder.append(parameterType == null ? "null" : TelegramSymbols.simpleName(parameterType));
         }
         return builder.append(')').toString();
     }

@@ -17,7 +17,7 @@ final class TelegramMessageSerializer {
             if (classLoader == null) {
                 return null;
             }
-            Class<?> serializedDataClass = classLoader.loadClass("org.telegram.tgnet.SerializedData");
+            Class<?> serializedDataClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.SerializedData");
             java.lang.reflect.Constructor<?> constructor = serializedDataClass.getDeclaredConstructor();
             constructor.setAccessible(true);
             serializedData = constructor.newInstance();

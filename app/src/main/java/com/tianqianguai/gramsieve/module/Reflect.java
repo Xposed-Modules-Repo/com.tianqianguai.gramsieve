@@ -21,7 +21,7 @@ final class Reflect {
 
     static Method method(Class<?> type, String name, Class<?>... parameterTypes) throws NoSuchMethodException {
         if (type == null || parameterTypes == null) {
-            Method method = type.getDeclaredMethod(name, parameterTypes);
+            Method method = TelegramSymbols.declaredMethod(type, name, parameterTypes);
             method.setAccessible(true);
             return method;
         }
@@ -170,7 +170,7 @@ final class Reflect {
 
     private static FieldResolution resolveDeclaredField(Class<?> type, String name) {
         try {
-            Field field = type.getDeclaredField(name);
+            Field field = TelegramSymbols.declaredField(type, name);
             field.setAccessible(true);
             return new FieldResolution(field);
         } catch (NoSuchFieldException ignored) {
@@ -188,7 +188,7 @@ final class Reflect {
 
     private static StrictMethodResolution resolveStrictMethod(Class<?> type, MethodKey key) {
         try {
-            Method method = type.getDeclaredMethod(key.name, key.parameterTypes);
+            Method method = TelegramSymbols.declaredMethod(type, key.name, key.parameterTypes);
             method.setAccessible(true);
             return new StrictMethodResolution(method, null);
         } catch (NoSuchMethodException exception) {
@@ -212,7 +212,7 @@ final class Reflect {
         Class<?> current = type;
         while (current != null) {
             try {
-                Method method = current.getDeclaredMethod(name, parameterTypes);
+                Method method = TelegramSymbols.declaredMethod(current, name, parameterTypes);
                 method.setAccessible(true);
                 return method;
             } catch (ReflectiveOperationException ignored) {
@@ -228,7 +228,7 @@ final class Reflect {
             Method best = null;
             int bestScore = Integer.MIN_VALUE;
             for (Method candidate : current.getDeclaredMethods()) {
-                if (!candidate.getName().equals(name) || candidate.getParameterCount() != args.length) {
+                if (!TelegramSymbols.name(candidate).equals(name) || candidate.getParameterCount() != args.length) {
                     continue;
                 }
                 int score = compatibilityScore(candidate.getParameterTypes(), args);

@@ -375,7 +375,7 @@ final class UiMutation {
 
     private static Method lookupSetMeasuredDimensionMethod() {
         try {
-            Method method = View.class.getDeclaredMethod("setMeasuredDimension", int.class, int.class);
+            Method method = TelegramSymbols.declaredMethod(View.class, "setMeasuredDimension", int.class, int.class);
             method.setAccessible(true);
             return method;
         } catch (ReflectiveOperationException ignored) {

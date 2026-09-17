@@ -80,7 +80,7 @@ final class TelegramDeleteResidueStore {
                     new ArrayList<>(residues.values()), "");
         } catch (SQLiteException exception) {
             return new ScanResult(databaseFile.getAbsolutePath(), rowsScanned,
-                    new ArrayList<>(residues.values()), exception.getClass().getSimpleName());
+                    new ArrayList<>(residues.values()), TelegramSymbols.simpleName(exception.getClass()));
         } finally {
             if (database != null) {
                 database.close();
@@ -128,7 +128,7 @@ final class TelegramDeleteResidueStore {
                     touchedTables, deletedRows > 0 ? "" : "flagged message not found");
         } catch (SQLiteException exception) {
             return new PurgeResult(databaseFile.getAbsolutePath(), deletedRows,
-                    touchedTables, exception.getClass().getSimpleName());
+                    touchedTables, TelegramSymbols.simpleName(exception.getClass()));
         } finally {
             if (database != null) {
                 if (database.inTransaction()) {
@@ -180,7 +180,7 @@ final class TelegramDeleteResidueStore {
                     deleteTasks, "");
         } catch (SQLiteException exception) {
             return new PendingTaskScanResult(databaseFile.getAbsolutePath(), rowsScanned,
-                    deleteTasks, exception.getClass().getSimpleName());
+                    deleteTasks, TelegramSymbols.simpleName(exception.getClass()));
         } finally {
             if (cursor != null) {
                 cursor.close();

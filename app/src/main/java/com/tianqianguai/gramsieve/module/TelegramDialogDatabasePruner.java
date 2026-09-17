@@ -166,7 +166,7 @@ final class TelegramDialogDatabasePruner {
             }
         } catch (SQLiteException exception) {
             logger.info("DialogDatabasePrune: busy_timeout unavailable reason="
-                    + exception.getClass().getSimpleName());
+                    + TelegramSymbols.simpleName(exception.getClass()));
         } finally {
             if (cursor != null) {
                 cursor.close();
@@ -187,7 +187,7 @@ final class TelegramDialogDatabasePruner {
         } catch (SQLiteException exception) {
             logger.info("DialogDatabasePrune: skip table=" + operation.table
                     + " column=" + operation.column
-                    + " reason=" + exception.getClass().getSimpleName());
+                    + " reason=" + TelegramSymbols.simpleName(exception.getClass()));
             return 0;
         }
     }

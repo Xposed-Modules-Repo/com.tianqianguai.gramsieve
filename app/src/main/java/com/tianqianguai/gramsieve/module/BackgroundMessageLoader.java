@@ -278,7 +278,7 @@ public final class BackgroundMessageLoader {
             return;
         }
 
-        String peerType = peer.getClass().getSimpleName();
+        String peerType = TelegramSymbols.simpleName(peer.getClass());
         PendingRequest pending = new PendingRequest(api, connectionsManager, peerType);
         Object delegate = api.newRequestDelegate(
                 (proxy, method, args) -> handleDelegateInvocation(proxy, method, args, dialogId, pending));
@@ -299,18 +299,18 @@ public final class BackgroundMessageLoader {
     private Object handleDelegateInvocation(Object proxy, Method method, Object[] args,
                                             long dialogId, PendingRequest pending) {
         if (method.getDeclaringClass() == Object.class) {
-            if ("toString".equals(method.getName())) {
+            if ("toString".equals(TelegramSymbols.name(method))) {
                 return "GramSieveHistoryRequestDelegate(" + dialogId + ")";
             }
-            if ("hashCode".equals(method.getName())) {
+            if ("hashCode".equals(TelegramSymbols.name(method))) {
                 return System.identityHashCode(proxy);
             }
-            if ("equals".equals(method.getName())) {
+            if ("equals".equals(TelegramSymbols.name(method))) {
                 return args != null && args.length == 1 && proxy == args[0];
             }
             return null;
         }
-        if (!"run".equals(method.getName())) {
+        if (!"run".equals(TelegramSymbols.name(method))) {
             return null;
         }
 
@@ -338,7 +338,7 @@ public final class BackgroundMessageLoader {
         List<?> messages = historyMessagesFromResponse(response);
         if (messages == null) {
             info("BackgroundMessageLoader: unexpected getHistory response dialog=" + dialogId
-                    + " type=" + (response == null ? "null" : response.getClass().getName()));
+                    + " type=" + (response == null ? "null" : TelegramSymbols.name(response.getClass())));
             return null;
         }
         if (!enabledChats.contains(dialogId)) {
@@ -374,7 +374,7 @@ public final class BackgroundMessageLoader {
         Object peer = Reflect.invokeIfExists(controller, "getInputPeer",
                 new Class<?>[]{long.class}, dialogId);
         if (peer == null || dialogId >= 0L
-                || !"TL_inputPeerChat".equals(peer.getClass().getSimpleName())) {
+                || !"TL_inputPeerChat".equals(TelegramSymbols.simpleName(peer.getClass()))) {
             return peer;
         }
 

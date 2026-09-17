@@ -114,7 +114,7 @@ public final class RecallDetector {
         ModuleLogger.hook(TAG, "MessageDeleteFlow: origin invoker ready="
                 + (XposedInterface.Invoker.Type.ORIGIN != null));
         try {
-            Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> messagesControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             hookMethods(messagesControllerClass, module, classLoader);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to load MessagesController", throwable);
@@ -126,7 +126,7 @@ public final class RecallDetector {
         }
         // Hook MessagesStorage to cache loaded messages
         try {
-            Class<?> messagesStorageClass = classLoader.loadClass("org.telegram.messenger.MessagesStorage");
+            Class<?> messagesStorageClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesStorage");
             hookStorageMethods(messagesStorageClass, module);
         } catch (Throwable throwable) {
             ModuleLogger.error(ModuleLogger.CAT_HOOK, TAG, "Failed to load MessagesStorage", throwable);
@@ -146,7 +146,7 @@ public final class RecallDetector {
 
     private void hookMethods(Class<?> messagesControllerClass, XposedModule module, ClassLoader classLoader) {
         for (java.lang.reflect.Method m : messagesControllerClass.getDeclaredMethods()) {
-            String name = m.getName();
+            String name = TelegramSymbols.name(m);
             if (name.equals("processUpdateArray")) {
                 ModuleLogger.hook(TAG, "RecallDetector: found processUpdateArray with " + m.getParameterCount() + " params");
                 hookSingleMethod(module, m, "processUpdateArray");
@@ -186,7 +186,7 @@ public final class RecallDetector {
     private void hookStorageMethods(Class<?> messagesStorageClass, XposedModule module) {
         ModuleLogger.hook(TAG, "RecallDetector: scanning MessagesStorage methods...");
         for (java.lang.reflect.Method m : messagesStorageClass.getDeclaredMethods()) {
-            String name = m.getName();
+            String name = TelegramSymbols.name(m);
             // Hook methods that store or update messages
             if (name.equals("putMessages") || name.equals("putMessagesInternal")
                     || name.equals("replaceMessageIfExists")) {
@@ -282,10 +282,10 @@ public final class RecallDetector {
     }
 
     private void hookNotificationDeletion(ClassLoader classLoader, XposedModule module) throws ClassNotFoundException {
-        Class<?> notificationsControllerClass = classLoader.loadClass("org.telegram.messenger.NotificationsController");
+        Class<?> notificationsControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.NotificationsController");
         boolean hooked = false;
         for (java.lang.reflect.Method method : notificationsControllerClass.getDeclaredMethods()) {
-            if (!"removeDeletedMessagesFromNotifications".equals(method.getName())) {
+            if (!"removeDeletedMessagesFromNotifications".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             hook(module, method, chain -> {
@@ -304,7 +304,7 @@ public final class RecallDetector {
             });
             hooked = true;
             ModuleLogger.hook(TAG, "RecallDetector: hook NotificationsController."
-                    + method.getName() + " params=" + method.getParameterCount() + " success");
+                    + TelegramSymbols.name(method) + " params=" + method.getParameterCount() + " success");
         }
         if (!hooked) {
             ModuleLogger.hook(TAG, "RecallDetector: no removeDeletedMessagesFromNotifications hook point");
@@ -362,7 +362,7 @@ public final class RecallDetector {
     }
 
     private void hookNotificationCenterDeletion(ClassLoader classLoader, XposedModule module) throws ClassNotFoundException {
-        Class<?> notificationCenterClass = classLoader.loadClass("org.telegram.messenger.NotificationCenter");
+        Class<?> notificationCenterClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.NotificationCenter");
         int messagesDeletedId = Reflect.asInt(Reflect.staticField(notificationCenterClass, "messagesDeleted"), -1);
         if (messagesDeletedId < 0) {
             ModuleLogger.hook(TAG, "RecallDetector: NotificationCenter.messagesDeleted unavailable");
@@ -370,7 +370,7 @@ public final class RecallDetector {
         }
         int hooked = 0;
         for (java.lang.reflect.Method method : notificationCenterClass.getDeclaredMethods()) {
-            if (!method.getName().startsWith("postNotificationName") || method.getParameterCount() < 2) {
+            if (!TelegramSymbols.name(method).startsWith("postNotificationName") || method.getParameterCount() < 2) {
                 continue;
             }
             Class<?>[] parameterTypes = method.getParameterTypes();
@@ -391,7 +391,7 @@ public final class RecallDetector {
                         }
                         ModuleLogger.hook(TAG,
                                 "MessageDeleteFlow: invoking origin NotificationCenter."
-                                        + method.getName() + " params="
+                                        + TelegramSymbols.name(method) + " params="
                                         + method.getParameterCount());
                         return invokeOrigin(
                                 module,
@@ -556,7 +556,7 @@ public final class RecallDetector {
                 if (!list.isEmpty()) {
                     Object first = list.get(0);
                     if (first != null) {
-                        String className = first.getClass().getSimpleName();
+                        String className = TelegramSymbols.simpleName(first.getClass());
                         if (className.contains("Message")) {
                             cacheMessageList(accountId, list);
                             return;
@@ -599,7 +599,7 @@ public final class RecallDetector {
                     if (mediaCaption != null && !mediaCaption.isEmpty()) {
                         caption = mediaCaption;
                     }
-                    mediaType = media.getClass().getSimpleName();
+                    mediaType = TelegramSymbols.simpleName(media.getClass());
                     Object photo = Reflect.field(media, "photo");
                     if (photo != null) {
                         mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
@@ -775,13 +775,13 @@ public final class RecallDetector {
     }
 
     private void hookDeleteRpc(ClassLoader classLoader, XposedModule module) throws ClassNotFoundException {
-        Class<?> connectionsManagerClass = classLoader.loadClass("org.telegram.tgnet.ConnectionsManager");
+        Class<?> connectionsManagerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.ConnectionsManager");
         int hooked = 0;
         for (Method method : connectionsManagerClass.getDeclaredMethods()) {
-            if (!method.getName().startsWith("sendRequest") || method.getParameterCount() == 0) {
+            if (!TelegramSymbols.name(method).startsWith("sendRequest") || method.getParameterCount() == 0) {
                 continue;
             }
-            if ("sendRequestInternal".equals(method.getName())) {
+            if ("sendRequestInternal".equals(TelegramSymbols.name(method))) {
                 try {
                     module.deoptimize(method);
                 } catch (Throwable throwable) {
@@ -791,7 +791,7 @@ public final class RecallDetector {
             }
             hook(module, method, XposedInterface.PRIORITY_HIGHEST, chain -> {
                 Object request = chain.getArg(0);
-                String requestType = request == null ? "" : request.getClass().getSimpleName();
+                String requestType = request == null ? "" : TelegramSymbols.simpleName(request.getClass());
                 if (isDeleteRpc(requestType)) {
                     DeleteControllerTrace trace = deleteControllerTrace.get();
                     if (trace != null) {
@@ -806,8 +806,8 @@ public final class RecallDetector {
                     DeleteTransportContext transport = recoveryTransportContext(request, trace);
                     if (transport != null) {
                         wrapDeleteRequestDelegate(method, chain.getArgs(), transport);
-                        String stage = method.getName() + "/" + method.getParameterCount();
-                        int internalRequestToken = "sendRequestInternal".equals(method.getName())
+                        String stage = TelegramSymbols.name(method) + "/" + method.getParameterCount();
+                        int internalRequestToken = "sendRequestInternal".equals(TelegramSymbols.name(method))
                                 ? Reflect.asInt(
                                         chain.getArg(method.getParameterCount() - 1),
                                         0
@@ -836,7 +836,7 @@ public final class RecallDetector {
                             if (requestToken > 0 && diagnostics != null) {
                                 diagnostics.recordRequestToken(requestToken);
                             }
-                            if ("sendRequestInternal".equals(method.getName())) {
+                            if ("sendRequestInternal".equals(TelegramSymbols.name(method))) {
                                 if (diagnostics != null) {
                                     diagnostics.recordNativeDispatch();
                                 }
@@ -847,7 +847,7 @@ public final class RecallDetector {
                             }
                             return result;
                         } finally {
-                            if ("sendRequestInternal".equals(method.getName())) {
+                            if ("sendRequestInternal".equals(TelegramSymbols.name(method))) {
                                 removeRecoveryDeleteRequest(request);
                             }
                         }
@@ -916,7 +916,7 @@ public final class RecallDetector {
         Class<?>[] parameterTypes = requestMethod.getParameterTypes();
         for (int index = 0; index < parameterTypes.length && index < args.size(); index++) {
             Class<?> parameterType = parameterTypes[index];
-            if (!"org.telegram.tgnet.RequestDelegate".equals(parameterType.getName())
+            if (!"org.telegram.tgnet.RequestDelegate".equals(TelegramSymbols.name(parameterType))
                     || !parameterType.isInterface()) {
                 continue;
             }
@@ -1026,22 +1026,22 @@ public final class RecallDetector {
         @Override
         public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
             if (method.getDeclaringClass() == Object.class) {
-                if ("toString".equals(method.getName())) {
+                if ("toString".equals(TelegramSymbols.name(method))) {
                     return "GramSieveDeleteRequestDelegate(" + transport.dialogId + ")";
                 }
-                if ("hashCode".equals(method.getName())) {
+                if ("hashCode".equals(TelegramSymbols.name(method))) {
                     return System.identityHashCode(proxy);
                 }
-                if ("equals".equals(method.getName())) {
+                if ("equals".equals(TelegramSymbols.name(method))) {
                     return args != null && args.length == 1 && proxy == args[0];
                 }
             }
-            if ("run".equals(method.getName()) && args != null && args.length >= 2) {
+            if ("run".equals(TelegramSymbols.name(method)) && args != null && args.length >= 2) {
                 Object response = args[0];
                 Object error = args[1];
                 String responseType = response == null
                         ? ""
-                        : response.getClass().getSimpleName();
+                        : TelegramSymbols.simpleName(response.getClass());
                 int errorCode = Reflect.asInt(Reflect.field(error, "code"), 0);
                 String errorText = safeProtocolError(error);
                 MessageDeleteFlowDiagnostics diagnostics = deleteFlowDiagnostics;
@@ -1125,14 +1125,14 @@ public final class RecallDetector {
             if (arg == null) {
                 builder.append("null");
             } else if (arg instanceof Number || arg instanceof Boolean) {
-                builder.append(arg.getClass().getSimpleName()).append('=').append(arg);
+                builder.append(TelegramSymbols.simpleName(arg.getClass())).append('=').append(arg);
             } else if (arg instanceof CharSequence) {
                 builder.append("String(len=").append(((CharSequence) arg).length()).append(')');
             } else if (arg instanceof List<?>) {
-                builder.append(arg.getClass().getSimpleName())
+                builder.append(TelegramSymbols.simpleName(arg.getClass()))
                         .append("(size=").append(((List<?>) arg).size()).append(')');
             } else {
-                builder.append(arg.getClass().getName());
+                builder.append(TelegramSymbols.name(arg.getClass()));
             }
         }
         return builder.append(']').toString();
@@ -1273,7 +1273,7 @@ public final class RecallDetector {
                     if (mediaCaption != null && !mediaCaption.isEmpty()) {
                         caption = mediaCaption;
                     }
-                    mediaType = media.getClass().getSimpleName();
+                    mediaType = TelegramSymbols.simpleName(media.getClass());
                     Object photo = Reflect.field(media, "photo");
                     if (photo != null) {
                         mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
@@ -1359,7 +1359,7 @@ public final class RecallDetector {
 
     private void hookProcessUpdateArray(ClassLoader classLoader, XposedModule module) {
         try {
-            Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> messagesControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             Method processUpdateArray = Reflect.method(messagesControllerClass, "processUpdateArray", ArrayList.class);
             hook(module, processUpdateArray, chain -> {
                 Object result = chain.proceed();
@@ -1379,7 +1379,7 @@ public final class RecallDetector {
 
     private void hookDeleteMessages(ClassLoader classLoader, XposedModule module) {
         try {
-            Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> messagesControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             Method deleteMessages = Reflect.method(messagesControllerClass, "deleteMessages",
                     ArrayList.class, ArrayList.class, ArrayList.class, long.class, int.class, boolean.class);
             hook(module, deleteMessages, chain -> {
@@ -1398,7 +1398,7 @@ public final class RecallDetector {
 
     private void hookEditMessage(ClassLoader classLoader, XposedModule module) {
         try {
-            Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> messagesControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             Method editMessage = Reflect.method(messagesControllerClass, "editMessage",
                     long.class, int.class, String.class, boolean.class, ArrayList.class, boolean.class, boolean.class);
             hook(module, editMessage, chain -> {
@@ -1432,7 +1432,7 @@ public final class RecallDetector {
             try {
                 if (update == null) continue;
 
-                String className = update.getClass().getSimpleName();
+                String className = TelegramSymbols.simpleName(update.getClass());
 
                 Object message = Reflect.field(update, "message");
                 if (message != null) {
@@ -1522,7 +1522,7 @@ public final class RecallDetector {
                 if (mediaCaption != null && !mediaCaption.isEmpty()) {
                     caption = mediaCaption;
                 }
-                mediaType = media.getClass().getSimpleName();
+                mediaType = TelegramSymbols.simpleName(media.getClass());
                 Object photo = Reflect.field(media, "photo");
                 if (photo != null) {
                     mediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));
@@ -1619,7 +1619,7 @@ public final class RecallDetector {
                 if (mediaCaption != null && !mediaCaption.isEmpty()) {
                     newCaption = mediaCaption;
                 }
-                newMediaType = media.getClass().getSimpleName();
+                newMediaType = TelegramSymbols.simpleName(media.getClass());
                 Object photo = Reflect.field(media, "photo");
                 if (photo != null) {
                     newMediaId = String.valueOf(Reflect.asLong(Reflect.field(photo, "id"), 0L));

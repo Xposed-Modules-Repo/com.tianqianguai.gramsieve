@@ -193,7 +193,7 @@ public final class MediaPrefetcher {
             return false;
         }
 
-        Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+        Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
         Object fileLoader = getFileLoader(fileLoaderClass, pending.account);
         if (fileLoader == null) {
             return false;
@@ -231,11 +231,11 @@ public final class MediaPrefetcher {
             return messageOwner;
         }
         try {
-            Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
+            Class<?> messageObjectClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessageObject");
             if (messageObjectClass.isInstance(messageLike)) {
                 return messageLike;
             }
-            Class<?> messageBaseClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+            Class<?> messageBaseClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.TLRPC$Message");
             return messageObjectClass
                     .getConstructor(int.class, messageBaseClass, boolean.class, boolean.class)
                     .newInstance(account, messageOwner, false, true);
@@ -254,9 +254,9 @@ public final class MediaPrefetcher {
         if (photoSize == null || photo == null) {
             return null;
         }
-        Class<?> imageLocationClass = classLoader.loadClass("org.telegram.messenger.ImageLocation");
+        Class<?> imageLocationClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.ImageLocation");
         for (Method method : imageLocationClass.getDeclaredMethods()) {
-            if (!"getForPhoto".equals(method.getName())
+            if (!"getForPhoto".equals(TelegramSymbols.name(method))
                     || !Modifier.isStatic(method.getModifiers())
                     || method.getParameterTypes().length != 2) {
                 continue;
@@ -280,7 +280,7 @@ public final class MediaPrefetcher {
                                             String extension) throws Exception {
         String extensionName = extension.startsWith(".") ? extension.substring(1) : extension;
         for (Method method : fileLoaderClass.getMethods()) {
-            if (!"loadFile".equals(method.getName())) {
+            if (!"loadFile".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             Class<?>[] params = method.getParameterTypes();
@@ -306,7 +306,7 @@ public final class MediaPrefetcher {
             return false;
         }
         for (Method method : fileLoaderClass.getMethods()) {
-            if (!"loadFile".equals(method.getName())) {
+            if (!"loadFile".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             Class<?>[] params = method.getParameterTypes();
@@ -331,7 +331,7 @@ public final class MediaPrefetcher {
         }
 
         try {
-            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
             Object fileLoader = getFileLoader(fileLoaderClass, account);
             if (fileLoader == null) {
                 return null;
@@ -357,7 +357,7 @@ public final class MediaPrefetcher {
             return null;
         }
         for (Method method : fileLoaderClass.getMethods()) {
-            if (!methodName.equals(method.getName()) || method.getParameterTypes().length != 1) {
+            if (!methodName.equals(TelegramSymbols.name(method)) || method.getParameterTypes().length != 1) {
                 continue;
             }
             Class<?> param = method.getParameterTypes()[0];
@@ -379,7 +379,7 @@ public final class MediaPrefetcher {
 
     private Method findMethod(Class<?> clazz, String name, int parameterCount) {
         for (Method method : clazz.getMethods()) {
-            if (name.equals(method.getName()) && method.getParameterTypes().length == parameterCount) {
+            if (name.equals(TelegramSymbols.name(method)) && method.getParameterTypes().length == parameterCount) {
                 return method;
             }
         }
@@ -391,14 +391,14 @@ public final class MediaPrefetcher {
         if (photo != null) {
             Object photoSize = selectBestPhotoSize(photo);
             if (photoSize != null) {
-                return new MediaTarget("photo", ".jpg", mediaObject.getClass().getName(),
+                return new MediaTarget("photo", ".jpg", TelegramSymbols.name(mediaObject.getClass()),
                         mediaId(photo), photoSize, photo, photoSize, true);
             }
         }
 
         Object video = Reflect.field(mediaObject, "video");
         if (video != null) {
-            return new MediaTarget("video", ".mp4", mediaObject.getClass().getName(),
+            return new MediaTarget("video", ".mp4", TelegramSymbols.name(mediaObject.getClass()),
                     mediaId(video), video, null, null, false);
         }
 
@@ -408,7 +408,7 @@ public final class MediaPrefetcher {
         }
         String extension = extensionForDocument(document);
         String kind = isVideoDocument(document) ? "video" : "document";
-        return new MediaTarget(kind, extension, mediaObject.getClass().getName(),
+        return new MediaTarget(kind, extension, TelegramSymbols.name(mediaObject.getClass()),
                 mediaId(document), document, null, null, false);
     }
 
@@ -424,7 +424,7 @@ public final class MediaPrefetcher {
             if (size == null || Reflect.field(size, "location") == null) {
                 continue;
             }
-            String simpleName = size.getClass().getSimpleName();
+            String simpleName = TelegramSymbols.simpleName(size.getClass());
             if (simpleName.contains("Stripped") || simpleName.contains("Cached")) {
                 continue;
             }
@@ -543,7 +543,7 @@ public final class MediaPrefetcher {
         if (volumeId != 0L || localId != 0L) {
             return volumeId + "_" + localId;
         }
-        return media.getClass().getName() + "@" + System.identityHashCode(media);
+        return TelegramSymbols.name(media.getClass()) + "@" + System.identityHashCode(media);
     }
 
     private static String lower(String value) {

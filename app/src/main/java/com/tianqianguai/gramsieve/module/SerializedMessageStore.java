@@ -153,7 +153,7 @@ final class SerializedMessageStore implements MessageStore, AutoCloseable {
                 ((AutoCloseable) delegate).close();
             } catch (Exception exception) {
                 ModuleLogger.warn(ModuleLogger.CAT_HOOK, TAG,
-                        "delegate close failed: " + exception.getClass().getSimpleName());
+                        "delegate close failed: " + TelegramSymbols.simpleName(exception.getClass()));
                 stopped = false;
             }
         }
