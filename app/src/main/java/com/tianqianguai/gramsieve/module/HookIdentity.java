@@ -18,7 +18,7 @@ final class HookIdentity {
         for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
             String className = frame.getClassName();
             if (!className.startsWith(PROJECT_PACKAGE)
-                    || className.equals(HookIdentity.class.getName())
+                    || className.equals(TelegramSymbols.name(HookIdentity.class))
                     || "hook".equals(frame.getMethodName())) {
                 continue;
             }
@@ -26,16 +26,16 @@ final class HookIdentity {
             break;
         }
         StringBuilder signature = new StringBuilder()
-                .append(executable.getDeclaringClass().getName())
+                .append(TelegramSymbols.name(executable.getDeclaringClass()))
                 .append('#')
-                .append(executable.getName())
+                .append(TelegramSymbols.name(executable))
                 .append('(');
         Class<?>[] parameterTypes = executable.getParameterTypes();
         for (int i = 0; i < parameterTypes.length; i++) {
             if (i > 0) {
                 signature.append(',');
             }
-            signature.append(parameterTypes[i].getName());
+            signature.append(TelegramSymbols.name(parameterTypes[i]));
         }
         return PREFIX + component + '/' + caller + '/' + signature.append(')');
     }

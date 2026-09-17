@@ -15,12 +15,21 @@
 ./gradlew.bat connectedDebugAndroidTest  # Instrumented tests (requires device)
 ```
 
+## 清理命令被拦截时
+
+- 清理操作被工具或安全检查拦截时，直接向用户说明被拦截的操作和原因，并给出完整、可复制执行的 PowerShell 命令；不要只给命令片段或要求用户先进入工作区。
+- 命令必须能在任意目录打开的 PowerShell 中执行：仓库、清理目标和脚本均使用明确的绝对路径；Git 命令使用 `git -C '<仓库绝对路径>' ...`；所需变量定义和前置检查放在同一代码块内，不依赖当前目录、先前会话变量或需要用户替换的占位符。
+- 仅提供已获授权且已核实归属的清理目标，保留 Git-aware 清理、未提交内容保护和路径边界检查；不扩大删除范围，也不通过关闭或绕过安全检查继续执行。
+
 ## Release Notes & Publishing Workflow
+
+- 版本命名跟随适配的 Telegram：`versionName` 必须与本次适配的 Telegram `versionName` 完全一致（例如 `12.10.2`）。`versionCode` 独立保持单调递增；同一 Telegram 版本的后续模块修订保持 `versionName`，递增 `versionCode` 并创建新 tag。
+- Match the module `versionName` exactly to the Telegram version being adapted (for example, `12.10.2`). Keep Android `versionCode` monotonically increasing; subsequent module fixes for the same Telegram version retain `versionName`, increment `versionCode`, and use a new tag.
 
 中文：
 
 - 正式发布仓库固定为 `Xposed-Modules-Repo/com.tianqianguai.gramsieve`。所有 `gh release` 查询、创建、编辑和验证命令都必须显式使用这个仓库，不再使用旧名 `Xposed-Modules-Repo/Gramsieve`。
-- 用户说“发版”时，默认创建一个新版本。只要上一个公开版本之后包含代码、行为、界面、配置或兼容性变化，就必须递增 `versionCode`，并按语义递增 `versionName`；不得沿用更早对“原位更新旧版本”的授权。只有用户在当前发布请求中明确指定现有 tag 并要求“不升版本号/原位更新”时，才允许覆盖旧 Release。
+- 用户说“发版”时，默认创建一个新版本。只要上一个公开版本之后包含代码、行为、界面、配置或兼容性变化，就必须递增 `versionCode`，并将 `versionName` 设为适配的 Telegram 版本；不得沿用更早对“原位更新旧版本”的授权。只有用户在当前发布请求中明确指定现有 tag 并要求“不升版本号/原位更新”时，才允许覆盖旧 Release。
 - 新版本使用 tag `<versionCode>-<versionName>`、标题 `GramSieve <versionName>`、资产名 `GramSieve-v<versionName>.apk`。发布前同时核对 `app/build.gradle.kts`、`output-metadata.json` 和 `aapt dump badging`，三处版本必须一致。
 - 必须从最终已集成并推送的发布 commit 重新构建 APK，不得上传版本号修改前、合并前或其他工作树遗留的制品。创建 Release 前先 `fetch` 并确认本地 `main` 与远端没有意外分叉，再推送准确的发布 commit。
 - 隔离 worktree 通常没有被 Git 忽略的 `keystore.properties`，而当前 Gradle 配置会在缺少正式签名时回退到 Debug 签名。因此 `assembleRelease` 成功不代表制品可发布。上传前必须运行 `apksigner verify --print-certs`：证书 SHA-256 必须是 GramSieve 正式指纹 `1d13359dd77d6da41d2d9aaa8fc099e92dd6e76861e0558d8e3bd822e5d6a055`，且不得是 `CN=Android Debug`。worktree 无正式签名时，先提交并合并，再从具备正式签名配置的主工作区重建。
@@ -37,7 +46,7 @@
 English:
 
 - The canonical release repository is `Xposed-Modules-Repo/com.tianqianguai.gramsieve`. Every `gh release` read or mutation must specify it explicitly; do not use the obsolete `Xposed-Modules-Repo/Gramsieve` name.
-- A user request to “release” means creating a new version by default. Any code, behavior, UI, configuration, or compatibility change since the last public release requires incrementing `versionCode` and applying the appropriate semantic `versionName` bump. Authorization from an earlier task to update a release in place does not carry forward. Replacing an existing release is allowed only when the current request names the existing tag and explicitly asks to keep the version unchanged.
+- A user request to “release” means creating a new version by default. Any code, behavior, UI, configuration, or compatibility change since the last public release requires incrementing `versionCode` and setting `versionName` to the supported Telegram version. Authorization from an earlier task to update a release in place does not carry forward. Replacing an existing release is allowed only when the current request names the existing tag and explicitly asks to keep the version unchanged.
 - New releases use tag `<versionCode>-<versionName>`, title `GramSieve <versionName>`, and asset name `GramSieve-v<versionName>.apk`. Before publishing, the versions in `app/build.gradle.kts`, `output-metadata.json`, and `aapt dump badging` must agree.
 - Rebuild the APK from the final integrated and pushed release commit. Never publish an artifact produced before the version bump, before integration, or by a stale worktree. Fetch and check for unexpected divergence before pushing the exact release commit.
 - Isolated worktrees usually lack the git-ignored `keystore.properties`, and the current Gradle setup falls back to debug signing when release credentials are absent. Therefore, a successful `assembleRelease` is not sufficient. Before upload, `apksigner verify --print-certs` must report the GramSieve production certificate SHA-256 `1d13359dd77d6da41d2d9aaa8fc099e92dd6e76861e0558d8e3bd822e5d6a055` and must not report `CN=Android Debug`. If the task worktree lacks production signing, commit and integrate first, then rebuild from the production-signing main checkout.
@@ -138,3 +147,7 @@ Intent-first. Lore-style trailers: `Constraint:`, `Tested:`, `Not-tested:`.
 
 ## Security
 LSPosed scope limited to `org.telegram.messenger`. Do not commit `build/`, `.gradle/`, APKs, `local.properties`.
+
+## Telegram 发布文案
+
+- Telegram 发布文案不包含 API 兼容说明、旧版本提示或类似安装兼容性说明；只保留版本更新内容、必要的 Release 链接和 Star 提示。

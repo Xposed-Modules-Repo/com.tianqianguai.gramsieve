@@ -1811,7 +1811,7 @@ final class HostConfigPanel {
             Toast.makeText(
                     context,
                     t("清空失败：", "Could not clear rules: ")
-                            + throwable.getClass().getSimpleName(),
+                            + TelegramSymbols.simpleName(throwable.getClass()),
                     Toast.LENGTH_LONG
             ).show();
         }
@@ -1869,7 +1869,7 @@ final class HostConfigPanel {
         } catch (Throwable throwable) {
             Toast.makeText(
                     context,
-                    t("保存失败：", "Save failed: ") + throwable.getClass().getSimpleName(),
+                    t("保存失败：", "Save failed: ") + TelegramSymbols.simpleName(throwable.getClass()),
                     Toast.LENGTH_LONG
             ).show();
         }
@@ -1980,7 +1980,7 @@ final class HostConfigPanel {
         } catch (Throwable throwable) {
             ModuleLogger.warn(ModuleLogger.CAT_CONFIG, ModuleLogger.TAG,
                     "Immediate feature save failed feature=" + feature.key + " reason="
-                            + throwable.getClass().getSimpleName());
+                            + TelegramSymbols.simpleName(throwable.getClass()));
         }
     }
 
@@ -2890,11 +2890,11 @@ final class HostConfigPanel {
     private int telegramThemeColor(String keyFieldName, int fallback) {
         try {
             ClassLoader classLoader = context.getClassLoader();
-            Class<?> themeClass = Class.forName("org.telegram.ui.ActionBar.Theme", false, classLoader);
-            Field keyField = themeClass.getDeclaredField(keyFieldName);
+            Class<?> themeClass = TelegramSymbols.forName("org.telegram.ui.ActionBar.Theme", false, classLoader);
+            Field keyField = TelegramSymbols.declaredField(themeClass, keyFieldName);
             keyField.setAccessible(true);
             int key = keyField.getInt(null);
-            Method getColor = themeClass.getDeclaredMethod("getColor", int.class);
+            Method getColor = TelegramSymbols.declaredMethod(themeClass, "getColor", int.class);
             getColor.setAccessible(true);
             Object color = getColor.invoke(null, key);
             return color instanceof Integer ? (Integer) color : fallback;

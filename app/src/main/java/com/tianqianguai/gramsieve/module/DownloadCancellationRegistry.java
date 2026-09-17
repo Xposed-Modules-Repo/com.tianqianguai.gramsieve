@@ -34,9 +34,9 @@ final class DownloadCancellationRegistry {
             return null;
         }
         try {
-            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
             for (Method method : fileLoaderClass.getMethods()) {
-                if (!"getAttachFileName".equals(method.getName())
+                if (!"getAttachFileName".equals(TelegramSymbols.name(method))
                         || method.getParameterTypes().length != 1
                         || !method.getParameterTypes()[0].isAssignableFrom(attachment.getClass())) {
                     continue;

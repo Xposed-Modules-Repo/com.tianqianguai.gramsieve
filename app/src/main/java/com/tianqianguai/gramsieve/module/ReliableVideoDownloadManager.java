@@ -654,7 +654,7 @@ final class ReliableVideoDownloadManager {
             return;
         }
         try {
-            Class<?> mediaControllerClass = classLoader.loadClass("org.telegram.messenger.MediaController");
+            Class<?> mediaControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MediaController");
             Object mediaController = mediaControllerClass.getMethod("getInstance").invoke(null);
             Method isPlaying = findCompatibleMethod(mediaControllerClass, "isPlayingMessage",
                     new Object[]{message});
@@ -685,7 +685,7 @@ final class ReliableVideoDownloadManager {
             return null;
         }
         try {
-            Class<?> fileLoaderClass = loader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoaderClass = TelegramSymbols.loadClass(loader, "org.telegram.messenger.FileLoader");
             Method getInstance = fileLoaderClass.getMethod("getInstance", int.class);
             return getInstance.invoke(null, account);
         } catch (Throwable throwable) {
@@ -807,7 +807,7 @@ final class ReliableVideoDownloadManager {
         Object attributes = Reflect.field(document, "attributes");
         if (attributes instanceof Iterable<?>) {
             for (Object attribute : (Iterable<?>) attributes) {
-                if (attribute != null && attribute.getClass().getName().contains("DocumentAttributeVideo")) {
+                if (attribute != null && TelegramSymbols.name(attribute.getClass()).contains("DocumentAttributeVideo")) {
                     return true;
                 }
             }
@@ -873,13 +873,13 @@ final class ReliableVideoDownloadManager {
     }
 
     private String typeOf(Object value) {
-        return value == null ? "null" : value.getClass().getSimpleName();
+        return value == null ? "null" : TelegramSymbols.simpleName(value.getClass());
     }
 
     private Method findCompatibleMethod(Class<?> type, String name, Object[] args) {
         for (Method method : type.getMethods()) {
             Class<?>[] params = method.getParameterTypes();
-            if (!name.equals(method.getName()) || params.length != args.length) continue;
+            if (!name.equals(TelegramSymbols.name(method)) || params.length != args.length) continue;
             boolean compatible = true;
             for (int i = 0; i < params.length; i++) {
                 if (args[i] == null) continue;

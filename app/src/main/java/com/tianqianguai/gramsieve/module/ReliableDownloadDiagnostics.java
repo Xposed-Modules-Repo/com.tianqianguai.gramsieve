@@ -75,7 +75,7 @@ final class ReliableDownloadDiagnostics {
             if (value == null) {
                 builder.append("null");
             } else {
-                builder.append(value.getClass().getSimpleName());
+                builder.append(TelegramSymbols.simpleName(value.getClass()));
             }
         }
         return builder.toString();
@@ -129,7 +129,7 @@ final class ReliableDownloadDiagnostics {
             return "null";
         }
         if (value instanceof Number || value instanceof Boolean || value instanceof Character) {
-            return value.getClass().getSimpleName() + "(" + value + ")";
+            return TelegramSymbols.simpleName(value.getClass()) + "(" + value + ")";
         }
         if (value instanceof String) {
             String text = (String) value;
@@ -141,7 +141,7 @@ final class ReliableDownloadDiagnostics {
             }
             return "String(\"" + text.replace("\\", "\\\\").replace("\"", "\\\"") + "\")";
         }
-        return value.getClass().getName();
+        return TelegramSymbols.name(value.getClass());
     }
 
     static final class ProgressMetadata {

@@ -136,7 +136,7 @@ public final class GramSieveModule extends XposedModule {
             } catch (RuntimeException exception) {
                 ModuleLogger.warn(ModuleLogger.CAT_LIFECYCLE, TAG,
                         "Failed to retire old hook " + handle.getExecutable() + ": "
-                                + exception.getClass().getSimpleName());
+                                + TelegramSymbols.simpleName(exception.getClass()));
             }
         }
         return removed;
@@ -145,7 +145,7 @@ public final class GramSieveModule extends XposedModule {
     private static Application currentApplication() {
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Method method = activityThread.getDeclaredMethod("currentApplication");
+            Method method = TelegramSymbols.declaredMethod(activityThread, "currentApplication");
             Object application = method.invoke(null);
             return application instanceof Application ? (Application) application : null;
         } catch (ReflectiveOperationException | RuntimeException ignored) {

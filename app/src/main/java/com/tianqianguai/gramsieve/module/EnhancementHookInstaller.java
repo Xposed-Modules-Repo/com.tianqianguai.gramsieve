@@ -79,6 +79,8 @@ final class EnhancementHookInstaller {
     private volatile long traceUntil;
     private final Map<Method, AtomicLong> traceCalls = new ConcurrentHashMap<>();
     private final Map<Method, String> hookOwners = new ConcurrentHashMap<>();
+    private Class<?> holidayTheme;
+    private Boolean holidayNativeFlag;
 
     EnhancementHookInstaller(XposedModule module) {
         this.module = module;
@@ -97,6 +99,7 @@ final class EnhancementHookInstaller {
     }
 
     void prepareForHotReload() {
+        restoreHolidayFlag();
         active = false;
         traceUntil = 0L;
         traceCalls.clear();
@@ -118,12 +121,12 @@ final class EnhancementHookInstaller {
         }
         int count = 0;
         for (Method method : connectionsManager.getDeclaredMethods()) {
-            String name = method.getName();
+            String name = TelegramSymbols.name(method);
             Class<?>[] parameters = method.getParameterTypes();
             if (!("sendRequest".equals(name) || "sendRequestInternal".equals(name))
                     || parameters.length == 0
                     || (!tlObject.isAssignableFrom(parameters[0])
-                    && !"java.lang.Object".equals(parameters[0].getName()))) {
+                    && !"java.lang.Object".equals(TelegramSymbols.name(parameters[0])))) {
                 continue;
             }
             hook(method, chain -> {
@@ -133,7 +136,7 @@ final class EnhancementHookInstaller {
                 if (request != null) {
                     applyMessageAffixes(request, config);
                     if (shouldBlockRequest(request, config)) {
-                        debug("Blocked privacy request " + request.getClass().getSimpleName());
+                        debug("Blocked privacy request " + TelegramSymbols.simpleName(request.getClass()));
                         return defaultValue(method.getReturnType());
                     }
                 }
@@ -145,7 +148,7 @@ final class EnhancementHookInstaller {
     }
 
     private boolean shouldBlockRequest(Object request, EnhancementConfig config) {
-        String name = request.getClass().getName();
+        String name = TelegramSymbols.name(request.getClass());
         if (config.isEnabled(EnhancementConfig.Feature.DISABLE_TYPING_STATUS)
                 && containsAny(name, TYPING_REQUESTS)) {
             return true;
@@ -179,7 +182,7 @@ final class EnhancementHookInstaller {
 
     private void applyMessageAffixes(Object request, EnhancementConfig config) {
         if (!config.isEnabled(EnhancementConfig.Feature.MESSAGE_AFFIXES)
-                || !containsAny(request.getClass().getName(), SEND_REQUESTS)
+                || !containsAny(TelegramSymbols.name(request.getClass()), SEND_REQUESTS)
                 || (!affixedRequests.add(request))) {
             return;
         }
@@ -211,7 +214,7 @@ final class EnhancementHookInstaller {
         }
         Method target = null;
         for (Method method : cellClass.getDeclaredMethods()) {
-            if ("measureTime".equals(method.getName())
+            if ("measureTime".equals(TelegramSymbols.name(method))
                     && method.getReturnType() == void.class
                     && method.getParameterCount() == 1
                     && method.getParameterTypes()[0].isAssignableFrom(messageObjectClass)) {
@@ -285,7 +288,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : helper.getDeclaredMethods()) {
-            if (!"needSave".equals(method.getName()) || method.getReturnType() != boolean.class
+            if (!"needSave".equals(TelegramSymbols.name(method)) || method.getReturnType() != boolean.class
                     || !Modifier.isStatic(method.getModifiers())) {
                 continue;
             }
@@ -309,7 +312,7 @@ final class EnhancementHookInstaller {
         Class<?> helper = load(classLoader, "org.telegram.ui.ChatActivity$ChatActivityTextSelectionHelper");
         if (helper == null) return;
         for (Method method : helper.getDeclaredMethods()) {
-            if (method.getName().equals("canCopy") && method.getReturnType() == boolean.class && method.getParameterCount() == 0) {
+            if (TelegramSymbols.name(method).equals("canCopy") && method.getReturnType() == boolean.class && method.getParameterCount() == 0) {
                 hook(method, chain -> enabled(EnhancementConfig.Feature.ALLOW_COPY) ? true : chain.proceed());
             }
         }
@@ -319,7 +322,7 @@ final class EnhancementHookInstaller {
         Class<?> menu = load(classLoader, "org.telegram.ui.Stories.PeerStoriesView$8");
         if (menu == null) return;
         for (Method method : menu.getDeclaredMethods()) {
-            if (!method.getName().equals("onCreate") || method.getParameterCount() != 1) continue;
+            if (!TelegramSymbols.name(method).equals("onCreate") || method.getParameterCount() != 1) continue;
             hook(method, chain -> {
                 Object result = chain.proceed();
                 Object owner = Reflect.field(chain.getThisObject(), "this$0");
@@ -346,19 +349,20 @@ final class EnhancementHookInstaller {
         if (!active || host == null) return;
         cachedEnhancements = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
         lastConfigRefreshAt = SystemClock.elapsedRealtime();
+        if (!enabled(EnhancementConfig.Feature.FORCE_SNOW_ANIMATION)) restoreHolidayFlag();
         Object visible = host;
-        if (host.getClass().getName().equals("org.telegram.ui.MainTabsActivity")) {
+        if (TelegramSymbols.name(host.getClass()).equals("org.telegram.ui.MainTabsActivity")) {
             compatibleUi.contacts(host, enabled(EnhancementConfig.Feature.HIDE_CONTACTS_TAB));
             visible = Reflect.invokeIfExists(host, "getCurrentVisibleFragment", new Class<?>[0]);
         }
         refreshStoryBar(host, cachedEnhancements);
-        Object dialogs = host.getClass().getName().equals("org.telegram.ui.DialogsActivity") ? host : Reflect.field(host, "dialogsActivity");
+        Object dialogs = TelegramSymbols.name(host.getClass()).equals("org.telegram.ui.DialogsActivity") ? host : Reflect.field(host, "dialogsActivity");
         if (dialogs != null) {
             applyFloatingButtons(dialogs);
             Reflect.invokeIfExists(dialogs, "updateFloatingButtonVisibility", new Class<?>[]{boolean.class}, false);
         }
         if (visible == null) return;
-        String name = visible.getClass().getName();
+        String name = TelegramSymbols.name(visible.getClass());
         if (name.equals("org.telegram.ui.ProfileActivity")) {
             Reflect.invokeIfExists(visible, "updateRowsIds", new Class<?>[0]);
             Reflect.invokeIfExists(visible, "updateProfileData", new Class<?>[]{boolean.class}, false);
@@ -410,7 +414,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : dialogs.getDeclaredMethods()) {
-            if (method.getName().equals("updateStoriesVisibility")
+            if (TelegramSymbols.name(method).equals("updateStoriesVisibility")
                     && method.getReturnType() == void.class
                     && method.getParameterCount() == 1
                     && method.getParameterTypes()[0] == boolean.class) {
@@ -422,7 +426,7 @@ final class EnhancementHookInstaller {
                     restoreStoryBarHeight(chain.getThisObject());
                     return chain.proceed();
                 });
-            } else if (method.getName().equals("onResume") || method.getName().equals("createView")) {
+            } else if (TelegramSymbols.name(method).equals("onResume") || TelegramSymbols.name(method).equals("createView")) {
                 hook(method, chain -> {
                     Object result = chain.proceed();
                     refreshStoryBar(chain.getThisObject(), config());
@@ -434,10 +438,10 @@ final class EnhancementHookInstaller {
     }
 
     void refreshStoryBar(Object dialogs, EnhancementConfig enhancements) {
-        if (dialogs != null && "org.telegram.ui.MainTabsActivity".equals(dialogs.getClass().getName())) {
+        if (dialogs != null && "org.telegram.ui.MainTabsActivity".equals(TelegramSymbols.name(dialogs.getClass()))) {
             dialogs = Reflect.invokeIfExists(dialogs, "getDialogsActivity", new Class<?>[0]);
         }
-        if (!active || dialogs == null || !"org.telegram.ui.DialogsActivity".equals(dialogs.getClass().getName())) {
+        if (!active || dialogs == null || !"org.telegram.ui.DialogsActivity".equals(TelegramSymbols.name(dialogs.getClass()))) {
             return;
         }
         cachedEnhancements = enhancements == null ? new EnhancementConfig() : enhancements.deepCopy();
@@ -520,13 +524,13 @@ final class EnhancementHookInstaller {
                 continue;
             }
             for (Method method : storiesList.getDeclaredMethods()) {
-            if (!(method.getName().equals("markAsRead") || method.getName().equals("markStoryAsRead"))
+            if (!(TelegramSymbols.name(method).equals("markAsRead") || TelegramSymbols.name(method).equals("markStoryAsRead"))
                     || method.getReturnType() != boolean.class || method.getParameterCount() != 1) {
                 continue;
             }
             hook(method, chain -> enabled(EnhancementConfig.Feature.HIDE_STORY_VIEW_STATUS)
                     ? false : chain.proceed());
-            info("Enhancements: installed Story mark-as-read hook " + method.getName());
+            info("Enhancements: installed Story mark-as-read hook " + TelegramSymbols.name(method));
             }
         }
     }
@@ -537,7 +541,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : chatActivity.getDeclaredMethods()) {
-            if (!method.getName().startsWith("updatePinnedMessageView")) {
+            if (!TelegramSymbols.name(method).startsWith("updatePinnedMessageView")) {
                 continue;
             }
             hook(method, chain -> {
@@ -557,7 +561,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : controller.getDeclaredMethods()) {
-            String name = method.getName();
+            String name = TelegramSymbols.name(method);
             if (!(name.contains("SponsoredMessages") || name.contains("sponsoredMessages"))) {
                 continue;
             }
@@ -577,8 +581,8 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : type.getDeclaredMethods()) {
-            if (("isSwipeBackEnabled".equals(method.getName())
-                    || "canBeginSlide".equals(method.getName()))
+            if (("isSwipeBackEnabled".equals(TelegramSymbols.name(method))
+                    || "canBeginSlide".equals(TelegramSymbols.name(method)))
                     && method.getReturnType() == boolean.class) {
                 hook(method, chain -> enabled(feature) ? false : chain.proceed());
             }
@@ -591,7 +595,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : enterView.getDeclaredMethods()) {
-            String name = method.getName();
+            String name = TelegramSymbols.name(method);
             if (!"setRecordVideoButtonVisible".equals(name) || method.getParameterCount() != 2
                     || method.getParameterTypes()[0] != boolean.class || method.getParameterTypes()[1] != boolean.class) {
                 continue;
@@ -614,7 +618,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : sharedConfig.getDeclaredMethods()) {
-            String name = method.getName();
+            String name = TelegramSymbols.name(method);
             if (!(name.contains("AppUpdate") || name.contains("appUpdate"))) {
                 continue;
             }
@@ -630,7 +634,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : localeController.getDeclaredMethods()) {
-            if (!"formatShortNumber".equals(method.getName()) || method.getReturnType() != String.class) {
+            if (!"formatShortNumber".equals(TelegramSymbols.name(method)) || method.getReturnType() != String.class) {
                 continue;
             }
             hook(method, chain -> {
@@ -649,7 +653,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : player.getDeclaredMethods()) {
-            if (!"setMute".equals(method.getName())
+            if (!"setMute".equals(TelegramSymbols.name(method))
                     || method.getParameterCount() != 1
                     || method.getParameterTypes()[0] != boolean.class) {
                 continue;
@@ -669,12 +673,12 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : profile.getDeclaredMethods()) {
-            if (!("updateProfileData".equals(method.getName()) || "updateRowsIds".equals(method.getName()))) {
+            if (!("updateProfileData".equals(TelegramSymbols.name(method)) || "updateRowsIds".equals(TelegramSymbols.name(method)))) {
                 continue;
             }
             hook(method, chain -> {
                 Object result = chain.proceed();
-                if ("updateRowsIds".equals(method.getName()) && enabled(EnhancementConfig.Feature.HIDE_PHONE_NUMBER)) {
+                if ("updateRowsIds".equals(TelegramSymbols.name(method)) && enabled(EnhancementConfig.Feature.HIDE_PHONE_NUMBER)) {
                     EnhancementUiCompat.removePhoneRow(chain.getThisObject());
                 }
                 compatibleUi.profileIds(chain.getThisObject(), enabled(EnhancementConfig.Feature.SHOW_ID_IN_PROFILE));
@@ -691,7 +695,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : localeController.getDeclaredMethods()) {
-            if (!"formatDateOnline".equals(method.getName())
+            if (!"formatDateOnline".equals(TelegramSymbols.name(method))
                     || method.getReturnType() != String.class
                     || method.getParameterCount() == 0
                     || !(method.getParameterTypes()[0] == long.class || method.getParameterTypes()[0] == int.class)) {
@@ -721,7 +725,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : container.getDeclaredMethods()) {
-            if (!"updateSubtitle".equals(method.getName())) {
+            if (!"updateSubtitle".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             hook(method, chain -> {
@@ -744,13 +748,14 @@ final class EnhancementHookInstaller {
             id = Reflect.asLong(Reflect.field(parent, "dialog_id"), 0L);
         }
         Object subtitle = Reflect.field(container, "subtitleTextView");
+        if (subtitle == null) subtitle = Reflect.field(container, "animatedSubtitleTextView");
         if (id == 0L || subtitle == null) {
             return;
         }
         String current = Reflect.asString(Reflect.invokeIfExists(subtitle, "getText", new Class<?>[0]));
         String suffix = " · ID " + id;
         if (!current.contains(suffix)) {
-            Reflect.invokeIfExists(subtitle, "setText", new Class<?>[]{CharSequence.class}, current + suffix);
+            Reflect.invokeIfExists(container, "setSubtitle", new Class<?>[]{CharSequence.class}, current + suffix);
         }
     }
 
@@ -760,7 +765,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : emoji.getDeclaredMethods()) {
-            if (!"replaceEmoji".equals(method.getName())
+            if (!"replaceEmoji".equals(TelegramSymbols.name(method))
                     || method.getParameterCount() == 0
                     || method.getReturnType() != CharSequence.class
                     || !CharSequence.class.isAssignableFrom(method.getParameterTypes()[0])) {
@@ -778,7 +783,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : sharedConfig.getDeclaredMethods()) {
-            String name = method.getName().toLowerCase(Locale.ROOT);
+            String name = TelegramSymbols.name(method).toLowerCase(Locale.ROOT);
             if (method.getReturnType() == boolean.class && name.contains("blur")) {
                 hook(method, chain -> enabled(EnhancementConfig.Feature.FORCE_CHAT_BLUR)
                         ? true
@@ -792,14 +797,42 @@ final class EnhancementHookInstaller {
         if (theme == null) {
             return;
         }
+        boolean booleanEntry = false;
         for (Method method : theme.getDeclaredMethods()) {
-            String name = method.getName().toLowerCase(Locale.ROOT);
+            String name = TelegramSymbols.name(method).toLowerCase(Locale.ROOT);
             if (method.getReturnType() == boolean.class
                     && (name.contains("holiday") || name.contains("snow"))) {
+                booleanEntry = true;
                 hook(method, chain -> enabled(EnhancementConfig.Feature.FORCE_SNOW_ANIMATION)
                         ? true
                         : chain.proceed());
             }
+        }
+        // Play 70862 inlines the boolean getter but still reads this field after loading the drawable.
+        if (!booleanEntry && findField(theme, "canStartHolidayAnimation") != null) {
+            for (Method method : theme.getDeclaredMethods()) {
+                if (!"getCurrentHolidayDrawable".equals(TelegramSymbols.name(method))) continue;
+                holidayTheme = theme;
+                hook(method, chain -> {
+                    restoreHolidayFlag();
+                    Object result = chain.proceed();
+                    if (enabled(EnhancementConfig.Feature.FORCE_SNOW_ANIMATION)) {
+                        Object nativeFlag = Reflect.staticField(theme, "canStartHolidayAnimation");
+                        if (nativeFlag instanceof Boolean) {
+                            holidayNativeFlag = (Boolean) nativeFlag;
+                            setStaticBoolean(theme, "canStartHolidayAnimation", true);
+                        }
+                    }
+                    return result;
+                });
+            }
+        }
+    }
+
+    private void restoreHolidayFlag() {
+        if (holidayTheme != null && holidayNativeFlag != null) {
+            setStaticBoolean(holidayTheme, "canStartHolidayAnimation", holidayNativeFlag);
+            holidayNativeFlag = null;
         }
     }
 
@@ -809,7 +842,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : alertsCreator.getDeclaredMethods()) {
-            if ("processError".equals(method.getName())) {
+            if ("processError".equals(TelegramSymbols.name(method))) {
                 hook(method, chain -> enabled(EnhancementConfig.Feature.HIDE_PROTOCOL_ERRORS)
                         ? defaultValue(method.getReturnType())
                         : chain.proceed());
@@ -823,7 +856,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : dialogs.getDeclaredMethods()) {
-            if (!"updateFloatingButtonVisibility".equals(method.getName())) {
+            if (!"updateFloatingButtonVisibility".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             hook(method, chain -> {
@@ -835,7 +868,7 @@ final class EnhancementHookInstaller {
         Class<?> tabs = load(classLoader, "org.telegram.ui.MainTabsActivity");
         if (tabs != null) {
             for (Method method : tabs.getDeclaredMethods()) {
-                if (method.getName().equals("onResume") || method.getName().equals("createView")) {
+                if (TelegramSymbols.name(method).equals("onResume") || TelegramSymbols.name(method).equals("createView")) {
                     hook(method, chain -> {
                         Object result = chain.proceed();
                         compatibleUi.contacts(chain.getThisObject(), enabled(EnhancementConfig.Feature.HIDE_CONTACTS_TAB));
@@ -852,7 +885,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : emojiView.getDeclaredMethods()) {
-            if (!"updateStickerTabs".equals(method.getName())) {
+            if (!"updateStickerTabs".equals(TelegramSymbols.name(method))) {
                 continue;
             }
             hook(method, chain -> {
@@ -872,7 +905,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : stories.getDeclaredMethods()) {
-            if (!"hasStories".equals(method.getName())
+            if (!"hasStories".equals(TelegramSymbols.name(method))
                     || method.getReturnType() != boolean.class
                     || method.getParameterCount() == 0) {
                 continue;
@@ -918,7 +951,7 @@ final class EnhancementHookInstaller {
             return;
         }
         for (Method method : operation.getDeclaredMethods()) {
-            if (!("start".equals(method.getName()) || "startDownloadRequest".equals(method.getName()))) {
+            if (!("start".equals(TelegramSymbols.name(method)) || "startDownloadRequest".equals(TelegramSymbols.name(method)))) {
                 continue;
             }
             hook(method, chain -> {
@@ -961,7 +994,7 @@ final class EnhancementHookInstaller {
             boolean enabledResult
     ) {
         for (Method method : type.getDeclaredMethods()) {
-            if (name.equals(method.getName()) && method.getReturnType() == boolean.class) {
+            if (name.equals(TelegramSymbols.name(method)) && method.getReturnType() == boolean.class) {
                 hook(method, chain -> enabled(feature) ? enabledResult : chain.proceed());
             }
         }
@@ -974,7 +1007,7 @@ final class EnhancementHookInstaller {
             EnhancementConfig.Feature... features
     ) {
         for (Method method : type.getDeclaredMethods()) {
-            if (!name.equals(method.getName()) || method.getReturnType() != boolean.class) {
+            if (!name.equals(TelegramSymbols.name(method)) || method.getReturnType() != boolean.class) {
                 continue;
             }
             hook(method, chain -> {
@@ -1000,7 +1033,6 @@ final class EnhancementHookInstaller {
             if (now - lastConfigRefreshAt < CONFIG_SNAPSHOT_MS) {
                 return snapshot;
             }
-            lastConfigRefreshAt = now;
             XposedConfigProvider provider = configProvider;
             Context context = currentApplication();
             if (provider == null || context == null) {
@@ -1011,6 +1043,7 @@ final class EnhancementHookInstaller {
                     ? new EnhancementConfig()
                     : filterConfig.enhancements.deepCopy().sanitize();
             cachedEnhancements = loaded;
+            lastConfigRefreshAt = now;
             return loaded;
         }
     }
@@ -1026,7 +1059,7 @@ final class EnhancementHookInstaller {
         }
         try {
             Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Method currentApplication = activityThread.getDeclaredMethod("currentApplication");
+            Method currentApplication = TelegramSymbols.declaredMethod(activityThread, "currentApplication");
             Object value = currentApplication.invoke(null);
             if (!(value instanceof Context)) {
                 return null;
@@ -1068,7 +1101,7 @@ final class EnhancementHookInstaller {
                         return hooker.intercept(chain);
                     });
             for (StackTraceElement frame : Thread.currentThread().getStackTrace()) {
-                if (frame.getClassName().equals(EnhancementHookInstaller.class.getName())
+                if (frame.getClassName().equals(TelegramSymbols.name(EnhancementHookInstaller.class))
                         && !frame.getMethodName().equals("hook")) {
                     hookOwners.put(method, frame.getMethodName());
                     break;
@@ -1076,7 +1109,7 @@ final class EnhancementHookInstaller {
             }
         } catch (Throwable throwable) {
             hookedMethods.remove(method);
-            warn("Enhancements: failed to hook " + method.getDeclaringClass().getName() + "." + method.getName());
+            warn("Enhancements: failed to hook " + TelegramSymbols.name(method.getDeclaringClass()) + "." + TelegramSymbols.name(method));
         }
     }
 
@@ -1113,7 +1146,7 @@ final class EnhancementHookInstaller {
 
     private static Class<?> load(ClassLoader classLoader, String className) {
         try {
-            return classLoader.loadClass(className);
+            return TelegramSymbols.loadClass(classLoader, className);
         } catch (ClassNotFoundException ignored) {
             return null;
         }
@@ -1130,7 +1163,7 @@ final class EnhancementHookInstaller {
 
     private static boolean peerLooksLikeGroup(Object request) {
         Object peer = Reflect.field(request, "peer");
-        String name = peer == null ? "" : peer.getClass().getName();
+        String name = peer == null ? "" : TelegramSymbols.name(peer.getClass());
         return name.contains("InputPeerChat") || name.contains("InputPeerChannel");
     }
 
@@ -1179,7 +1212,7 @@ final class EnhancementHookInstaller {
         Class<?> current = type;
         while (current != null) {
             try {
-                Field field = current.getDeclaredField(name);
+                Field field = TelegramSymbols.declaredField(current, name);
                 field.setAccessible(true);
                 return field;
             } catch (ReflectiveOperationException ignored) {

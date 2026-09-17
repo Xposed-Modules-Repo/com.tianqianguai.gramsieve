@@ -83,11 +83,16 @@ final class EnhancementMediaActions {
             if (!active.getAsBoolean()) return;
             dismiss.run();
             try {
-                Method save = Reflect.method(loader.loadClass("org.telegram.ui.Stories.PeerStoriesView"), "saveToGallery");
-                Reflect.invoke(save, storyView);
+                Class<?> storyType = TelegramSymbols.loadClass(loader, "org.telegram.ui.Stories.PeerStoriesView");
+                Method save = TelegramSymbols.uniqueMethod(storyType, "saveToGallery");
+                if (java.lang.reflect.Modifier.isStatic(save.getModifiers())) {
+                    Reflect.invoke(save, null, storyView);
+                } else {
+                    Reflect.invoke(save, storyView);
+                }
                 record("save_story", "native_save_invoked", null);
             } catch (RuntimeException | ReflectiveOperationException failure) {
-                record("save_story", "failed", failure.getClass().getSimpleName());
+                record("save_story", "failed", TelegramSymbols.simpleName(failure.getClass()));
             }
         });
     }
@@ -96,7 +101,7 @@ final class EnhancementMediaActions {
         try {
             int account = Reflect.asInt(Reflect.field(message, "currentAccount"), 0);
             Object owner = Reflect.field(message, "messageOwner");
-            Class<?> fileLoader = loader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoader = TelegramSymbols.loadClass(loader, "org.telegram.messenger.FileLoader");
             Object instance = Reflect.invokeStatic(fileLoader, "getInstance", new Class<?>[]{int.class}, account);
             Object path = owner == null ? null : Reflect.invokeIfExists(instance, "getPathToMessage", new Class<?>[]{owner.getClass()}, owner);
             File file = path instanceof File ? (File) path : null;
@@ -109,17 +114,17 @@ final class EnhancementMediaActions {
                 Toast.makeText(context, label(context, "请先下载语音", "Download the voice message first"), Toast.LENGTH_SHORT).show();
                 return;
             }
-            Class<?> callbackClass = loader.loadClass("org.telegram.messenger.Utilities$Callback");
+            Class<?> callbackClass = TelegramSymbols.loadClass(loader, "org.telegram.messenger.Utilities$Callback");
             Object callback = Proxy.newProxyInstance(loader, new Class<?>[]{callbackClass}, (proxy, method, args) -> {
-                if (method.getName().equals("run")) {
+                if (TelegramSymbols.name(method).equals("run")) {
                     Object uri = args == null || args.length == 0 ? null : args[0];
                     record("save_voice", uri instanceof Uri ? "saved" : "save_failed", uri == null ? null : uri.toString());
-                } else if (method.getName().equals("toString")) return "GramSieveVoiceSaveCallback";
-                else if (method.getName().equals("hashCode")) return System.identityHashCode(proxy);
-                else if (method.getName().equals("equals")) return args != null && args.length == 1 && proxy == args[0];
+                } else if (TelegramSymbols.name(method).equals("toString")) return "GramSieveVoiceSaveCallback";
+                else if (TelegramSymbols.name(method).equals("hashCode")) return System.identityHashCode(proxy);
+                else if (TelegramSymbols.name(method).equals("equals")) return args != null && args.length == 1 && proxy == args[0];
                 return null;
             });
-            Class<?> mediaController = loader.loadClass("org.telegram.messenger.MediaController");
+            Class<?> mediaController = TelegramSymbols.loadClass(loader, "org.telegram.messenger.MediaController");
             String mime = Reflect.asString(Reflect.invokeIfExists(message, "getMimeType", new Class<?>[0]));
             if (!mime.startsWith("audio/")) mime = "audio/ogg";
             String extension = mime.contains("mpeg") ? ".mp3" : mime.contains("mp4") ? ".m4a" : mime.contains("wav") ? ".wav" : ".ogg";
@@ -128,7 +133,7 @@ final class EnhancementMediaActions {
             record("save_voice", "saving", null);
             Reflect.invoke(save, null, file.getAbsolutePath(), context, 2, name, mime, callback);
         } catch (RuntimeException | ReflectiveOperationException failure) {
-            record("save_voice", "failed", failure.getClass().getSimpleName());
+            record("save_voice", "failed", TelegramSymbols.simpleName(failure.getClass()));
             Toast.makeText(context, label(context, "保存语音失败", "Could not save voice message"), Toast.LENGTH_SHORT).show();
         }
     }
@@ -136,7 +141,7 @@ final class EnhancementMediaActions {
     private static void add(ViewGroup container, ClassLoader loader, String tag, String title, Runnable action) {
         if (containsLabel(container, tag, title)) return;
         try {
-            Class<?> type = loader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Class<?> type = TelegramSymbols.loadClass(loader, "org.telegram.ui.ActionBar.ActionBarMenuSubItem");
             View view = (View) type.getConstructor(Context.class, boolean.class, boolean.class)
                     .newInstance(container.getContext(), false, false);
             int icon = container.getResources().getIdentifier(tag.equals(COPY_TAG) ? "msg_copy" : "msg_download", "drawable", container.getContext().getPackageName());
@@ -145,7 +150,7 @@ final class EnhancementMediaActions {
             view.setOnClickListener(clicked -> action.run());
             container.addView(view);
         } catch (ReflectiveOperationException failure) {
-            record(tag, "menu_failed", failure.getClass().getSimpleName());
+            record(tag, "menu_failed", TelegramSymbols.simpleName(failure.getClass()));
         }
     }
 
@@ -172,7 +177,7 @@ final class EnhancementMediaActions {
         int resource = context.getResources().getIdentifier(name, "string", context.getPackageName());
         if (resource != 0) {
             try {
-                Object value = Reflect.invokeStatic(loader.loadClass("org.telegram.messenger.LocaleController"),
+                Object value = Reflect.invokeStatic(TelegramSymbols.loadClass(loader, "org.telegram.messenger.LocaleController"),
                         "getString", new Class<?>[]{int.class}, resource);
                 if (value instanceof String && !((String) value).isBlank()) return (String) value;
             } catch (ClassNotFoundException ignored) { }

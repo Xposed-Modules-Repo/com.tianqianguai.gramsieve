@@ -81,7 +81,7 @@ final class TelegramLocale {
         if (classLoader == null && context != null) {
             classLoader = context.getClassLoader();
         }
-        return Class.forName(
+        return TelegramSymbols.forName(
                 "org.telegram.messenger.LocaleController",
                 false,
                 classLoader

@@ -45,12 +45,12 @@ final class FeatureProbe {
             return result;
         }
         try {
-            Class<?> type = Class.forName(spec.className, false, loader);
+            Class<?> type = TelegramSymbols.forName(spec.className, false, loader);
             result.putAll(inspectTargets(type, spec, feature, registered, calls, owners));
         } catch (ClassNotFoundException | LinkageError failure) {
             result.put("className", spec.className);
             result.put("status", "class_missing");
-            result.put("error", failure.getClass().getSimpleName());
+            result.put("error", TelegramSymbols.simpleName(failure.getClass()));
         }
         return result;
     }
@@ -58,14 +58,14 @@ final class FeatureProbe {
     static Map<String, Object> inspectTargets(Class<?> type, Spec spec,
             EnhancementConfig.Feature feature, Set<Method> registered, Map<Method, Long> calls, Map<Method, String> owners) {
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("className", type.getName());
+        result.put("className", TelegramSymbols.name(type));
         List<Map<String, Object>> methods = new ArrayList<>();
         int registeredCount = 0;
         int ownedCount = 0;
         if (!spec.methods.isEmpty()) {
             for (Method method : type.getDeclaredMethods()) {
-                if (!method.getName().matches(spec.methods)
-                        || (spec.returns != null && !method.getReturnType().getName().equals(spec.returns))
+                if (!TelegramSymbols.name(method).matches(spec.methods)
+                        || (spec.returns != null && !TelegramSymbols.name(method.getReturnType()).equals(spec.returns))
                         || !matchesParameters(feature, method)) {
                     continue;
                 }
@@ -97,7 +97,7 @@ final class FeatureProbe {
             item.put("present", field != null);
             item.put("expected", spec.fieldKind);
             if (field != null) {
-                item.put("declaredType", field.getType().getName());
+                item.put("declaredType", TelegramSymbols.name(field.getType()));
                 boolean compatible = compatible(field.getType(), spec.fieldKind);
                 item.put("compatible", compatible);
                 if (compatible) {
@@ -189,7 +189,7 @@ final class FeatureProbe {
     static Field field(Class<?> type, String name) {
         for (Class<?> cursor = type; cursor != null; cursor = cursor.getSuperclass()) {
             try {
-                return cursor.getDeclaredField(name);
+                return TelegramSymbols.declaredField(cursor, name);
             } catch (NoSuchFieldException ignored) {
                 // Lookup only; never invoke a Telegram method or change a field.
             }
@@ -249,7 +249,7 @@ final class FeatureProbe {
             case SHOW_EXACT_LAST_SEEN:
                 return s("messenger.LocaleController", "formatDateOnline", "java.lang.String", "any");
             case SHOW_ID_IN_STATUS_LINE:
-                return s("ui.Components.ChatAvatarContainer", "updateSubtitle", null, "view", "subtitleTextView");
+                return s("ui.Components.ChatAvatarContainer", "updateSubtitle", null, "view", "subtitleTextView", "animatedSubtitleTextView");
             case DISABLE_INSTANT_CAMERA:
                 return s("ui.Components.ChatActivityEnterView", "setRecordVideoButtonVisible", "void", "boolean", "isInVideoMode");
             case DISABLE_CHAT_SWIPE_BACK:
@@ -261,7 +261,7 @@ final class FeatureProbe {
             case FORCE_CHAT_BLUR:
                 return s("messenger.SharedConfig", "(?i).*blur.*", "boolean", "any");
             case FORCE_SNOW_ANIMATION:
-                return s("ui.ActionBar.Theme", "(?i).*(holiday|snow).*", "boolean", "any");
+                return s("ui.ActionBar.Theme", "(?i).*(holiday|snow).*", null, "any");
             case USE_SYSTEM_EMOJI:
                 return s("messenger.Emoji", "replaceEmoji", "java.lang.CharSequence", "any");
             case SHOW_FULL_NUMBERS:

@@ -73,7 +73,7 @@ public final class TelegramAccountResolver {
             return 0;
         }
         try {
-            Class<?> userConfigClass = classLoader.loadClass("org.telegram.messenger.UserConfig");
+            Class<?> userConfigClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.UserConfig");
             return Math.max(0, Reflect.asInt(Reflect.staticField(userConfigClass, "selectedAccount"), 0));
         } catch (Throwable ignored) {
             return 0;

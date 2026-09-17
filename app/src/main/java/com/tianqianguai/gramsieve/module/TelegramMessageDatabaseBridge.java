@@ -238,7 +238,7 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
             int constructor = Reflect.asInt(Reflect.invokeIfExists(data, "readInt32",
                     new Class<?>[]{boolean.class}, false), 0);
             ClassLoader classLoader = messagesStorage.getClass().getClassLoader();
-            Class<?> messageClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+            Class<?> messageClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.TLRPC$Message");
             Object message = Reflect.invokeStatic(messageClass, "TLdeserialize", null,
                     data, constructor, false);
             if (message != null) {
@@ -293,7 +293,7 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
             return false;
         }
         Object owner = messageOwner(first);
-        String simpleName = owner != null ? owner.getClass().getSimpleName() : first.getClass().getSimpleName();
+        String simpleName = owner != null ? TelegramSymbols.simpleName(owner.getClass()) : TelegramSymbols.simpleName(first.getClass());
         return simpleName.contains("Message");
     }
 
@@ -309,7 +309,7 @@ final class TelegramMessageDatabaseBridge implements AutoCloseable {
         Object media = Reflect.field(owner, "media");
         String caption = caption(media);
         String content = joinContent(text, caption);
-        String mediaType = media != null ? media.getClass().getSimpleName() : null;
+        String mediaType = media != null ? TelegramSymbols.simpleName(media.getClass()) : null;
         String mediaId = mediaId(media);
         return new MessageSnapshot(dialogId, messageId, senderId, content, caption, mediaType, mediaId, media);
     }

@@ -178,7 +178,7 @@ final class EnhancementUiCompat {
         }
         Field phone = FeatureProbe.field(profile.getClass(), "phoneRow");
         for (Field field : phone.getDeclaringClass().getDeclaredFields()) {
-            String name = field.getName();
+            String name = TelegramSymbols.name(field);
             if (field.getType() != int.class || !(name.endsWith("Row") || name.equals("rowCount"))) {
                 continue;
             }

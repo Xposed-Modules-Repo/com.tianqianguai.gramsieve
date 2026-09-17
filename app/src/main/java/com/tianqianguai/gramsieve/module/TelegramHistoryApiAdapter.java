@@ -55,10 +55,10 @@ final class TelegramHistoryApiAdapter {
     static ProbeResult probe(ClassLoader classLoader) {
         String version = detectTelegramVersion(classLoader);
         try {
-            Class<?> controllerClass = classLoader.loadClass(CONTROLLER_CLASS);
-            Class<?> requestClass = classLoader.loadClass(REQUEST_CLASS);
-            Class<?> delegateClass = classLoader.loadClass(DELEGATE_CLASS);
-            Class<?> tlObjectClass = classLoader.loadClass(TL_OBJECT_CLASS);
+            Class<?> controllerClass = TelegramSymbols.loadClass(classLoader, CONTROLLER_CLASS);
+            Class<?> requestClass = TelegramSymbols.loadClass(classLoader, REQUEST_CLASS);
+            Class<?> delegateClass = TelegramSymbols.loadClass(classLoader, DELEGATE_CLASS);
+            Class<?> tlObjectClass = TelegramSymbols.loadClass(classLoader, TL_OBJECT_CLASS);
 
             Method controllerFactory = requireMethod(controllerClass, "getInstance", int.class);
             if (!Modifier.isStatic(controllerFactory.getModifiers())) {
@@ -187,7 +187,7 @@ final class TelegramHistoryApiAdapter {
         while (current != null) {
             for (Method method : current.getDeclaredMethods()) {
                 Class<?>[] params = method.getParameterTypes();
-                if (!"sendRequest".equals(method.getName()) || params.length != parameterCount) {
+                if (!"sendRequest".equals(TelegramSymbols.name(method)) || params.length != parameterCount) {
                     continue;
                 }
                 if (!params[0].isAssignableFrom(tlObjectClass)
@@ -210,7 +210,7 @@ final class TelegramHistoryApiAdapter {
 
     private static Method findRunMethod(Class<?> delegateClass) {
         for (Method method : delegateClass.getMethods()) {
-            if ("run".equals(method.getName()) && method.getParameterCount() == 2) {
+            if ("run".equals(TelegramSymbols.name(method)) && method.getParameterCount() == 2) {
                 return method;
             }
         }
@@ -231,7 +231,7 @@ final class TelegramHistoryApiAdapter {
             throws NoSuchMethodException {
         Method method = findMethod(type, name, params);
         if (method == null) {
-            throw new NoSuchMethodException(type.getName() + "." + name);
+            throw new NoSuchMethodException(TelegramSymbols.name(type) + "." + name);
         }
         return method;
     }
@@ -240,7 +240,7 @@ final class TelegramHistoryApiAdapter {
         Class<?> current = type;
         while (current != null) {
             try {
-                Method method = current.getDeclaredMethod(name, params);
+                Method method = TelegramSymbols.declaredMethod(current, name, params);
                 method.setAccessible(true);
                 return method;
             } catch (ReflectiveOperationException ignored) {
@@ -256,7 +256,7 @@ final class TelegramHistoryApiAdapter {
         while (current != null) {
             for (Method method : current.getDeclaredMethods()) {
                 Class<?>[] params = method.getParameterTypes();
-                if (name.equals(method.getName()) && params.length == parameterCount
+                if (name.equals(TelegramSymbols.name(method)) && params.length == parameterCount
                         && params[parameterCount - 1] == finalParameterType) {
                     method.setAccessible(true);
                     return method;
@@ -271,19 +271,19 @@ final class TelegramHistoryApiAdapter {
         Class<?> current = type;
         while (current != null) {
             try {
-                Field field = current.getDeclaredField(name);
+                Field field = TelegramSymbols.declaredField(current, name);
                 field.setAccessible(true);
                 return field;
             } catch (ReflectiveOperationException ignored) {
                 current = current.getSuperclass();
             }
         }
-        throw new NoSuchFieldException(type.getName() + "." + name);
+        throw new NoSuchFieldException(TelegramSymbols.name(type) + "." + name);
     }
 
     private static String detectTelegramVersion(ClassLoader classLoader) {
         try {
-            Class<?> buildVars = classLoader.loadClass(BUILD_VARS_CLASS);
+            Class<?> buildVars = TelegramSymbols.loadClass(classLoader, BUILD_VARS_CLASS);
             int code = Reflect.asInt(Reflect.staticField(buildVars, "BUILD_VERSION"), 0);
             String name = Reflect.asString(Reflect.staticField(buildVars, "BUILD_VERSION_STRING"));
             if (!name.isEmpty() && code > 0) {
@@ -300,7 +300,7 @@ final class TelegramHistoryApiAdapter {
 
     private static String conciseFailure(Throwable throwable) {
         String message = throwable.getMessage();
-        return throwable.getClass().getSimpleName()
+        return TelegramSymbols.simpleName(throwable.getClass())
                 + (message == null || message.isEmpty() ? "" : ": " + message);
     }
 

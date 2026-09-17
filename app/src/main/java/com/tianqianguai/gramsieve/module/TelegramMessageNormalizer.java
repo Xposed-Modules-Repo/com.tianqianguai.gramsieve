@@ -148,7 +148,7 @@ final class TelegramMessageNormalizer {
         if (action == null) {
             return false;
         }
-        String className = action.getClass().getName();
+        String className = TelegramSymbols.name(action.getClass());
         return className.contains("PinMessage");
     }
 
@@ -195,7 +195,7 @@ final class TelegramMessageNormalizer {
         }
         ClassLoader classLoader = messageObject.getClass().getClassLoader();
         try {
-            Class<?> messagesControllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> messagesControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             Object messagesController = Reflect.invokeStatic(messagesControllerClass, "getInstance", new Class<?>[]{int.class}, account);
             if (messagesController == null) {
                 return null;

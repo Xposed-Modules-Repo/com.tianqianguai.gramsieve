@@ -200,6 +200,12 @@ final class TelegramHookInstaller {
             return;
         }
         retiring = false;
+        try {
+            boolean mapped = TelegramSymbols.initialize(applicationInfo == null ? null : applicationInfo.sourceDir);
+            info("Telegram symbols=" + (mapped ? "Play-70862" : "native"));
+        } catch (Exception exception) {
+            error("Telegram symbol map could not be loaded", exception);
+        }
         String actualPackageName = applicationInfo == null ? null : applicationInfo.packageName;
         telegramResourcePackageName = TelegramPackages.resolveResourcePackage(actualPackageName);
         info("Telegram host package=" + (actualPackageName == null ? "<unknown>" : actualPackageName)
@@ -265,23 +271,23 @@ final class TelegramHookInstaller {
                 ensureDownloadUiLifecycle(host);
             }
             enhancementHooks.refreshFeatureUi(host, currentCliConfig(hostApplicationContext).enhancements);
-            info("UIRebind: completed fragment=" + host.getClass().getSimpleName());
+            info("UIRebind: completed fragment=" + TelegramSymbols.simpleName(host.getClass()));
         };
 
         View anchor = resolveHostFragmentView(host);
         if (anchor != null && uiCallbacks.post(anchor, rebind)) {
-            info("UIRebind: scheduled fragment=" + host.getClass().getSimpleName());
+            info("UIRebind: scheduled fragment=" + TelegramSymbols.simpleName(host.getClass()));
             return;
         }
         Object parentActivity = Reflect.invokeIfExists(host, "getParentActivity", new Class<?>[0]);
         if (parentActivity instanceof Activity) {
             ((Activity) parentActivity).runOnUiThread(rebind);
             info("UIRebind: scheduled via parent activity fragment="
-                    + host.getClass().getSimpleName());
+                    + TelegramSymbols.simpleName(host.getClass()));
             return;
         }
         info("UIRebind: visible fragment has no UI anchor; waiting for onResume fragment="
-                + host.getClass().getSimpleName());
+                + TelegramSymbols.simpleName(host.getClass()));
     }
 
     private Object resolveCurrentTelegramFragment(ClassLoader classLoader) {
@@ -289,7 +295,7 @@ final class TelegramHookInstaller {
             return null;
         }
         try {
-            Class<?> launchActivity = classLoader.loadClass("org.telegram.ui.LaunchActivity");
+            Class<?> launchActivity = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.LaunchActivity");
             Object fragment = Reflect.invokeStatic(
                     launchActivity, "getSafeLastFragment", new Class<?>[0]);
             if (fragment == null) {
@@ -307,8 +313,8 @@ final class TelegramHookInstaller {
     }
 
     private boolean isFragment(Object fragment, String simpleName) {
-        return fragment != null && (simpleName.equals(fragment.getClass().getSimpleName())
-                || fragment.getClass().getName().endsWith("." + simpleName));
+        return fragment != null && (simpleName.equals(TelegramSymbols.simpleName(fragment.getClass()))
+                || TelegramSymbols.name(fragment.getClass()).endsWith("." + simpleName));
     }
 
     private void refreshSettingsList(Object settingsActivity) {
@@ -534,10 +540,10 @@ final class TelegramHookInstaller {
 
     private void hookPushListenerController(ClassLoader classLoader) {
         try {
-            Class<?> pushControllerClass = classLoader.loadClass("org.telegram.messenger.PushListenerController");
+            Class<?> pushControllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.PushListenerController");
             boolean hooked = false;
             for (Method method : pushControllerClass.getDeclaredMethods()) {
-                if (!"processRemoteMessage".equals(method.getName())) {
+                if (!"processRemoteMessage".equals(TelegramSymbols.name(method))) {
                     continue;
                 }
                 hook(method, chain -> {
@@ -562,10 +568,10 @@ final class TelegramHookInstaller {
 
     private void hookConnectionsManagerPushFallback(ClassLoader classLoader) {
         try {
-            Class<?> connectionsManagerClass = classLoader.loadClass("org.telegram.tgnet.ConnectionsManager");
+            Class<?> connectionsManagerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.ConnectionsManager");
             boolean hooked = false;
             for (Method method : connectionsManagerClass.getDeclaredMethods()) {
-                if (!"onInternalPushReceived".equals(method.getName())) {
+                if (!"onInternalPushReceived".equals(TelegramSymbols.name(method))) {
                     continue;
                 }
                 hook(method, chain -> {
@@ -626,7 +632,7 @@ final class TelegramHookInstaller {
                         response.put("ok", false);
                         response.put("command", command);
                         response.put("error", throwable.getMessage() == null
-                                ? throwable.getClass().getSimpleName()
+                                ? TelegramSymbols.simpleName(throwable.getClass())
                                 : throwable.getMessage());
                     } catch (Throwable ignored) {
                         // JSONObject with three primitive fields cannot fail in normal operation.
@@ -635,7 +641,7 @@ final class TelegramHookInstaller {
                     setResultData(cliResponseData(response));
                     info("CLI command rejected command=" + command + " reason="
                             + (throwable.getMessage() == null
-                            ? throwable.getClass().getSimpleName()
+                            ? TelegramSymbols.simpleName(throwable.getClass())
                             : throwable.getMessage()));
                 }
             }
@@ -720,7 +726,7 @@ final class TelegramHookInstaller {
                 response.put("ok", false);
                 response.put("command", command);
                 response.put("error", throwable.getMessage() == null
-                        ? throwable.getClass().getSimpleName()
+                        ? TelegramSymbols.simpleName(throwable.getClass())
                         : throwable.getMessage());
             } catch (Throwable ignored) {
                 // JSONObject with three primitive fields cannot fail in normal operation.
@@ -729,7 +735,7 @@ final class TelegramHookInstaller {
             pendingResult.setResultData(cliResponseData(response));
             info("CLI command rejected command=" + command + " reason="
                     + (throwable.getMessage() == null
-                    ? throwable.getClass().getSimpleName()
+                    ? TelegramSymbols.simpleName(throwable.getClass())
                     : throwable.getMessage()));
         } finally {
             pendingResult.finish();
@@ -1788,7 +1794,7 @@ final class TelegramHookInstaller {
         }
         state.put("forcedByGramSieve", forced);
         if (item != null) {
-            state.put("class", item.getClass().getName());
+            state.put("class", TelegramSymbols.name(item.getClass()));
             state.put("alpha", item.getAlpha());
             state.put("scaleX", item.getScaleX());
             state.put("scaleY", item.getScaleY());
@@ -2006,7 +2012,7 @@ final class TelegramHookInstaller {
         }
         response.put("visibleFragment", visibleFragment == null
                 ? ""
-                : visibleFragment.getClass().getName());
+                : TelegramSymbols.name(visibleFragment.getClass()));
         response.put("chat", chatActivity != null);
 
         Object headerItem = chatActivity == null ? null : Reflect.field(chatActivity, "headerItem");
@@ -2264,7 +2270,7 @@ final class TelegramHookInstaller {
     }
 
     private String activityName(Activity activity) {
-        return activity == null ? "" : activity.getClass().getName();
+        return activity == null ? "" : TelegramSymbols.name(activity.getClass());
     }
 
     private JSONObject cliUiJump(JSONObject response, Context context, Intent intent) throws Exception {
@@ -2439,7 +2445,7 @@ final class TelegramHookInstaller {
     private Context resolveHostApplication() {
         try {
             Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
-            java.lang.reflect.Method currentApplication = activityThreadClass.getDeclaredMethod("currentApplication");
+            java.lang.reflect.Method currentApplication = TelegramSymbols.declaredMethod(activityThreadClass, "currentApplication");
             currentApplication.setAccessible(true);
             Object app = currentApplication.invoke(null);
             if (!(app instanceof Context)) {
@@ -2597,9 +2603,9 @@ final class TelegramHookInstaller {
 
     private void hookChatMessageCell(ClassLoader classLoader) {
         try {
-            Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
-            Class<?> groupedMessagesClass = classLoader.loadClass("org.telegram.messenger.MessageObject$GroupedMessages");
-            Class<?> cellClass = classLoader.loadClass("org.telegram.ui.Cells.ChatMessageCell");
+            Class<?> messageObjectClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessageObject");
+            Class<?> groupedMessagesClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessageObject$GroupedMessages");
+            Class<?> cellClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Cells.ChatMessageCell");
             boolean hooked = false;
             hooked |= tryHookMessageMethod(
                     cellClass,
@@ -2711,14 +2717,14 @@ final class TelegramHookInstaller {
                 builder.append(", ");
             }
             Class<?> parameterType = parameterTypes[i];
-            builder.append(parameterType == null ? "null" : parameterType.getSimpleName());
+            builder.append(parameterType == null ? "null" : TelegramSymbols.simpleName(parameterType));
         }
         return builder.append(')').toString();
     }
 
     private void hookChatActivityMenu(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
             Method createView = Reflect.method(chatActivityClass, "createView", Context.class);
             hook(createView, chain -> {
                 Object result = chain.proceed();
@@ -2737,7 +2743,7 @@ final class TelegramHookInstaller {
 
     private void hookChatActivityResume(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
             Method onResume = Reflect.method(chatActivityClass, "onResume");
             hook(onResume, chain -> {
                 Object result = chain.proceed();
@@ -2760,7 +2766,7 @@ final class TelegramHookInstaller {
 
     private void hookChatActivityPause(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
             Method onPause = Reflect.method(chatActivityClass, "onPause");
             hook(onPause, chain -> {
                 try {
@@ -2784,14 +2790,14 @@ final class TelegramHookInstaller {
 
     private void hookScrollToLastMessage(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
-            Method scrollToLast = Reflect.method(
-                    chatActivityClass,
-                    "scrollToLastMessage",
-                    boolean.class,
-                    boolean.class,
-                    Runnable.class
-            );
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
+            Method scrollToLast;
+            try {
+                scrollToLast = Reflect.method(chatActivityClass, "scrollToLastMessage",
+                        boolean.class, boolean.class, Runnable.class);
+            } catch (NoSuchMethodException optimizedSignature) {
+                scrollToLast = TelegramSymbols.uniqueMethod(chatActivityClass, "scrollToLastMessage");
+            }
             hook(scrollToLast, chain -> {
                 try {
                     Object chatActivity = chain.getThisObject();
@@ -2827,7 +2833,7 @@ final class TelegramHookInstaller {
 
     private void hookMessageContextMenu(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
             Method createMenu = Reflect.method(
                     chatActivityClass,
                     "createMenu",
@@ -2861,11 +2867,11 @@ final class TelegramHookInstaller {
 
     private void hookMessageDeleteFlow(ClassLoader classLoader) {
         try {
-            Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
+            Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
             int hooked = 0;
             for (Method method : chatActivityClass.getDeclaredMethods()) {
                 int parameterCount = method.getParameterCount();
-                if (!"createDeleteMessagesAlert".equals(method.getName())
+                if (!"createDeleteMessagesAlert".equals(TelegramSymbols.name(method))
                         || (parameterCount != 2 && parameterCount != 3)) {
                     continue;
                 }
@@ -2901,8 +2907,8 @@ final class TelegramHookInstaller {
 
     private void hookChatActivityAdapter(ClassLoader classLoader) {
         try {
-            Class<?> adapterClass = classLoader.loadClass("org.telegram.ui.ChatActivity$ChatActivityAdapter");
-            Class<?> viewHolderClass = classLoader.loadClass("androidx.recyclerview.widget.RecyclerView$ViewHolder");
+            Class<?> adapterClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity$ChatActivityAdapter");
+            Class<?> viewHolderClass = TelegramSymbols.loadClass(classLoader, "androidx.recyclerview.widget.RecyclerView$ViewHolder");
             Method onBindViewHolder = Reflect.method(adapterClass, "onBindViewHolder", viewHolderClass, int.class);
             deoptimize(onBindViewHolder, "ChatActivityAdapter.onBindViewHolder(ViewHolder, int)");
             hook(onBindViewHolder, this::handleChatRowBinding);
@@ -2916,29 +2922,56 @@ final class TelegramHookInstaller {
 
     private void hookRecyclerViewBinding(ClassLoader classLoader) {
         try {
-            Class<?> adapterClass = classLoader.loadClass("androidx.recyclerview.widget.RecyclerView$Adapter");
-            Class<?> recyclerClass = classLoader.loadClass("androidx.recyclerview.widget.RecyclerView$Recycler");
-            Class<?> viewHolderClass = classLoader.loadClass("androidx.recyclerview.widget.RecyclerView$ViewHolder");
+            Class<?> adapterClass = TelegramSymbols.loadClass(classLoader, "androidx.recyclerview.widget.RecyclerView$Adapter");
+            Class<?> recyclerClass = TelegramSymbols.loadClass(classLoader, "androidx.recyclerview.widget.RecyclerView$Recycler");
+            Class<?> viewHolderClass = TelegramSymbols.loadClass(classLoader, "androidx.recyclerview.widget.RecyclerView$ViewHolder");
 
-            Method bindViewHolder = Reflect.method(adapterClass, "bindViewHolder", viewHolderClass, int.class);
-            deoptimize(bindViewHolder, "RecyclerView.Adapter.bindViewHolder(ViewHolder, int)");
-            hook(bindViewHolder, this::handleRecyclerViewBinding);
-            info("Hooked RecyclerView.Adapter.bindViewHolder(ViewHolder, int)");
+            boolean inlineBinding = false;
+            try {
+                Method bindViewHolder = Reflect.method(adapterClass, "bindViewHolder", viewHolderClass, int.class);
+                deoptimize(bindViewHolder, "RecyclerView.Adapter.bindViewHolder(ViewHolder, int)");
+                hook(bindViewHolder, this::handleRecyclerViewBinding);
+                info("Hooked RecyclerView.Adapter.bindViewHolder(ViewHolder, int)");
+            } catch (NoSuchMethodException inlinedBinder) {
+                Method acquireHolder = Reflect.method(recyclerClass, "tryGetViewHolderForPositionByDeadline",
+                        int.class, long.class);
+                deoptimize(acquireHolder, "RecyclerView.Recycler inlined binding");
+                hook(acquireHolder, chain -> {
+                    Object holder = chain.proceed();
+                    try {
+                        Object recycler = Reflect.field(chain.getThisObject(), "this$0");
+                        Object adapter = Reflect.invokeIfExists(recycler, "getAdapter", new Class<?>[0]);
+                        Object itemView = Reflect.field(holder, "itemView");
+                        if (!applyLocalDialogHide(adapter, itemView)
+                                && shouldRunGenericMessageBinding(chatActivityAdapterHooked,
+                                adapter == null ? "" : TelegramSymbols.name(adapter.getClass()))) {
+                            applyDecisionToBoundViews(itemView);
+                        }
+                    } catch (Throwable failure) {
+                        error("RecyclerView inlined binding filter failed", failure);
+                    }
+                    return holder;
+                });
+                inlineBinding = true;
+                info("Hooked RecyclerView.Recycler inlined binding");
+            }
 
             Method onViewAttachedToWindow = Reflect.method(adapterClass, "onViewAttachedToWindow", viewHolderClass);
             deoptimize(onViewAttachedToWindow, "RecyclerView.Adapter.onViewAttachedToWindow(ViewHolder)");
             hook(onViewAttachedToWindow, this::handleRecyclerViewAttachment);
             info("Hooked RecyclerView.Adapter.onViewAttachedToWindow(ViewHolder)");
 
-            Method tryBindViewHolderByDeadline = Reflect.method(
-                    recyclerClass,
-                    "tryBindViewHolderByDeadline",
-                    viewHolderClass,
-                    int.class,
-                    int.class,
-                    long.class
-            );
-            deoptimize(tryBindViewHolderByDeadline, "RecyclerView.Recycler.tryBindViewHolderByDeadline(ViewHolder, int, int, long)");
+            if (!inlineBinding) {
+                Method tryBindViewHolderByDeadline = Reflect.method(
+                        recyclerClass,
+                        "tryBindViewHolderByDeadline",
+                        viewHolderClass,
+                        int.class,
+                        int.class,
+                        long.class
+                );
+                deoptimize(tryBindViewHolderByDeadline, "RecyclerView.Recycler.tryBindViewHolderByDeadline(ViewHolder, int, int, long)");
+            }
         } catch (Throwable throwable) {
             error("Failed to hook RecyclerView binding", throwable);
         }
@@ -2946,7 +2979,7 @@ final class TelegramHookInstaller {
 
     private void hookProfileSettingsMenu(ClassLoader classLoader) {
         try {
-            Class<?> profileActivityClass = classLoader.loadClass("org.telegram.ui.ProfileActivity");
+            Class<?> profileActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ProfileActivity");
             Method createActionBarMenu = Reflect.method(profileActivityClass, "createActionBarMenu", boolean.class);
             hook(createActionBarMenu, chain -> {
                 Object result = chain.proceed();
@@ -2979,7 +3012,7 @@ final class TelegramHookInstaller {
 
     private void hookDownloadActivityMenu(ClassLoader classLoader) {
         try {
-            Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
+            Class<?> dialogsClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.DialogsActivity");
             hookNativeDownloadVisibility(dialogsClass);
             hookDownloadSelectionActionMode(classLoader);
             Method createView = Reflect.method(dialogsClass, "createView", Context.class);
@@ -3046,7 +3079,7 @@ final class TelegramHookInstaller {
 
     private void hookDownloadSelectionActionMode(ClassLoader classLoader) {
         try {
-            Class<?> pagerClass = classLoader.loadClass(
+            Class<?> pagerClass = TelegramSymbols.loadClass(classLoader,
                     "org.telegram.ui.Components.SearchViewPager");
             Method showActionMode = Reflect.method(pagerClass, "showActionMode", boolean.class);
             hook(showActionMode, chain -> {
@@ -3093,10 +3126,10 @@ final class TelegramHookInstaller {
 
     private void hookDialogDeletionDiagnostics(ClassLoader classLoader) {
         try {
-            Class<?> dialogsClass = classLoader.loadClass("org.telegram.ui.DialogsActivity");
+            Class<?> dialogsClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.DialogsActivity");
             int hooked = 0;
             for (Method method : dialogsClass.getDeclaredMethods()) {
-                String name = method.getName();
+                String name = TelegramSymbols.name(method);
                 if (!"performSelectedDialogsAction".equals(name)
                         && !"performDeleteOrClearDialogAction".equals(name)
                         && !name.startsWith("lambda$performSelectedDialogsAction$")) {
@@ -3345,19 +3378,19 @@ final class TelegramHookInstaller {
     private void hookOnItemClickDiagnostic(ClassLoader classLoader) {
         try {
             // Enumerate ALL inner classes of SearchDownloadsContainer
-            Class<?> containerClass = classLoader.loadClass("org.telegram.ui.Components.SearchDownloadsContainer");
+            Class<?> containerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Components.SearchDownloadsContainer");
             info("SelectAll: found SearchDownloadsContainer, listing inner classes...");
             Class<?>[] innerClasses = containerClass.getDeclaredClasses();
             for (Class<?> inner : innerClasses) {
-                info("SelectAll: inner class: " + inner.getSimpleName() + " -> " + inner.getName());
+                info("SelectAll: inner class: " + TelegramSymbols.simpleName(inner) + " -> " + TelegramSymbols.name(inner));
             }
             // Also list all declared methods
             for (Method m : containerClass.getDeclaredMethods()) {
-                info("SelectAll: method: " + m.getName() + " params=" + m.getParameterCount());
+                info("SelectAll: method: " + TelegramSymbols.name(m) + " params=" + m.getParameterCount());
             }
             // Hook lambda$new$1 (likely click listener) and lambda$new$0 (likely long-click)
             for (Method m : containerClass.getDeclaredMethods()) {
-                String name = m.getName();
+                String name = TelegramSymbols.name(m);
                 if (name.equals("lambda$new$0") || name.equals("lambda$new$1")) {
                     info("SelectAll: hooking " + name + " params=" + m.getParameterCount());
                     hook(m, chain -> {
@@ -3378,14 +3411,14 @@ final class TelegramHookInstaller {
             }
             // Also hook DownloadsAdapter methods
             try {
-                Class<?> adapterClass = classLoader.loadClass("org.telegram.ui.Components.SearchDownloadsContainer$DownloadsAdapter");
+                Class<?> adapterClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Components.SearchDownloadsContainer$DownloadsAdapter");
                 info("SelectAll: found DownloadsAdapter, listing methods...");
                 for (Method m : adapterClass.getDeclaredMethods()) {
-                    info("SelectAll: adapter method: " + m.getName() + " params=" + m.getParameterCount());
+                    info("SelectAll: adapter method: " + TelegramSymbols.name(m) + " params=" + m.getParameterCount());
                 }
                 // Hook onBindViewHolder to dump adapter fields when binding
                 for (Method m : adapterClass.getDeclaredMethods()) {
-                    if (m.getName().equals("onBindViewHolder")) {
+                    if (TelegramSymbols.name(m).equals("onBindViewHolder")) {
                         info("SelectAll: hooking adapter.onBindViewHolder");
                         hook(m, chain -> {
                             try {
@@ -3417,7 +3450,7 @@ final class TelegramHookInstaller {
         if (obj == null) return result;
 
         Class<?> clazz = obj.getClass();
-        info("SelectAll: dumping fields for " + label + " class=" + clazz.getSimpleName());
+        info("SelectAll: dumping fields for " + label + " class=" + TelegramSymbols.simpleName(clazz));
 
         while (clazz != null && clazz != Object.class) {
             for (java.lang.reflect.Field field : clazz.getDeclaredFields()) {
@@ -3425,9 +3458,9 @@ final class TelegramHookInstaller {
                     field.setAccessible(true);
                     Object value = field.get(obj);
                     if (value instanceof java.util.Collection || value instanceof java.util.Map) {
-                        result.put(field.getName(), value);
+                        result.put(TelegramSymbols.name(field), value);
                         int size = getCollectionSize(value);
-                        info("SelectAll:   field=" + field.getName() + " type=" + value.getClass().getSimpleName() + " size=" + size);
+                        info("SelectAll:   field=" + TelegramSymbols.name(field) + " type=" + TelegramSymbols.simpleName(value.getClass()) + " size=" + size);
                     }
                 } catch (Throwable ignored) {}
             }
@@ -3480,22 +3513,22 @@ final class TelegramHookInstaller {
                     Object value = field.get(obj);
                     if (value instanceof java.util.Collection) {
                         int size = ((java.util.Collection<?>) value).size();
-                        info("SelectAll:   " + label + "." + field.getName() + "=" + value.getClass().getSimpleName() + "[" + size + "]");
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=" + TelegramSymbols.simpleName(value.getClass()) + "[" + size + "]");
                     } else if (value instanceof java.util.Map) {
                         int size = ((java.util.Map<?, ?>) value).size();
-                        info("SelectAll:   " + label + "." + field.getName() + "=" + value.getClass().getSimpleName() + "[" + size + "]");
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=" + TelegramSymbols.simpleName(value.getClass()) + "[" + size + "]");
                     } else if (value instanceof android.util.LongSparseArray) {
-                        info("SelectAll:   " + label + "." + field.getName() + "=LongSparseArray[" + ((android.util.LongSparseArray<?>) value).size() + "]");
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=LongSparseArray[" + ((android.util.LongSparseArray<?>) value).size() + "]");
                     } else if (value instanceof android.util.SparseArray) {
-                        info("SelectAll:   " + label + "." + field.getName() + "=SparseArray[" + ((android.util.SparseArray<?>) value).size() + "]");
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=SparseArray[" + ((android.util.SparseArray<?>) value).size() + "]");
                     } else if (value != null && field.getType().isArray()) {
                         int len = java.lang.reflect.Array.getLength(value);
-                        info("SelectAll:   " + label + "." + field.getName() + "=" + value.getClass().getSimpleName() + "[" + len + "]");
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=" + TelegramSymbols.simpleName(value.getClass()) + "[" + len + "]");
                     } else if (value instanceof String) {
-                        info("SelectAll:   " + label + "." + field.getName() + " "
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + " "
                                 + LogPrivacy.field("value", (String) value));
                     } else if (value instanceof Number || value instanceof Boolean) {
-                        info("SelectAll:   " + label + "." + field.getName() + "=" + value);
+                        info("SelectAll:   " + label + "." + TelegramSymbols.name(field) + "=" + value);
                     }
                 } catch (Throwable ignored) {}
             }
@@ -3620,7 +3653,7 @@ final class TelegramHookInstaller {
     private ViewGroup findActionBarMenu(ViewGroup actionBar) {
         for (int i = 0; i < actionBar.getChildCount(); i++) {
             View child = actionBar.getChildAt(i);
-            if (child.getClass().getSimpleName().contains("ActionBarMenu") && child instanceof ViewGroup) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains("ActionBarMenu") && child instanceof ViewGroup) {
                 return (ViewGroup) child;
             }
         }
@@ -3656,7 +3689,7 @@ final class TelegramHookInstaller {
                         return;
                     }
                     if (isActionModeIndicator(child)) {
-                        info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
+                        info("SelectAll: action mode detected via child added: " + TelegramSymbols.simpleName(child.getClass()));
                         uiCallbacks.post(menu, () -> {
                             try {
                                 // Check if we're on the download page. Both helpers also
@@ -3831,7 +3864,7 @@ final class TelegramHookInstaller {
 
     private void selectAllDownloadItems(ViewGroup fragmentView) {
         java.util.List<View> containers = new java.util.ArrayList<>();
-        if (fragmentView.getClass().getSimpleName().contains("SearchDownloadsContainer")) {
+        if (TelegramSymbols.simpleName(fragmentView.getClass()).contains("SearchDownloadsContainer")) {
             containers.add(fragmentView);
         }
         findAllViewsByClassName(fragmentView, "SearchDownloadsContainer", containers, 0);
@@ -3845,7 +3878,7 @@ final class TelegramHookInstaller {
             info("SelectAll: no adapter on SearchDownloadsContainer");
             return;
         }
-        info("SelectAll: adapter=" + adapter.getClass().getSimpleName());
+        info("SelectAll: adapter=" + TelegramSymbols.simpleName(adapter.getClass()));
 
         // Get ALL items from adapter (not just visible cells)
         Object adapterObj = adapter;
@@ -3856,7 +3889,7 @@ final class TelegramHookInstaller {
         // Find getMessage method on adapter
         java.lang.reflect.Method getMessageMethod = null;
         for (java.lang.reflect.Method m : adapterObj.getClass().getDeclaredMethods()) {
-            if (m.getName().equals("getMessage") && m.getParameterCount() == 1) {
+            if (TelegramSymbols.name(m).equals("getMessage") && m.getParameterCount() == 1) {
                 getMessageMethod = m;
                 getMessageMethod.setAccessible(true);
                 break;
@@ -3874,17 +3907,17 @@ final class TelegramHookInstaller {
             info("SelectAll: uiCallback not found on container");
             return;
         }
-        info("SelectAll: uiCallback class=" + uiCallback.getClass().getSimpleName());
+        info("SelectAll: uiCallback class=" + TelegramSymbols.simpleName(uiCallback.getClass()));
 
         // Find toggleItemSelection method by searching the class hierarchy
         java.lang.reflect.Method toggleMethod = null;
         Class<?> cl = uiCallback.getClass();
         while (cl != null && cl != Object.class) {
             for (java.lang.reflect.Method m : cl.getDeclaredMethods()) {
-                if (m.getName().equals("toggleItemSelection") && m.getParameterCount() == 3) {
+                if (TelegramSymbols.name(m).equals("toggleItemSelection") && m.getParameterCount() == 3) {
                     toggleMethod = m;
                     toggleMethod.setAccessible(true);
-                    info("SelectAll: found toggleItemSelection on " + cl.getSimpleName() + " params=" + m.getParameterTypes()[0].getSimpleName() + "," + m.getParameterTypes()[1].getSimpleName() + "," + m.getParameterTypes()[2].getSimpleName());
+                    info("SelectAll: found toggleItemSelection on " + TelegramSymbols.simpleName(cl) + " params=" + TelegramSymbols.simpleName(m.getParameterTypes()[0]) + "," + TelegramSymbols.simpleName(m.getParameterTypes()[1]) + "," + TelegramSymbols.simpleName(m.getParameterTypes()[2]));
                     break;
                 }
             }
@@ -3895,10 +3928,10 @@ final class TelegramHookInstaller {
         if (toggleMethod == null) {
             for (Class<?> iface : uiCallback.getClass().getInterfaces()) {
                 for (java.lang.reflect.Method m : iface.getDeclaredMethods()) {
-                    if (m.getName().equals("toggleItemSelection") && m.getParameterCount() == 3) {
+                    if (TelegramSymbols.name(m).equals("toggleItemSelection") && m.getParameterCount() == 3) {
                         toggleMethod = m;
                         toggleMethod.setAccessible(true);
-                        info("SelectAll: found toggleItemSelection on interface " + iface.getSimpleName());
+                        info("SelectAll: found toggleItemSelection on interface " + TelegramSymbols.simpleName(iface));
                         break;
                     }
                 }
@@ -3909,7 +3942,7 @@ final class TelegramHookInstaller {
         if (toggleMethod == null) {
             info("SelectAll: toggleItemSelection not found, dumping all methods");
             for (java.lang.reflect.Method m : uiCallback.getClass().getDeclaredMethods()) {
-                info("SelectAll: uiCallback method: " + m.getName() + "(" + m.getParameterCount() + ")");
+                info("SelectAll: uiCallback method: " + TelegramSymbols.name(m) + "(" + m.getParameterCount() + ")");
             }
             return;
         }
@@ -3928,7 +3961,7 @@ final class TelegramHookInstaller {
                         try {
                             f.setAccessible(true);
                             Object val = f.get(key);
-                            info("SelectAll: key." + f.getName() + "=" + val);
+                            info("SelectAll: key." + TelegramSymbols.name(f) + "=" + val);
                             if (val instanceof Integer) alreadySelectedIds.add(val);
                         } catch (Throwable ignored) {}
                     }
@@ -3990,7 +4023,7 @@ final class TelegramHookInstaller {
                         return;
                     }
                     if (isActionModeIndicator(child)) {
-                        info("SelectAll: action mode detected via child added: " + child.getClass().getSimpleName());
+                        info("SelectAll: action mode detected via child added: " + TelegramSymbols.simpleName(child.getClass()));
                         uiCallbacks.post(menu, () -> {
                             try {
                                 injectSelectAllIntoActionMode(menu);
@@ -4050,7 +4083,7 @@ final class TelegramHookInstaller {
         if (depth > 15) return;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            if (child.getClass().getSimpleName().contains(nameFragment)) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains(nameFragment)) {
                 result.add(child);
             }
             if (child instanceof ViewGroup) {
@@ -4063,7 +4096,7 @@ final class TelegramHookInstaller {
         if (depth > 5) return null;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            if (child.getClass().getSimpleName().contains("ActionBarMenuSubItem")) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains("ActionBarMenuSubItem")) {
                 return child;
             }
             if (child instanceof ViewGroup) {
@@ -4077,14 +4110,14 @@ final class TelegramHookInstaller {
     private View findDownloadButton(ViewGroup actionBar) {
         for (int i = 0; i < actionBar.getChildCount(); i++) {
             View child = actionBar.getChildAt(i);
-            if (child.getClass().getSimpleName().contains("ActionBarMenu")) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains("ActionBarMenu")) {
                 ViewGroup menu = (ViewGroup) child;
                 for (int j = 0; j < menu.getChildCount(); j++) {
                     View item = menu.getChildAt(j);
                     if (item instanceof ViewGroup) {
                         ViewGroup vg = (ViewGroup) item;
                         for (int k = 0; k < vg.getChildCount(); k++) {
-                            if (vg.getChildAt(k).getClass().getSimpleName().contains("DownloadProgress")) {
+                            if (TelegramSymbols.simpleName(vg.getChildAt(k).getClass()).contains("DownloadProgress")) {
                                 return item;
                             }
                         }
@@ -4098,21 +4131,21 @@ final class TelegramHookInstaller {
     private View forceDownloadButtonVisible(ViewGroup actionBar) {
         for (int i = 0; i < actionBar.getChildCount(); i++) {
             View child = actionBar.getChildAt(i);
-            if (child.getClass().getSimpleName().contains("ActionBarMenu")) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains("ActionBarMenu")) {
                 ViewGroup menu = (ViewGroup) child;
                 for (int j = 0; j < menu.getChildCount(); j++) {
                     View item = menu.getChildAt(j);
                     if (item instanceof ViewGroup) {
                         ViewGroup vg = (ViewGroup) item;
                         for (int k = 0; k < vg.getChildCount(); k++) {
-                            if (vg.getChildAt(k).getClass().getSimpleName().contains("DownloadProgress")) {
+                            if (TelegramSymbols.simpleName(vg.getChildAt(k).getClass()).contains("DownloadProgress")) {
                                 View downloadBtn = item;
                                 // 诊断日志：输出按钮状态
                                 int vis = downloadBtn.getVisibility();
                                 int w = downloadBtn.getWidth();
                                 int h = downloadBtn.getHeight();
                                 ViewGroup.LayoutParams lp = downloadBtn.getLayoutParams();
-                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? lp.getClass().getSimpleName() : "null"));
+                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? TelegramSymbols.simpleName(lp.getClass()) : "null"));
                                 if (lp != null) {
                                     info("SelectAll: lp.width=" + lp.width + " lp.height=" + lp.height);
                                 }
@@ -4123,7 +4156,7 @@ final class TelegramHookInstaller {
                                     int parentVis = parentVg.getVisibility();
                                     int parentW = parentVg.getWidth();
                                     int parentH = parentVg.getHeight();
-                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + parentVg.getClass().getSimpleName());
+                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + TelegramSymbols.simpleName(parentVg.getClass()));
                                 }
                                 // 强制设置尺寸并显示
                                 downloadBtn.setVisibility(View.VISIBLE);
@@ -4147,21 +4180,21 @@ final class TelegramHookInstaller {
     private void makeDownloadButtonVisible(ViewGroup actionBar) {
         for (int i = 0; i < actionBar.getChildCount(); i++) {
             View child = actionBar.getChildAt(i);
-            if (child.getClass().getSimpleName().contains("ActionBarMenu")) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains("ActionBarMenu")) {
                 ViewGroup menu = (ViewGroup) child;
                 for (int j = 0; j < menu.getChildCount(); j++) {
                     View item = menu.getChildAt(j);
                     if (item instanceof ViewGroup) {
                         ViewGroup vg = (ViewGroup) item;
                         for (int k = 0; k < vg.getChildCount(); k++) {
-                            if (vg.getChildAt(k).getClass().getSimpleName().contains("DownloadProgress")) {
+                            if (TelegramSymbols.simpleName(vg.getChildAt(k).getClass()).contains("DownloadProgress")) {
                                 View downloadBtn = item;
                                 // 诊断日志：输出按钮状态
                                 int vis = downloadBtn.getVisibility();
                                 int w = downloadBtn.getWidth();
                                 int h = downloadBtn.getHeight();
                                 ViewGroup.LayoutParams lp = downloadBtn.getLayoutParams();
-                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? lp.getClass().getSimpleName() : "null"));
+                                info("SelectAll: downloadBtn vis=" + vis + " w=" + w + " h=" + h + " lp=" + (lp != null ? TelegramSymbols.simpleName(lp.getClass()) : "null"));
                                 if (lp != null) {
                                     info("SelectAll: lp.width=" + lp.width + " lp.height=" + lp.height);
                                 }
@@ -4172,7 +4205,7 @@ final class TelegramHookInstaller {
                                     int parentVis = parentVg.getVisibility();
                                     int parentW = parentVg.getWidth();
                                     int parentH = parentVg.getHeight();
-                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + parentVg.getClass().getSimpleName());
+                                    info("SelectAll: parent vis=" + parentVis + " w=" + parentW + " h=" + parentH + " class=" + TelegramSymbols.simpleName(parentVg.getClass()));
                                 }
                                 // 强制设置尺寸并显示
                                 downloadBtn.setVisibility(View.VISIBLE);
@@ -4218,7 +4251,7 @@ final class TelegramHookInstaller {
 
     private void dumpViewTree(View view, int depth, int maxDepth) {
         if (depth > maxDepth) return;
-        String name = view.getClass().getSimpleName();
+        String name = TelegramSymbols.simpleName(view.getClass());
         String extra = "";
         if (view instanceof TextView) {
             extra = " " + LogPrivacy.field("text", String.valueOf(((TextView) view).getText()));
@@ -4242,7 +4275,7 @@ final class TelegramHookInstaller {
         info("SelectAll: ActionBarMenu children=" + menu.getChildCount());
         for (int i = 0; i < menu.getChildCount(); i++) {
             View child = menu.getChildAt(i);
-            String name = child.getClass().getSimpleName();
+            String name = TelegramSymbols.simpleName(child.getClass());
             String text = "";
             if (child instanceof TextView) {
                 text = " " + LogPrivacy.field("text", String.valueOf(((TextView) child).getText()));
@@ -4254,7 +4287,7 @@ final class TelegramHookInstaller {
                 ViewGroup vg = (ViewGroup) child;
                 for (int j = 0; j < vg.getChildCount(); j++) {
                     View sub = vg.getChildAt(j);
-                    String subName = sub.getClass().getSimpleName();
+                    String subName = TelegramSymbols.simpleName(sub.getClass());
                     String subText = "";
                     if (sub instanceof TextView) {
                         subText = " " + LogPrivacy.field("text", String.valueOf(((TextView) sub).getText()));
@@ -4281,7 +4314,7 @@ final class TelegramHookInstaller {
                 if (c instanceof TextView) {
                     txt = " " + LogPrivacy.field("text", String.valueOf(((TextView) c).getText()));
                 }
-                info("SelectAll:   [" + i + "]=" + c.getClass().getSimpleName() + txt
+                info("SelectAll:   [" + i + "]=" + TelegramSymbols.simpleName(c.getClass()) + txt
                         + " vis=" + c.getVisibility() + " w=" + c.getWidth());
             }
             Context context = content.getContext();
@@ -4295,7 +4328,7 @@ final class TelegramHookInstaller {
             int insertIdx = 2;
             for (int i = 0; i < content.getChildCount(); i++) {
                 View c = content.getChildAt(i);
-                if (c.getClass().getSimpleName().contains("Number")
+                if (TelegramSymbols.simpleName(c.getClass()).contains("Number")
                         || (c instanceof TextView && c.getWidth() > 200)) {
                     insertIdx = i + 1;
                     break;
@@ -4396,7 +4429,8 @@ final class TelegramHookInstaller {
         int pos = holder != null ? Reflect.asInt(Reflect.invokeIfExists(holder, "getLayoutPosition", new Class<?>[0]), 0) : 0;
         Object result = null;
         try {
-            Class<?> rlvClass = Class.forName("org.telegram.ui.Components.RecyclerListView");
+            Class<?> rlvClass = TelegramSymbols.loadClass(rv.getClass().getClassLoader(),
+                    "org.telegram.ui.Components.RecyclerListView");
             result = Reflect.invokeIfExists(longClickListener, "onItemLongClick",
                     new Class<?>[]{rlvClass, View.class, int.class, float.class, float.class, int.class, androidx.recyclerview.widget.RecyclerView.Adapter.class},
                     rv, firstChild, pos, 0f, 0f, 0, adapter);
@@ -4425,7 +4459,7 @@ final class TelegramHookInstaller {
         if (depth > maxDepth) return;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            String name = child.getClass().getSimpleName();
+            String name = TelegramSymbols.simpleName(child.getClass());
             if (child instanceof ViewGroup && ((ViewGroup) child).getChildCount() > 3) {
                 info("SelectAll: d=" + depth + " i=" + i + " " + name + " children=" + ((ViewGroup) child).getChildCount() + " h=" + child.getHeight());
             }
@@ -4439,7 +4473,7 @@ final class TelegramHookInstaller {
         if (depth > 12) return null;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            String name = child.getClass().getSimpleName();
+            String name = TelegramSymbols.simpleName(child.getClass());
             if (name.contains("Recycler") || name.contains("ListView") || name.contains("yclerList")) {
                 info("SelectAll: d=" + depth + " found " + name + " children=" + (child instanceof ViewGroup ? ((ViewGroup) child).getChildCount() : 0));
                 return child;
@@ -4456,7 +4490,7 @@ final class TelegramHookInstaller {
         if (depth > 10) return null;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            if (child.getClass().getSimpleName().contains(nameSuffix)) {
+            if (TelegramSymbols.simpleName(child.getClass()).contains(nameSuffix)) {
                 return child;
             }
             if (child instanceof ViewGroup) {
@@ -4468,9 +4502,9 @@ final class TelegramHookInstaller {
     }
 
     private void injectSelectAllMenu(Object activity) {
-        info("SelectAll: entering injectSelectAllMenu for " + activity.getClass().getSimpleName());
+        info("SelectAll: entering injectSelectAllMenu for " + TelegramSymbols.simpleName(activity.getClass()));
         Object actionBar = Reflect.field(activity, "actionBar");
-        info("SelectAll: actionBar=" + (actionBar == null ? "null" : actionBar.getClass().getName()));
+        info("SelectAll: actionBar=" + (actionBar == null ? "null" : TelegramSymbols.name(actionBar.getClass())));
         if (!(actionBar instanceof ViewGroup)) {
             return;
         }
@@ -4484,7 +4518,7 @@ final class TelegramHookInstaller {
             created.setPadding(dp(context, 12), 0, dp(context, 12), 0);
             created.setGravity(android.view.Gravity.CENTER);
             bar.addView(created, 0);
-            info("SelectAll: injected button into " + activity.getClass().getSimpleName()
+            info("SelectAll: injected button into " + TelegramSymbols.simpleName(activity.getClass())
                     + " actionBar");
             button = created;
         }
@@ -4636,7 +4670,7 @@ final class TelegramHookInstaller {
             ClassLoader classLoader = savedClassLoader == null
                     ? context.getClassLoader()
                     : savedClassLoader;
-            Class<?> themeClass = Class.forName(
+            Class<?> themeClass = TelegramSymbols.forName(
                     "org.telegram.ui.ActionBar.Theme",
                     false,
                     classLoader
@@ -4710,7 +4744,7 @@ final class TelegramHookInstaller {
             info("SelectAll: adapter is null");
             return;
         }
-        info("SelectAll: adapter class=" + adapter.getClass().getSimpleName());
+        info("SelectAll: adapter class=" + TelegramSymbols.simpleName(adapter.getClass()));
 
         // Find ChatActivity instance via adapter.this$0
         Object chatActivity = Reflect.field(adapter, "this$0");
@@ -4724,7 +4758,7 @@ final class TelegramHookInstaller {
             fallbackSelectAll(recyclerView);
             return;
         }
-        info("SelectAll: chatActivity class=" + chatActivity.getClass().getSimpleName());
+        info("SelectAll: chatActivity class=" + TelegramSymbols.simpleName(chatActivity.getClass()));
 
         // Find the messages list on ChatActivity
         Object messagesObj = Reflect.field(chatActivity, "messages");
@@ -4805,7 +4839,7 @@ final class TelegramHookInstaller {
                         if (value instanceof java.util.ArrayList) {
                             java.util.ArrayList<?> list = (java.util.ArrayList<?>) value;
                             if (!list.isEmpty() && list.get(0) instanceof Integer) {
-                                info("SelectAll: found ArrayList<Integer> field '" + field.getName() + "' size=" + list.size());
+                                info("SelectAll: found ArrayList<Integer> field '" + TelegramSymbols.name(field) + "' size=" + list.size());
                                 return value;
                             }
                         }
@@ -5004,7 +5038,7 @@ final class TelegramHookInstaller {
             }
             RecyclerView recyclerView = findRecyclerView((ViewGroup) parent);
             if (recyclerView != null) {
-                info("SelectAll: found RecyclerView at depth " + depth + " in " + parent.getClass().getSimpleName());
+                info("SelectAll: found RecyclerView at depth " + depth + " in " + TelegramSymbols.simpleName(parent.getClass()));
                 selectAllByLongClick(recyclerView);
                 return;
             }
@@ -5014,10 +5048,10 @@ final class TelegramHookInstaller {
     }
 
     private void selectAllByLongClick(ViewGroup listView) {
-        info("SelectAll: selectAllByLongClick view=" + listView.getClass().getName());
+        info("SelectAll: selectAllByLongClick view=" + TelegramSymbols.name(listView.getClass()));
         Object adapter = Reflect.invokeIfExists(listView, "getAdapter", new Class<?>[0]);
         if (adapter != null) {
-            info("SelectAll: adapter class=" + adapter.getClass().getName());
+            info("SelectAll: adapter class=" + TelegramSymbols.name(adapter.getClass()));
             Class<?> clazz = adapter.getClass();
             while (clazz != null && clazz != Object.class) {
                 for (java.lang.reflect.Field f : clazz.getDeclaredFields()) {
@@ -5025,7 +5059,7 @@ final class TelegramHookInstaller {
                             || android.util.LongSparseArray.class.isAssignableFrom(f.getType())
                             || android.util.SparseArray.class.isAssignableFrom(f.getType())) {
                         f.setAccessible(true);
-                        info("SelectAll: field " + f.getName() + " type=" + f.getType().getSimpleName());
+                        info("SelectAll: field " + TelegramSymbols.name(f) + " type=" + TelegramSymbols.simpleName(f.getType()));
                     }
                 }
                 clazz = clazz.getSuperclass();
@@ -5034,13 +5068,13 @@ final class TelegramHookInstaller {
             if (selectedField == null) selectedField = Reflect.field(adapter, "selectedIds");
             if (selectedField == null) selectedField = Reflect.field(adapter, "selectedFiles");
             if (selectedField == null) selectedField = Reflect.field(adapter, "selectedDocuments");
-            info("SelectAll: selectedField=" + (selectedField == null ? "null" : selectedField.getClass().getSimpleName()));
+            info("SelectAll: selectedField=" + (selectedField == null ? "null" : TelegramSymbols.simpleName(selectedField.getClass())));
             if (selectedField instanceof java.util.Collection) {
                 @SuppressWarnings("unchecked")
                 java.util.Collection<Object> collection = (java.util.Collection<Object>) selectedField;
                 info("SelectAll: selectedDialogs size=" + collection.size());
                 Object hostFragment = Reflect.field(adapter, "this$0");
-                info("SelectAll: hostFragment=" + (hostFragment == null ? "null" : hostFragment.getClass().getSimpleName()));
+                info("SelectAll: hostFragment=" + (hostFragment == null ? "null" : TelegramSymbols.simpleName(hostFragment.getClass())));
                 Object itemInternals = Reflect.field(adapter, "itemInternals");
                 if (itemInternals instanceof java.util.ArrayList) {
                     @SuppressWarnings("unchecked")
@@ -5180,7 +5214,7 @@ final class TelegramHookInstaller {
     private Object findActionBarOverflow(ViewGroup actionBar) {
         for (int i = actionBar.getChildCount() - 1; i >= 0; i--) {
             View child = actionBar.getChildAt(i);
-            if (child.getClass().getName().contains("ActionBarMenuItem")) {
+            if (TelegramSymbols.name(child.getClass()).contains("ActionBarMenuItem")) {
                 return child;
             }
             if (child instanceof ViewGroup) {
@@ -5196,7 +5230,7 @@ final class TelegramHookInstaller {
     private Object findActionBarMenuItemRecursive(ViewGroup group) {
         for (int i = group.getChildCount() - 1; i >= 0; i--) {
             View child = group.getChildAt(i);
-            if (child.getClass().getName().contains("ActionBarMenuItem")) {
+            if (TelegramSymbols.name(child.getClass()).contains("ActionBarMenuItem")) {
                 return child;
             }
             if (child instanceof ViewGroup) {
@@ -5211,7 +5245,7 @@ final class TelegramHookInstaller {
 
     private void hookSettingsActivityMenu(ClassLoader classLoader) {
         try {
-            Class<?> settingsActivityClass = classLoader.loadClass("org.telegram.ui.SettingsActivity");
+            Class<?> settingsActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.SettingsActivity");
             hookSettingsActivityListRow(classLoader, settingsActivityClass);
             hookSettingsActivityBack(settingsActivityClass);
             try {
@@ -5236,28 +5270,33 @@ final class TelegramHookInstaller {
 
     private void hookSettingsActivityListRow(ClassLoader classLoader, Class<?> settingsActivityClass) {
         try {
-            Class<?> universalAdapterClass = classLoader.loadClass("org.telegram.ui.Components.UniversalAdapter");
-            Class<?> uItemClass = classLoader.loadClass("org.telegram.ui.Components.UItem");
-            Class<?> settingCellFactoryClass = classLoader.loadClass("org.telegram.ui.SettingsActivity$SettingCell$Factory");
-            Method factoryOf = Reflect.method(
-                    settingCellFactoryClass,
-                    "of",
-                    int.class,
-                    int.class,
-                    int.class,
-                    int.class,
-                    CharSequence.class,
-                    CharSequence.class
-            );
-            Method fillItems = Reflect.method(settingsActivityClass, "fillItems", ArrayList.class, universalAdapterClass);
+            Class<?> universalAdapterClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Components.UniversalAdapter");
+            Class<?> uItemClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.Components.UItem");
+            Class<?> settingCellFactoryClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.SettingsActivity$SettingCell$Factory");
+            Method selectedFactory;
+            try {
+                selectedFactory = Reflect.method(settingCellFactoryClass, "of", int.class, int.class,
+                        int.class, int.class, CharSequence.class, CharSequence.class);
+            } catch (NoSuchMethodException optimizedOverload) {
+                selectedFactory = Reflect.method(settingCellFactoryClass, "of", int.class, int.class,
+                        int.class, int.class, CharSequence.class, CharSequence.class, CharSequence.class);
+            }
+            final Method factoryOf = selectedFactory;
+            Method fillItems;
+            try {
+                fillItems = Reflect.method(settingsActivityClass, "fillItems", ArrayList.class, universalAdapterClass);
+            } catch (NoSuchMethodException staticCallback) {
+                fillItems = Reflect.method(settingsActivityClass, "fillItems", settingsActivityClass, ArrayList.class);
+            }
+            final boolean staticFill = java.lang.reflect.Modifier.isStatic(fillItems.getModifiers());
             hook(fillItems, chain -> {
                 Object result = chain.proceed();
                 try {
-                    Object arg = chain.getArg(0);
+                    Object arg = chain.getArg(staticFill ? 1 : 0);
                     if (arg instanceof ArrayList<?>) {
                         @SuppressWarnings("unchecked")
                         ArrayList<Object> items = (ArrayList<Object>) arg;
-                        injectSettingsListRow(chain.getThisObject(), items, factoryOf);
+                        injectSettingsListRow(staticFill ? chain.getArg(0) : chain.getThisObject(), items, factoryOf);
                     }
                 } catch (Throwable throwable) {
                     error("SettingsActivity row injection failed", throwable);
@@ -5265,18 +5304,25 @@ final class TelegramHookInstaller {
                 return result;
             });
 
-            Method onClick = Reflect.method(settingsActivityClass, "onClick", uItemClass, View.class, int.class, float.class, float.class);
+            Method onClick;
+            try {
+                onClick = Reflect.method(settingsActivityClass, "onClick", uItemClass, View.class, int.class, float.class, float.class);
+            } catch (NoSuchMethodException staticCallback) {
+                onClick = Reflect.method(settingsActivityClass, "onClick", settingsActivityClass, uItemClass);
+            }
+            final boolean staticClick = java.lang.reflect.Modifier.isStatic(onClick.getModifiers());
             hook(onClick, chain -> {
-                Object item = chain.getArg(0);
+                Object item = chain.getArg(staticClick ? 1 : 0);
                 if (!isGramSieveSettingsItem(item)) {
                     return chain.proceed();
                 }
-                Context context = contextFromSettingsClick(chain.getThisObject(), chain.getArg(1));
+                Object host = staticClick ? chain.getArg(0) : chain.getThisObject();
+                Context context = contextFromSettingsClick(host, staticClick ? null : chain.getArg(1));
                 if (context == null) {
                     info("SettingsActivity row click ignored: context unavailable");
                     return null;
                 }
-                openConfigFromHost(chain.getThisObject(), context, CONFIG_MODE_GLOBAL, 0L, "");
+                openConfigFromHost(host, context, CONFIG_MODE_GLOBAL, 0L, "");
                 return null;
             });
             info("Hooked SettingsActivity list row");
@@ -5379,7 +5425,7 @@ final class TelegramHookInstaller {
                 media = Reflect.field(owner, "media");
                 if (media != null) {
                     caption = Reflect.asString(Reflect.field(media, "caption"));
-                    mediaType = media.getClass().getSimpleName();
+                    mediaType = TelegramSymbols.simpleName(media.getClass());
                     // Try to get photo ID or video ID
                     Object photo = Reflect.field(media, "photo");
                     if (photo != null) {
@@ -5483,7 +5529,7 @@ final class TelegramHookInstaller {
 
             // Try to get the file path from Telegram's FileLoader
             ClassLoader classLoader = savedClassLoader != null ? savedClassLoader : cell.getContext().getClassLoader();
-            Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
+            Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
             Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance",
                     new Class<?>[]{int.class}, accountId);
 
@@ -5499,7 +5545,7 @@ final class TelegramHookInstaller {
                 }
             }
         } catch (Throwable t) {
-            info("Anti-recall: media cache miss kind=" + mediaKind + " reason=" + t.getClass().getSimpleName());
+            info("Anti-recall: media cache miss kind=" + mediaKind + " reason=" + TelegramSymbols.simpleName(t.getClass()));
         }
         return null;
     }
@@ -5522,7 +5568,7 @@ final class TelegramHookInstaller {
         Class<?> current = type;
         while (current != null) {
             for (Method method : current.getDeclaredMethods()) {
-                if (!method.getName().equals(name) || Modifier.isStatic(method.getModifiers()) != needStatic) {
+                if (!TelegramSymbols.name(method).equals(name) || Modifier.isStatic(method.getModifiers()) != needStatic) {
                     continue;
                 }
                 Object[] args = buildFilePathArgs(method.getParameterTypes(), payload);
@@ -5555,7 +5601,7 @@ final class TelegramHookInstaller {
     }
 
     private void addColorIndicator(View cell, int color) {
-        info("Anti-recall: addColorIndicator called, cell class=" + cell.getClass().getSimpleName());
+        info("Anti-recall: addColorIndicator called, cell class=" + TelegramSymbols.simpleName(cell.getClass()));
         if (!(cell instanceof ViewGroup)) {
             info("Anti-recall: cell is NOT a ViewGroup, cannot add indicator");
             return;
@@ -6059,7 +6105,7 @@ final class TelegramHookInstaller {
             }
             if (!shouldRunGenericMessageBinding(
                     chatActivityAdapterHooked,
-                    adapter == null ? "" : adapter.getClass().getName()
+                    adapter == null ? "" : TelegramSymbols.name(adapter.getClass())
             )) {
                 return result;
             }
@@ -6082,7 +6128,7 @@ final class TelegramHookInstaller {
             }
             if (!shouldRunGenericMessageBinding(
                     chatActivityAdapterHooked,
-                    adapter == null ? "" : adapter.getClass().getName()
+                    adapter == null ? "" : TelegramSymbols.name(adapter.getClass())
             )) {
                 return result;
             }
@@ -6131,7 +6177,7 @@ final class TelegramHookInstaller {
         if (shouldLogLocalDialogHide(dialogId)) {
             info("DialogDeleteTrace: hiding dialog row dialogId=" + dialogId
                     + " account=" + account
-                    + " row=" + row.getClass().getName());
+                    + " row=" + TelegramSymbols.name(row.getClass()));
         }
         return true;
     }
@@ -6140,7 +6186,7 @@ final class TelegramHookInstaller {
         if (adapter == null) {
             return false;
         }
-        String className = adapter.getClass().getName();
+        String className = TelegramSymbols.name(adapter.getClass());
         return "org.telegram.ui.Adapters.DialogsAdapter".equals(className)
                 || className.startsWith("org.telegram.ui.DialogsActivity$");
     }
@@ -6151,7 +6197,7 @@ final class TelegramHookInstaller {
     }
 
     private boolean containsDialogListCell(View view) {
-        if (isDialogListCellClass(view.getClass().getName())) {
+        if (isDialogListCellClass(TelegramSymbols.name(view.getClass()))) {
             return true;
         }
         if (view instanceof ViewGroup) {
@@ -6392,7 +6438,7 @@ final class TelegramHookInstaller {
         if (value == null) {
             return false;
         }
-        String name = value.getClass().getName();
+        String name = TelegramSymbols.name(value.getClass());
         if (isGroupedMessagesType(value)) {
             return true;
         }
@@ -6404,7 +6450,7 @@ final class TelegramHookInstaller {
         if (value == null) {
             return false;
         }
-        String name = value.getClass().getName();
+        String name = TelegramSymbols.name(value.getClass());
         return name.endsWith("MessageObject$GroupedMessages") || name.contains("GroupedMessages");
     }
 
@@ -6472,7 +6518,7 @@ final class TelegramHookInstaller {
             return;
         }
         info("FilterUiTrace mutation transition=" + result.transition
-                + " view=" + view.getClass().getSimpleName()
+                + " view=" + TelegramSymbols.simpleName(view.getClass())
                 + " groupId=" + (group.grouped ? group.groupId : 0L)
                 + " groupCount=" + (group.grouped ? group.count : 0)
                 + " groupPosition=" + (group.grouped ? group.position : -1)
@@ -6517,7 +6563,7 @@ final class TelegramHookInstaller {
                 : decision != null && decision.matched && decision.action != null
                 ? decision.action.name()
                 : "ALLOW";
-        info("FilterUiTrace measure-anomaly view=" + view.getClass().getSimpleName()
+        info("FilterUiTrace measure-anomaly view=" + TelegramSymbols.simpleName(view.getClass())
                 + " groupId=" + (group.grouped ? group.groupId : 0L)
                 + " groupCount=" + (group.grouped ? group.count : 0)
                 + " groupPosition=" + (group.grouped ? group.position : -1)
@@ -6724,7 +6770,7 @@ final class TelegramHookInstaller {
         try {
             int account = Reflect.asInt(Reflect.field(messageObject, "currentAccount"), 0);
             ClassLoader classLoader = messageObject.getClass().getClassLoader();
-            Class<?> controllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> controllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             return Reflect.invokeStatic(controllerClass, "getInstance", new Class<?>[]{int.class}, account);
         } catch (ClassNotFoundException exception) {
             return null;
@@ -6762,7 +6808,7 @@ final class TelegramHookInstaller {
         Class<?> current = controller.getClass();
         while (current != null) {
             for (Method method : current.getDeclaredMethods()) {
-                if (!"markDialogAsRead".equals(method.getName())) {
+                if (!"markDialogAsRead".equals(TelegramSymbols.name(method))) {
                     continue;
                 }
                 Object[] args = buildMarkDialogAsReadArgs(method.getParameterTypes(), dialogId, messageId, topicId);
@@ -6810,7 +6856,7 @@ final class TelegramHookInstaller {
                 }
                 info("ReadMark-decr: updated unread_count " + currentUnread + " -> " + newCount + " dialog=" + dialogId);
             } else {
-                info("ReadMark-decr: unread_count field not found class=" + dialog.getClass().getName());
+                info("ReadMark-decr: unread_count field not found class=" + TelegramSymbols.name(dialog.getClass()));
             }
         } catch (Throwable throwable) {
             info("ReadMark-decr: exception " + throwable.getMessage());
@@ -6823,7 +6869,7 @@ final class TelegramHookInstaller {
             Class<?> current = clazz;
             while (current != null) {
                 try {
-                    return current.getDeclaredField(name);
+                    return TelegramSymbols.declaredField(current, name);
                 } catch (NoSuchFieldException ignored) {
                 }
                 current = current.getSuperclass();
@@ -6933,7 +6979,7 @@ final class TelegramHookInstaller {
     }
 
     private String classNameOf(Object value) {
-        return value == null ? "null" : value.getClass().getName();
+        return value == null ? "null" : TelegramSymbols.name(value.getClass());
     }
 
     private void emitDecisionProbe(FilterConfig config, MessageSnapshot snapshot, FilterDecision decision) {
@@ -6966,7 +7012,7 @@ final class TelegramHookInstaller {
             return;
         }
         info(
-                "BindProbe cell=" + cell.getClass().getSimpleName()
+                "BindProbe cell=" + TelegramSymbols.simpleName(cell.getClass())
                         + " " + LogPrivacy.field("chat", snapshot.chatName)
                         + " " + LogPrivacy.field("sender", snapshot.senderName)
                         + " dialog=" + snapshot.dialogId
@@ -7249,7 +7295,7 @@ final class TelegramHookInstaller {
         ViewGroup group = (ViewGroup) contentView;
         for (int i = 0; i < group.getChildCount(); i++) {
             View child = group.getChildAt(i);
-            if (child.getClass().getSimpleName().equals("ActionBarPopupWindowLayout")) {
+            if (TelegramSymbols.simpleName(child.getClass()).equals("ActionBarPopupWindowLayout")) {
                 return (ViewGroup) child;
             }
         }
@@ -7263,7 +7309,7 @@ final class TelegramHookInstaller {
     private View createMessageBlockMenuItem(Context context, Object chatActivity) {
         try {
             ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Class<?> itemClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.ActionBarMenuSubItem");
             Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
             View item;
             if (themeDelegate != null) {
@@ -7271,7 +7317,7 @@ final class TelegramHookInstaller {
                         Context.class,
                         boolean.class,
                         boolean.class,
-                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                        TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.Theme$ResourcesProvider")
                 );
                 item = (View) constructor.newInstance(context, false, true, themeDelegate);
             } else {
@@ -7304,7 +7350,7 @@ final class TelegramHookInstaller {
     private View createMessageMarkMenuItem(Context context, Object chatActivity) {
         try {
             ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Class<?> itemClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.ActionBarMenuSubItem");
             Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
             View item;
             if (themeDelegate != null) {
@@ -7312,7 +7358,7 @@ final class TelegramHookInstaller {
                         Context.class,
                         boolean.class,
                         boolean.class,
-                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                        TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.Theme$ResourcesProvider")
                 );
                 item = (View) constructor.newInstance(context, false, true, themeDelegate);
             } else {
@@ -7347,7 +7393,7 @@ final class TelegramHookInstaller {
     private View createEditHistoryMenuItem(Context context, Object chatActivity) {
         try {
             ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Class<?> itemClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.ActionBarMenuSubItem");
             Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
             View item;
             if (themeDelegate != null) {
@@ -7355,7 +7401,7 @@ final class TelegramHookInstaller {
                         Context.class,
                         boolean.class,
                         boolean.class,
-                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                        TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.Theme$ResourcesProvider")
                 );
                 item = (View) constructor.newInstance(context, false, true, themeDelegate);
             } else {
@@ -7384,7 +7430,7 @@ final class TelegramHookInstaller {
     private View createReloadMessageMenuItem(Context context, Object chatActivity) {
         try {
             ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> itemClass = classLoader.loadClass("org.telegram.ui.ActionBar.ActionBarMenuSubItem");
+            Class<?> itemClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.ActionBarMenuSubItem");
             Object themeDelegate = Reflect.field(chatActivity, "themeDelegate");
             View item;
             if (themeDelegate != null) {
@@ -7392,7 +7438,7 @@ final class TelegramHookInstaller {
                         Context.class,
                         boolean.class,
                         boolean.class,
-                        classLoader.loadClass("org.telegram.ui.ActionBar.Theme$ResourcesProvider")
+                        TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ActionBar.Theme$ResourcesProvider")
                 );
                 item = (View) constructor.newInstance(context, false, true, themeDelegate);
             } else {
@@ -7428,7 +7474,7 @@ final class TelegramHookInstaller {
         }
         try {
             ClassLoader classLoader = chatActivity.getClass().getClassLoader();
-            Class<?> controllerClass = classLoader.loadClass("org.telegram.messenger.MessagesController");
+            Class<?> controllerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessagesController");
             int account = resolveSelectedTelegramAccount(classLoader);
             Object controller = Reflect.invokeStatic(
                     controllerClass,
@@ -7440,7 +7486,7 @@ final class TelegramHookInstaller {
             ids.add(messageId);
             boolean invoked = false;
             for (Method method : controllerClass.getDeclaredMethods()) {
-                if (!"reloadMessages".equals(method.getName())) {
+                if (!"reloadMessages".equals(TelegramSymbols.name(method))) {
                     continue;
                 }
                 Object[] args = buildReloadMessageArgs(method.getParameterTypes(), ids, dialogId);
@@ -7762,7 +7808,7 @@ final class TelegramHookInstaller {
     }
 
     private Object getTelegramPhotoViewer(ClassLoader classLoader) throws Throwable {
-        Class<?> photoViewerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer");
+        Class<?> photoViewerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.PhotoViewer");
         Method getInstance = photoViewerClass.getMethod("getInstance");
         return getInstance.invoke(null);
     }
@@ -7773,7 +7819,7 @@ final class TelegramHookInstaller {
         }
         Object resourcesProvider = Reflect.field(chatActivity, "themeDelegate");
         for (Method method : photoViewer.getClass().getMethods()) {
-            if (!method.getName().equals("setParentActivity") || method.getParameterCount() != 2 || resourcesProvider == null) {
+            if (!TelegramSymbols.name(method).equals("setParentActivity") || method.getParameterCount() != 2 || resourcesProvider == null) {
                 continue;
             }
             Class<?>[] types = method.getParameterTypes();
@@ -7786,7 +7832,7 @@ final class TelegramHookInstaller {
             }
         }
         for (Method method : photoViewer.getClass().getMethods()) {
-            if (!method.getName().equals("setParentActivity") || method.getParameterCount() != 1) {
+            if (!TelegramSymbols.name(method).equals("setParentActivity") || method.getParameterCount() != 1) {
                 continue;
             }
             Class<?> type = method.getParameterTypes()[0];
@@ -7802,7 +7848,7 @@ final class TelegramHookInstaller {
     }
 
     private Object createTelegramPhotoViewerProvider(ClassLoader classLoader) throws Throwable {
-        Class<?> providerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer$EmptyPhotoViewerProvider");
+        Class<?> providerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.PhotoViewer$EmptyPhotoViewerProvider");
         Constructor<?> constructor = providerClass.getDeclaredConstructor();
         constructor.setAccessible(true);
         return constructor.newInstance();
@@ -7811,7 +7857,7 @@ final class TelegramHookInstaller {
     private Object createSyntheticHistoryMessage(ClassLoader classLoader, Object selectedMessageObject,
                                                  MessageCache.CachedMessage cachedMessage, Object mediaObject,
                                                  java.io.File file, boolean isolateIdentity) throws Throwable {
-        Class<?> messageClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$TL_message");
+        Class<?> messageClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.TLRPC$TL_message");
         Object message = messageClass.getDeclaredConstructor().newInstance();
         Object selectedOwner = Reflect.field(selectedMessageObject, "messageOwner");
         Reflect.setField(message, "id", isolateIdentity ? syntheticHistoryMessageId(cachedMessage, file) : (int) cachedMessage.messageId);
@@ -7877,7 +7923,7 @@ final class TelegramHookInstaller {
         Throwable last = null;
         for (String className : classNames) {
             try {
-                Constructor<?> constructor = classLoader.loadClass(className).getDeclaredConstructor();
+                Constructor<?> constructor = TelegramSymbols.loadClass(classLoader, className).getDeclaredConstructor();
                 constructor.setAccessible(true);
                 return constructor.newInstance();
             } catch (Throwable throwable) {
@@ -7902,7 +7948,7 @@ final class TelegramHookInstaller {
     private Object createPeerForDialogId(ClassLoader classLoader, long dialogId) throws Throwable {
         long normalizedId = Math.abs(dialogId);
         String className = dialogId < 0 ? "org.telegram.tgnet.TLRPC$TL_peerChannel" : "org.telegram.tgnet.TLRPC$TL_peerUser";
-        Object peer = classLoader.loadClass(className).getDeclaredConstructor().newInstance();
+        Object peer = TelegramSymbols.loadClass(classLoader, className).getDeclaredConstructor().newInstance();
         if (dialogId < 0) {
             Reflect.setField(peer, "channel_id", normalizedId);
             Reflect.setField(peer, "chat_id", normalizedId);
@@ -7914,8 +7960,8 @@ final class TelegramHookInstaller {
 
     private java.io.File syncHistoryFileToTelegramPath(ClassLoader classLoader, int account, Object message,
                                                        java.io.File sourceFile) throws Throwable {
-        Class<?> fileLoaderClass = classLoader.loadClass("org.telegram.messenger.FileLoader");
-        Class<?> messageBaseClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+        Class<?> fileLoaderClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.FileLoader");
+        Class<?> messageBaseClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.TLRPC$Message");
         Object fileLoader = Reflect.invokeStatic(fileLoaderClass, "getInstance", new Class<?>[]{int.class}, account);
         if (fileLoader == null) {
             return null;
@@ -7949,8 +7995,8 @@ final class TelegramHookInstaller {
     }
 
     private Object createTelegramMessageObject(ClassLoader classLoader, int account, Object message) throws Throwable {
-        Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
-        Class<?> messageBaseClass = classLoader.loadClass("org.telegram.tgnet.TLRPC$Message");
+        Class<?> messageObjectClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessageObject");
+        Class<?> messageBaseClass = TelegramSymbols.loadClass(classLoader, "org.telegram.tgnet.TLRPC$Message");
         Constructor<?> constructor = messageObjectClass.getConstructor(int.class, messageBaseClass, boolean.class, boolean.class);
         return constructor.newInstance(account, message, false, true);
     }
@@ -7964,9 +8010,9 @@ final class TelegramHookInstaller {
             return false;
         }
         Object provider = createTelegramPhotoViewerProvider(classLoader);
-        Class<?> messageObjectClass = classLoader.loadClass("org.telegram.messenger.MessageObject");
-        Class<?> chatActivityClass = classLoader.loadClass("org.telegram.ui.ChatActivity");
-        Class<?> providerClass = classLoader.loadClass("org.telegram.ui.PhotoViewer$PhotoViewerProvider");
+        Class<?> messageObjectClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.MessageObject");
+        Class<?> chatActivityClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.ChatActivity");
+        Class<?> providerClass = TelegramSymbols.loadClass(classLoader, "org.telegram.ui.PhotoViewer$PhotoViewerProvider");
         Method openPhoto = photoViewer.getClass().getMethod(
                 "openPhoto",
                 messageObjectClass,
@@ -7982,7 +8028,7 @@ final class TelegramHookInstaller {
 
     private int resolveSelectedTelegramAccount(ClassLoader classLoader) {
         try {
-            Class<?> userConfigClass = classLoader.loadClass("org.telegram.messenger.UserConfig");
+            Class<?> userConfigClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.UserConfig");
             return Reflect.asInt(Reflect.staticField(userConfigClass, "selectedAccount"), 0);
         } catch (Throwable ignored) {
             return 0;
@@ -8109,7 +8155,7 @@ final class TelegramHookInstaller {
     }
 
     private boolean isTelegramMenuSubItem(View view) {
-        return view != null && "org.telegram.ui.ActionBar.ActionBarMenuSubItem".equals(view.getClass().getName());
+        return view != null && "org.telegram.ui.ActionBar.ActionBarMenuSubItem".equals(TelegramSymbols.name(view.getClass()));
     }
 
     private List<String> reportLabels(Context context) {
@@ -8487,7 +8533,7 @@ final class TelegramHookInstaller {
             int postRemaining = refreshProbeBudget.getAndDecrement();
             if (postRemaining > 0) {
                 info(
-                        "Post refresh root=" + refreshRoot.getClass().getSimpleName()
+                        "Post refresh root=" + TelegramSymbols.simpleName(refreshRoot.getClass())
                                 + " refreshed=" + postRefreshed
                 );
             }
@@ -8495,7 +8541,7 @@ final class TelegramHookInstaller {
         int remaining = refreshProbeBudget.getAndDecrement();
         if (remaining > 0) {
             info(
-                    "Immediate refresh root=" + refreshRoot.getClass().getSimpleName()
+                    "Immediate refresh root=" + TelegramSymbols.simpleName(refreshRoot.getClass())
                             + " refreshed=" + refreshed
             );
         }
@@ -8513,7 +8559,7 @@ final class TelegramHookInstaller {
         int remaining = refreshProbeBudget.getAndDecrement();
         if (remaining > 0) {
             info(
-                    "Resume refresh root=" + root.getClass().getSimpleName()
+                    "Resume refresh root=" + TelegramSymbols.simpleName(root.getClass())
                             + " refreshed=" + refreshed
             );
         }
@@ -8535,7 +8581,7 @@ final class TelegramHookInstaller {
         View current = anchor;
         View best = anchor;
         while (current != null) {
-            String className = current.getClass().getName();
+            String className = TelegramSymbols.name(current.getClass());
             if (className.contains("RecyclerView")) {
                 return current;
             }
@@ -8613,12 +8659,12 @@ final class TelegramHookInstaller {
         }
         Class<?> current = view.getClass();
         while (current != null) {
-            if ("androidx.recyclerview.widget.RecyclerView".equals(current.getName())) {
+            if ("androidx.recyclerview.widget.RecyclerView".equals(TelegramSymbols.name(current))) {
                 return true;
             }
             current = current.getSuperclass();
         }
-        return view.getClass().getName().contains("RecyclerView");
+        return TelegramSymbols.name(view.getClass()).contains("RecyclerView");
     }
 
     private void dismissScrimPopup(Object chatActivity) {
@@ -8640,7 +8686,7 @@ final class TelegramHookInstaller {
                 chatMenuView = (View) subItem;
                 chatMenuView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_CHAT);
             } else {
-                info("ChatActivity menu addSubItem unavailable on " + headerItem.getClass().getName());
+                info("ChatActivity menu addSubItem unavailable on " + TelegramSymbols.name(headerItem.getClass()));
             }
         }
         if (chatMenuView != null) {
@@ -8760,7 +8806,7 @@ final class TelegramHookInstaller {
             Object subItem = addMenuSubItem(
                     headerItem, MENU_ID_SCROLL_TOP, iconRes, localizedScrollTopLabel(context));
             if (!(subItem instanceof View)) {
-                info("Scroll-to-top addSubItem unavailable on " + headerItem.getClass().getName());
+                info("Scroll-to-top addSubItem unavailable on " + TelegramSymbols.name(headerItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
@@ -8791,7 +8837,7 @@ final class TelegramHookInstaller {
             );
             if (!(subItem instanceof View)) {
                 info("First-message addSubItem unavailable on "
-                        + headerItem.getClass().getName());
+                        + TelegramSymbols.name(headerItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
@@ -8817,7 +8863,7 @@ final class TelegramHookInstaller {
             Object subItem = addMenuSubItem(
                     headerItem, MENU_ID_JUMP_TO_MARK, iconRes, localizedJumpToMarkLabel(context));
             if (!(subItem instanceof View)) {
-                info("Jump-to-mark addSubItem unavailable on " + headerItem.getClass().getName());
+                info("Jump-to-mark addSubItem unavailable on " + TelegramSymbols.name(headerItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
@@ -8868,12 +8914,12 @@ final class TelegramHookInstaller {
         if (subItemView == null) {
             Object subItem = addMenuSubItem(headerItem, MENU_ID_ANTI_RECALL, iconRes, label);
             if (!(subItem instanceof View)) {
-                info("Anti-recall addSubItem unavailable on " + headerItem.getClass().getName());
+                info("Anti-recall addSubItem unavailable on " + TelegramSymbols.name(headerItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
             subItemView.setTag(R.id.gramsieve_menu_item_id, MENU_ID_ANTI_RECALL);
-            info("Anti-recall: menu item created, class=" + subItemView.getClass().getName());
+            info("Anti-recall: menu item created, class=" + TelegramSymbols.name(subItemView.getClass()));
         } else {
             Reflect.invokeIfExists(subItemView, "setText", new Class<?>[]{CharSequence.class}, label);
         }
@@ -8935,7 +8981,7 @@ final class TelegramHookInstaller {
         if (subItemView == null) {
             Object subItem = addMenuSubItem(headerItem, MENU_ID_CLEANUP_MODE, iconRes, label);
             if (!(subItem instanceof View)) {
-                info("CleanupMode addSubItem unavailable on " + headerItem.getClass().getName());
+                info("CleanupMode addSubItem unavailable on " + TelegramSymbols.name(headerItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
@@ -9023,8 +9069,7 @@ final class TelegramHookInstaller {
             info("scrollToMessageId failed for marked position, falling back to scrollToLastMessage");
             suppressNextSaveBeforeJump = true;
             try {
-                Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
-                        new Class<?>[]{boolean.class, boolean.class}, false, false);
+                scrollToLastMessage(chatActivity);
             } finally {
                 suppressNextSaveBeforeJump = false;
             }
@@ -9042,6 +9087,26 @@ final class TelegramHookInstaller {
 
     private volatile boolean suppressNextSaveBeforeJump;
 
+    private void scrollToLastMessage(Object chatActivity) {
+        if (chatActivity == null) return;
+        try {
+            Method legacy = TelegramSymbols.declaredMethod(chatActivity.getClass(), "scrollToLastMessage",
+                    boolean.class, boolean.class);
+            legacy.setAccessible(true);
+            Reflect.invoke(legacy, chatActivity, false, false);
+        } catch (NoSuchMethodException optimizedSignature) {
+            try {
+                Method optimized = TelegramSymbols.uniqueMethod(chatActivity.getClass(), "scrollToLastMessage");
+                Class<?>[] parameters = optimized.getParameterTypes();
+                if (parameters.length == 2 && parameters[0] == boolean.class && !parameters[1].isPrimitive()) {
+                    Reflect.invoke(optimized, chatActivity, false, null);
+                }
+            } catch (NoSuchMethodException failure) {
+                error("scrollToLastMessage unavailable", failure);
+            }
+        }
+    }
+
     private void scrollChatToTop(Object chatActivity, Context context) {
         long dialogId = Reflect.asLong(Reflect.invokeIfExists(chatActivity, "getDialogId", new Class<?>[0]), 0L);
         ChatReadPositionStore.ReadPosition popped = dialogId != 0L
@@ -9058,8 +9123,7 @@ final class TelegramHookInstaller {
                 info("scrollToMessageId failed, falling back to scrollToLastMessage");
                 suppressNextSaveBeforeJump = true;
                 try {
-                    Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
-                            new Class<?>[]{boolean.class, boolean.class}, false, false);
+                    scrollToLastMessage(chatActivity);
                 } finally {
                     suppressNextSaveBeforeJump = false;
                 }
@@ -9069,8 +9133,7 @@ final class TelegramHookInstaller {
             Toast.makeText(context, localizedScrollToTopStarted(context), Toast.LENGTH_SHORT).show();
             suppressNextSaveBeforeJump = true;
             try {
-                Reflect.invokeIfExists(chatActivity, "scrollToLastMessage",
-                        new Class<?>[]{boolean.class, boolean.class}, false, false);
+                scrollToLastMessage(chatActivity);
             } finally {
                 suppressNextSaveBeforeJump = false;
             }
@@ -9183,12 +9246,12 @@ final class TelegramHookInstaller {
                     return;
                 }
             } else {
-                info(host.getClass().getSimpleName() + ".isSettings unavailable; attempting fallback menu injection");
+                info(TelegramSymbols.simpleName(host.getClass()) + ".isSettings unavailable; attempting fallback menu injection");
             }
         }
         Object otherItem = resolveOverflowMenuItem(host);
         if (otherItem == null) {
-            info(host.getClass().getSimpleName() + " overflow menu item not found");
+            info(TelegramSymbols.simpleName(host.getClass()) + " overflow menu item not found");
             return;
         }
         Context context = contextFromMenuItem(otherItem);
@@ -9198,8 +9261,8 @@ final class TelegramHookInstaller {
             Object subItem = addMenuSubItem(
                     otherItem, MENU_ID_GLOBAL, iconRes, localizedGlobalMenuLabel(context));
             if (!(subItem instanceof View)) {
-                info(host.getClass().getSimpleName()
-                        + " menu addSubItem unavailable on " + otherItem.getClass().getName());
+                info(TelegramSymbols.simpleName(host.getClass())
+                        + " menu addSubItem unavailable on " + TelegramSymbols.name(otherItem.getClass()));
                 return;
             }
             subItemView = (View) subItem;
@@ -9220,16 +9283,10 @@ final class TelegramHookInstaller {
             return;
         }
         Context context = contextFromSettingsHost(host);
-        Object item = Reflect.invoke(
-                factoryOf,
-                null,
-                SETTINGS_ROW_GRAMSIEVE,
-                SETTINGS_ROW_COLOR_START,
-                SETTINGS_ROW_COLOR_END,
-                resolveIcon(context),
-                localizedSettingsRowLabel(context),
-                localizedSettingsRowSubtitle(context)
-        );
+        Object[] arguments = {SETTINGS_ROW_GRAMSIEVE, SETTINGS_ROW_COLOR_START, SETTINGS_ROW_COLOR_END,
+                resolveIcon(context), localizedSettingsRowLabel(context), localizedSettingsRowSubtitle(context)};
+        if (factoryOf.getParameterCount() == 7) arguments = java.util.Arrays.copyOf(arguments, 7);
+        Object item = Reflect.invoke(factoryOf, null, arguments);
         if (item == null) {
             return;
         }
@@ -9355,7 +9412,7 @@ final class TelegramHookInstaller {
     private Object lastActionBarMenuItem(ViewGroup group) {
         for (int i = group.getChildCount() - 1; i >= 0; i--) {
             View child = group.getChildAt(i);
-            if (child.getClass().getName().contains("ActionBarMenuItem")) {
+            if (TelegramSymbols.name(child.getClass()).contains("ActionBarMenuItem")) {
                 return child;
             }
         }
@@ -9576,7 +9633,7 @@ final class TelegramHookInstaller {
 
         ViewGroup root = resolveHostConfigRoot(host, context);
         if (root == null) {
-            info("Host config panel root unavailable for " + (host == null ? "null" : host.getClass().getName()));
+            info("Host config panel root unavailable for " + (host == null ? "null" : TelegramSymbols.name(host.getClass())));
             return false;
         }
 
@@ -9683,7 +9740,7 @@ final class TelegramHookInstaller {
     private void logTelegramVersion(ClassLoader classLoader, ApplicationInfo applicationInfo) {
         String buildVersion = "";
         try {
-            Class<?> buildVarsClass = classLoader.loadClass("org.telegram.messenger.BuildVars");
+            Class<?> buildVarsClass = TelegramSymbols.loadClass(classLoader, "org.telegram.messenger.BuildVars");
             Object raw = Reflect.staticField(buildVarsClass, "BUILD_VERSION_STRING");
             buildVersion = Reflect.asString(raw).trim();
         } catch (Throwable ignored) {
