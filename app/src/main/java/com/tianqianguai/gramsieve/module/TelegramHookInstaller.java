@@ -201,8 +201,8 @@ final class TelegramHookInstaller {
         }
         retiring = false;
         try {
-            boolean mapped = TelegramSymbols.initialize(applicationInfo == null ? null : applicationInfo.sourceDir);
-            info("Telegram symbols=" + (mapped ? "Play-70862" : "native"));
+            String symbols = TelegramSymbols.initialize(applicationInfo == null ? null : applicationInfo.sourceDir);
+            info("Telegram symbols=" + symbols);
         } catch (Exception exception) {
             error("Telegram symbol map could not be loaded", exception);
         }

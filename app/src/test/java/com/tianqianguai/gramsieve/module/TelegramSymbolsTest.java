@@ -7,6 +7,15 @@ import java.nio.charset.StandardCharsets;
 import org.junit.Test;
 
 public class TelegramSymbolsTest {
+    @Test public void knownBuildsSelectSeparateMapsAndUnknownHashesDoNotMatch() throws Exception {
+        assertEquals("70862", TelegramSymbols.buildForHash("b923544110654a2c0ae4e0d5829c1606b9f8807f76088fb4142622a93e408f8e"));
+        assertEquals("70892", TelegramSymbols.buildForHash("6b3565f20af6681172b49cf84915818fb575ace8295cd1de08c4b9a2b3985f5e"));
+        assertNull(TelegramSymbols.buildForHash("unknown"));
+        assertEquals("native", TelegramSymbols.initialize(null));
+        new TelegramSymbols(TelegramSymbols.class.getResourceAsStream("/telegram-70862.tsv"));
+        new TelegramSymbols(TelegramSymbols.class.getResourceAsStream("/telegram-70892.tsv"));
+    }
+
     static class Host {
         public void a(int value) { }
         public void a(String value) { }
