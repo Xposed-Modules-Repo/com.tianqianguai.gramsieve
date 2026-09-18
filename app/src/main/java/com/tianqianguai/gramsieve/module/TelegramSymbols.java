@@ -12,7 +12,7 @@ import java.security.MessageDigest;
 import java.util.HashMap;
 import java.util.Map;
 
-/** Names recovered from the archived Play 12.10.2 APK; older hosts keep their native names. */
+/** Names recovered from archived Play APKs; unmatched hosts keep their native names. */
 final class TelegramSymbols {
     private static final String APK_SHA256 =
             "b923544110654a2c0ae4e0d5829c1606b9f8807f76088fb4142622a93e408f8e";
@@ -45,9 +45,9 @@ final class TelegramSymbols {
         }
     }
 
-    static boolean initialize(String apkPath) throws Exception {
+    static String initialize(String apkPath) throws Exception {
         active = null;
-        if (apkPath == null) return false;
+        if (apkPath == null) return "native";
         MessageDigest digest = MessageDigest.getInstance("SHA-256");
         try (InputStream input = new FileInputStream(apkPath)) {
             byte[] buffer = new byte[65536];
@@ -56,9 +56,16 @@ final class TelegramSymbols {
         }
         StringBuilder hex = new StringBuilder();
         for (byte value : digest.digest()) hex.append(String.format(java.util.Locale.ROOT, "%02x", value & 255));
-        if (!APK_SHA256.contentEquals(hex)) return false;
-        active = new TelegramSymbols(TelegramSymbols.class.getResourceAsStream("/telegram-70862.tsv"));
-        return true;
+        String build = buildForHash(hex.toString());
+        if (build == null) return "native";
+        active = new TelegramSymbols(TelegramSymbols.class.getResourceAsStream("/telegram-" + build + ".tsv"));
+        return "Play-" + build;
+    }
+
+    static String buildForHash(String hash) {
+        if (APK_SHA256.equals(hash)) return "70862";
+        if ("6b3565f20af6681172b49cf84915818fb575ace8295cd1de08c4b9a2b3985f5e".equals(hash)) return "70892";
+        return null;
     }
 
     static Class<?> loadClass(ClassLoader loader, String name) throws ClassNotFoundException {

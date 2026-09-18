@@ -150,4 +150,5 @@ LSPosed scope limited to `org.telegram.messenger`. Do not commit `build/`, `.gra
 
 ## Telegram 发布文案
 
-- Telegram 发布文案不包含 API 兼容说明、旧版本提示或类似安装兼容性说明；只保留版本更新内容、必要的 Release 链接和 Star 提示。
+- 用户说“发版”时，发布完成后的最终回复默认同时提供可直接复制的 Telegram 发布文案和该版本安装包地址，无需用户再次索取。安装包地址应包含本地正式签名 APK 的绝对路径链接及 GitHub Release 资产的直接下载链接；文案、链接和安装包版本必须与本次已验证的 Release 一致。提供文案不等于获准代发 Telegram 消息。
+- Telegram 发布文案不包含 Release 地址、API 兼容说明、旧版本提示或类似安装兼容性说明；只保留版本更新内容，并附项目地址 `https://github.com/Xposed-Modules-Repo/com.tianqianguai.gramsieve` 邀请用户点 Star。安装包的本地链接和直接下载地址在文案之外单独提供。

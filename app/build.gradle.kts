@@ -52,8 +52,8 @@ android {
         applicationId = "com.tianqianguai.gramsieve"
         minSdk = 33
         targetSdk = 36
-        versionCode = 13
-        versionName = "12.10.2"
+        versionCode = 14
+        versionName = "12.10.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
