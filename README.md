@@ -125,20 +125,6 @@ adb -s <device> shell tail -n 300 /sdcard/Android/data/org.telegram.messenger/fi
 adb -s <device> shell tail -n 300 /sdcard/Android/data/com.tianqianguai.gramsieve/files/GramSieve/gramsieve.log
 ```
 
-## 开发与诊断 Development & Diagnostics
-
-适配新 Telegram 版本前，可以先归档设备上的 Telegram APK 与反编译材料：
-
-Before adapting to a new Telegram version, archive the device APK and reverse-engineering materials:
-
-```powershell
-./scripts/archive-telegram-apk.ps1 -Device <device>
-```
-
-归档会写入 `local/telegram-apk-archive/`，该目录已加入 `.gitignore`，不会提交 APK 或 apktool 输出。
-
-Archives are stored under `local/telegram-apk-archive/`, which is git-ignored so APKs and apktool output are not committed.
-
 ## 示例规则 Sample Rules
 
 - [sample-global-rules.txt](examples/sample-global-rules.txt)

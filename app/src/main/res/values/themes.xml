@@ -1,9 +1,0 @@
-<resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.GramSieve" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/telegram_blue</item>
-        <item name="colorOnPrimary">@color/white</item>
-        <item name="colorSecondary">@color/telegram_blue_light</item>
-        <item name="colorOnSecondary">@color/black</item>
-        <item name="android:statusBarColor">?attr/colorPrimary</item>
-    </style>
-</resources>
