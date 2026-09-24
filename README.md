@@ -5,9 +5,9 @@
 <h1 align="center">GramSieve</h1>
 
 <p align="center">
-  面向 Telegram 官方客户端（<code>org.telegram.messenger</code>）的本地增强 LSPosed/Xposed 模块
+  面向 Telegram 官方 Play 与官网 Android 客户端（<code>org.telegram.messenger</code> / <code>org.telegram.messenger.web</code>）的增强 LSPosed/Xposed 模块
   <br>
-  A local enhancement LSPosed/Xposed module for the official Telegram client
+  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients
 </p>
 
 <p align="center">
@@ -31,6 +31,10 @@
 - **一键重置规则** — 可一次清空全局与所有聊天的过滤规则，同时保留防撤回、编辑历史、消息标记、日志和功能设置
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）
 - **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，修改后自动保存并立即生效
+- **分类设置与规则列表** — 按功能分类导航，屏蔽规则和保留例外分别管理，支持逐条启停、搜索、编辑和批量添加
+- **消息翻译** — 使用 Telegram 原生翻译服务，优先处理屏幕内消息；支持单条翻译、自动翻译及全局/群组/频道设置，原文在上、译文在下，目标语言可跟随界面或手动指定；翻译会向 Telegram 服务提交待翻译文本
+- **配置迁移** — 设置页导出/导入 JSON，迁移规则、功能和当前账号策略；不包含登录凭据、缓存消息或媒体文件
+- **解除内容限制** — 用一个开关控制保存、复制和转发限制相关增强，保留原生媒体保存流程
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **可选下载按钮常驻** — 默认关闭；开启后始终保留 Telegram 原生下载入口，点击、动画和进度仍由客户端处理
@@ -48,6 +52,10 @@
 - **One-tap rule reset** — clear global and per-chat filter rules at once while preserving anti-recall, edit history, message marks, logs, and feature settings
 - **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
 - **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and save and apply changes automatically
+- **Categorized settings and rule lists** — navigate by feature and manage block rules and keep exceptions separately, with individual toggles, search, editing and batch input
+- **Message translation** — uses Telegram's native translation service and prioritizes visible messages; supports single-message and automatic translation with global, group and channel settings, original text above the translation, and an interface-based or manually selected target language; text is submitted to Telegram's translation service
+- **Settings migration** — export/import JSON from settings to transfer rules, features and current-account policies, excluding login credentials, cached messages and media files
+- **Content restrictions** — one switch controls saving, copying and forwarding enhancements while retaining native media saving
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Optional persistent download button** — off by default; when enabled, Telegram's native download entry stays available while clicks, animation, and progress remain client-controlled
@@ -58,7 +66,15 @@
 - **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
 
+编辑历史只能展示实际记录并缓存的内容；连续编辑图片时，中间图片版本可能未独立保存，不能保证完整恢复。新版各渠道的具体功能仍需按场景验证，适配声明不表示所有功能均已实测。
+
+Edit history can only show content that was recorded and cached; intermediate images in consecutive edits may not be stored independently, so complete recovery is not guaranteed. Features require scenario-specific verification on each client build; adaptation does not mean every feature has been tested.
+
 ## 规则写法 How Rules Work
+
+在 GramSieve 设置首页进入“屏蔽与保留”，分别管理屏蔽规则和保留例外。点击“添加规则”选择匹配内容、范围和方式，修改即时保存；已有规则可以单独启停、编辑或删除，多条内容可使用“批量添加”。保留例外始终优先。过滤后的隐藏、折叠或调试标记可在“过滤方式与规则管理”中选择。
+
+Open “Block & keep rules” from GramSieve Settings to manage block rules and keep exceptions separately. Add a rule with its text, scope and matching method; edits save automatically. Existing rules can be enabled, edited or deleted individually, and “Add multiple” supports batch input. Keep exceptions take priority. Choose hide, collapse or debug mark under “Filtering action & rule management”.
 
 GramSieve 会对消息文字、媒体说明、内联按钮文字/链接、发送者名称/ID、聊天名称/ID 进行标准化处理，然后逐行匹配规则。
 
@@ -101,13 +117,13 @@ In the current UI, each input box is already target-specific, so prefixes are us
 ## 入口 Entry Points
 
 - **Telegram 设置列表** → `GramSieve`（唯一全局配置入口）
-- **聊天右上角三点菜单** → `聊天过滤规则` · `主动加载` · `跳转到上次浏览` · `跳转到标记位置`
-- **单击某条消息** → `屏蔽此消息` · `标记此消息` · `编辑历史`
+- **聊天右上角三点菜单** → `聊天过滤规则` · `防撤回` · `主动加载` · `编辑历史` · `跳转到上次浏览` · `跳转到标记位置`；启用翻译后提供翻译及自动翻译入口，菜单项可在设置中分别隐藏
+- **单击某条消息** → `屏蔽此消息` · `标记此消息` · `编辑历史`；启用翻译后可翻译有文字的消息
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）
 
 - **Telegram settings list** → `GramSieve` (the only global settings entry)
-- **Chat top-right overflow menu** → `Chat filters` · `Proactive loading` · `Jump to last viewed` · `Jump to marked position`
-- **Click a message** → `Block this message` · `Mark this message` · `Edit history`
+- **Chat top-right overflow menu** → `Chat filters` · `Anti-recall` · `Proactive loading` · `Edit history` · `Jump to last viewed` · `Jump to marked position`; translation controls appear when enabled, and individual menu entries can be hidden in settings
+- **Click a message** → `Block this message` · `Mark this message` · `Edit history`; messages containing text can also be translated when translation is enabled
 - **Download page action mode** → `Select All` button (select all loaded download items at once)
 
 规则直接从 Telegram 内的寄生设置页保存到 LSPosed 远程配置，并同步持久化到模块进程；无需再打开模块应用确认。
