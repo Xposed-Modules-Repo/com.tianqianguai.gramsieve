@@ -34,8 +34,8 @@
 - **分类设置与规则列表** — 按功能分类导航，屏蔽规则和保留例外分别管理，支持逐条启停、搜索、编辑和批量添加
 - **消息翻译** — 使用 Telegram 原生翻译服务，优先处理屏幕内消息；支持单条翻译、自动翻译及全局/群组/频道设置，原文在上、译文在下，目标语言可跟随界面或手动指定；翻译会向 Telegram 服务提交待翻译文本
 - **配置迁移** — 设置页导出/导入 JSON，迁移规则、功能和当前账号策略；不包含登录凭据、缓存消息或媒体文件
-- **解除内容限制** — 用一个开关控制保存、复制和转发限制相关增强，保留原生媒体保存流程
-- **受限文字与视频副本发送** — 受限文字、已完整下载的普通视频可通过转发入口发送副本；视频重新上传，不保留原频道来源标记，普通消息仍使用原生转发
+- **解除内容限制** — 控制受限媒体的保存、复制和转发；副本发送由独立开关控制，默认关闭
+- **受限内容发送副本（可选）** — 默认沿用 Telegram 原生转发并保留来源；开启后，受限文字和已完整下载的普通视频会作为副本上传，视频不保留原频道来源
 - **消息标记与跳转** — 单击消息可标记位置，从右上角菜单一键跳回，每个聊天独立标记
 - **浏览位置记忆** — 自动记录滚动位置，可一键跳转到上次浏览处
 - **可选下载按钮常驻** — 默认关闭；开启后始终保留 Telegram 原生下载入口，点击、动画和进度仍由客户端处理
@@ -56,8 +56,8 @@
 - **Categorized settings and rule lists** — navigate by feature and manage block rules and keep exceptions separately, with individual toggles, search, editing and batch input
 - **Message translation** — uses Telegram's native translation service and prioritizes visible messages; supports single-message and automatic translation with global, group and channel settings, original text above the translation, and an interface-based or manually selected target language; text is submitted to Telegram's translation service
 - **Settings migration** — export/import JSON from settings to transfer rules, features and current-account policies, excluding login credentials, cached messages and media files
-- **Content restrictions** — one switch controls saving, copying and forwarding enhancements while retaining native media saving
-- **Protected text and video copies** — send protected text and fully downloaded regular videos as copies from the forward action; videos are re-uploaded without original channel attribution, while ordinary messages retain native forwarding
+- **Content restrictions** — controls saving, copying and forwarding of protected media; copy sending has a separate switch and is off by default
+- **Optional protected-content copies** — Telegram's native forwarding keeps the source by default; when enabled, protected text and fully downloaded regular videos are uploaded as copies, with videos losing the original channel attribution
 - **Mark & jump** — tap a message to mark its position, jump back anytime from the menu; marks are per-chat
 - **Browse position memory** — automatically tracks scroll position, one-tap jump to last viewed message
 - **Optional persistent download button** — off by default; when enabled, Telegram's native download entry stays available while clicks, animation, and progress remain client-controlled
