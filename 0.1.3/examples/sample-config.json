@@ -1,0 +1,52 @@
+{
+  "schemaVersion": 1,
+  "enabled": true,
+  "debugLogging": false,
+  "action": "HIDE",
+  "globalRules": [
+    {
+      "id": "K_ANY_DEMO_0",
+      "enabled": true,
+      "mode": "KEYWORD",
+      "target": "ANY",
+      "pattern": "t.me/",
+      "caseSensitive": false
+    },
+    {
+      "id": "R_BUTTON_DEMO_1",
+      "enabled": true,
+      "mode": "REGEX",
+      "target": "BUTTONS",
+      "pattern": "https?://[^ ]+",
+      "caseSensitive": false
+    }
+  ],
+  "globalExclusions": [
+    {
+      "id": "K_SENDER_DEMO_0",
+      "enabled": true,
+      "mode": "KEYWORD",
+      "target": "SENDER",
+      "pattern": "trusted_admin",
+      "caseSensitive": false
+    }
+  ],
+  "chatRules": {
+    "-1001234567890": {
+      "enabled": true,
+      "excludeFromGlobal": false,
+      "rules": [
+        {
+          "id": "K_TEXT_CHAT_0",
+          "enabled": true,
+          "mode": "KEYWORD",
+          "target": "TEXT",
+          "pattern": "free usdt",
+          "caseSensitive": false
+        }
+      ],
+      "exclusions": []
+    }
+  },
+  "updatedAtEpochMs": 1
+}

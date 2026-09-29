@@ -1,0 +1,8 @@
+# Example per-chat rules
+text:free usdt
+caption:稳赚
+button:join now
+
+# Example chat exclusions
+# sender:trusted_admin
+# text:official notice

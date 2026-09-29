@@ -1,0 +1,11 @@
+# Keywords
+t.me/
+buy now
+caption:airdrop
+button:https://
+sender:promo_bot
+
+# Regex
+# Put these into the regex field in the UI:
+# https?://
+# sender:^(promo|deal)_bot$
