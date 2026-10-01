@@ -22,6 +22,20 @@
   If GramSieve helps you, please consider leaving a Star.
 </p>
 
+## 安装与启动 / Setup
+
+当前版本适配官方 Telegram 12.10.6：Play 版 71122 与官网版 71129，需要支持 libxposed API 102 的 LSPosed。
+The current release targets official Telegram 12.10.6: Play build 71122 and website build 71129, with an LSPosed version supporting libxposed API 102.
+
+安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。
+After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
+
+MIUI / 澎湃 OS 限制模块自启动时，可额外勾选“系统框架”并重启设备，帮助官方 Telegram 唤起 GramSieve；这项作用域是可选的，也可在系统设置中允许 GramSieve 自启动。
+If MIUI / HyperOS restricts module autostart, optionally select System Framework and reboot to help official Telegram start GramSieve; alternatively, allow GramSieve autostart in system settings.
+
+启动等待时会显示可手动关闭的深色提示，后续启动成功会自动收起；未启用系统框架且启动仍受阻时，请允许 GramSieve 自启动后重新打开 Telegram。
+A dismissible dark prompt appears when startup is delayed and closes automatically if startup succeeds; if startup remains blocked without System Framework enabled, allow GramSieve autostart and reopen Telegram.
+
 ## 功能
 
 - **仅本地过滤** — 所有过滤在设备上完成，无网络请求，数据不离开手机
@@ -42,9 +56,12 @@
 - **下载页全选** — Telegram 下载管理页面多选模式下支持一键全选
 - **主动加载与防撤回防修改** — 后台和推送到达时主动加载消息，结合删除链路拦截和本地存储标记，尽量保留被撤回或修改的原始内容
 - **多版本编辑历史** — 编辑历史按版本保存，并会从 Telegram 本地历史同步写入中补齐离线期间发生的编辑
+- **回复后已读（可选，默认关闭）** — 浏览普通聊天时暂缓上报已读，消息实际发送成功后补报该会话此前的已读；后续新消息继续暂缓，失败、编辑和仅创建定时发送不触发
+- **保留阅后即焚图片（可选，默认关闭）** — 普通私聊中真实打开图片后正常上报查看，发送方按原生流程过期；接收方到期后显示“已销毁”并保留本地图片，不恢复未下载或已销毁的内容，不适用于秘密聊天
 - **编辑历史媒体查看** — 点击消息弹窗可查看编辑前内容，原始图片优先使用 Telegram 官方 PhotoViewer 并支持官方保存入口
 - **持久化诊断日志** — 运行日志写入 app-specific 外部目录，避免依赖容易溢出的 logcat 缓冲区
 - **双语界面** — 英文和简体中文，支持跟随系统
+- **旧版登录验证码流程（可选，默认关闭）** — 首次未登录也可通过欢迎页或登录页的 GramSieve 图标开启；重启官方 Telegram 后，以 11.5.5 / API layer 195 初始化未登录账号连接，尝试旧版验证码流程；不影响已登录账号，不保证跳过邮箱或短信付费页面，关闭后重启恢复
 
 - **Local-only filtering** — all filtering happens on-device; no network requests, no data leaves your phone
 - **Global + per-chat rules** — set broad filters globally, then override or exclude specific chats
@@ -64,9 +81,12 @@
 - **Download page select all** — select all loaded download items at once in Telegram's download manager
 - **Anti-recall & anti-edit** — proactively loads messages in the background and when push updates arrive, combining delete-path interception and local-storage marking to preserve recalled or edited content where possible
 - **Multi-version edit history** — stores edit history by version and recovers edits that arrive through Telegram local history-sync writes while the device was offline
+- **Read after reply (optional, off by default)** — hold ordinary chat read receipts until a message is successfully sent to that conversation; later arrivals remain held, and failures, edits or merely scheduling a send do not release receipts
+- **Keep self-destruct photos (optional, off by default)** — opening an incoming photo in a normal private chat reports viewing and lets it expire normally for the sender, while keeping a local photo marked Expired for the recipient; cannot recover undownloaded or already destroyed content and does not cover secret chats
 - **Edit-history media viewer** — open original pre-edit content from the message popup; original images prefer Telegram's official PhotoViewer and official save flow
 - **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
 - **Bilingual UI** — English and Simplified Chinese, with system-follow option
+- **Legacy login verification flow (optional, off by default)** — use the GramSieve icon on the welcome or login page even before your first sign-in, then restart official Telegram to initialize signed-out accounts with 11.5.5 / API layer 195; signed-in accounts remain unchanged, skipping email or SMS payment pages is not guaranteed, and disabling then restarting restores native initialization
 
 编辑历史只能展示实际记录并缓存的内容；连续编辑图片时，中间图片版本可能未独立保存，不能保证完整恢复。新版各渠道的具体功能仍需按场景验证，适配声明不表示所有功能均已实测。
 
