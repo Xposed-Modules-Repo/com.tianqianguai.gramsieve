@@ -30,11 +30,11 @@ The current release targets official Telegram 12.10.6: Play build 71122 and webs
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。
 After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
 
-MIUI / 澎湃 OS 限制模块自启动时，可额外勾选“系统框架”并重启设备，帮助官方 Telegram 唤起 GramSieve；这项作用域是可选的，也可在系统设置中允许 GramSieve 自启动。
-If MIUI / HyperOS restricts module autostart, optionally select System Framework and reboot to help official Telegram start GramSieve; alternatively, allow GramSieve autostart in system settings.
+模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。
+The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
 
-启动等待时会显示可手动关闭的深色提示，后续启动成功会自动收起；未启用系统框架且启动仍受阻时，请允许 GramSieve 自启动后重新打开 Telegram。
-A dismissible dark prompt appears when startup is delayed and closes automatically if startup succeeds; if startup remains blocked without System Framework enabled, allow GramSieve autostart and reopen Telegram.
+“日志”页面提供性能记录，预览、复制和导出均自动脱敏，并说明保留与隐藏的信息；分享前请检查导出文件。
+The Logs page provides performance records with automatic redaction for previews, copies, and exports, and explains what is retained or removed; review exported files before sharing.
 
 ## 功能
 
