@@ -24,8 +24,8 @@
 
 ## 安装与启动 / Setup
 
-当前版本适配官方 Telegram 12.10.6：Play 版 71122 与官网版 71129，需要支持 libxposed API 102 的 LSPosed。
-The current release targets official Telegram 12.10.6: Play build 71122 and website build 71129, with an LSPosed version supporting libxposed API 102.
+当前版本适配官方 Telegram 13.0.0：Play 版 71581 与官网版 71589，需要支持 libxposed API 102 的 LSPosed。
+The current release targets official Telegram 13.0.0: Play build 71581 and website build 71589, with an LSPosed version supporting libxposed API 102.
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。
 After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
@@ -47,6 +47,7 @@ The Logs page provides performance records with automatic redaction for previews
 - **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，修改后自动保存并立即生效
 - **分类设置与规则列表** — 按功能分类导航，屏蔽规则和保留例外分别管理，支持逐条启停、搜索、编辑和批量添加
 - **消息翻译** — 使用 Telegram 原生翻译服务，优先处理屏幕内消息；支持单条翻译、自动翻译及全局/群组/频道设置，原文在上、译文在下，目标语言可跟随界面或手动指定；翻译会向 Telegram 服务提交待翻译文本
+- **搜索去杂** — 独立搜索页提供关键词包含/排除和按账号保存的群组/频道黑白名单，合并云端与本地原文结果，支持继续加载、指定聊天历史扫描及消息跳转；界面显示扫描范围，搜索条件不改变聊天屏蔽规则
 - **配置迁移** — 设置页导出/导入 JSON，迁移规则、功能和当前账号策略；不包含登录凭据、缓存消息或媒体文件
 - **受限内容保存与复制** — 使用 Telegram 原生媒体保存流程，提供受限内容的保存与文字复制能力
 - **发送副本（可选，默认关闭）** — 开启后，可从转发入口将受限文字或完整下载的普通视频作为新消息发送；视频会重新上传，不保留原转发来源，不解除服务器的原生转发限制
@@ -72,6 +73,7 @@ The Logs page provides performance records with automatic redaction for previews
 - **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and save and apply changes automatically
 - **Categorized settings and rule lists** — navigate by feature and manage block rules and keep exceptions separately, with individual toggles, search, editing and batch input
 - **Message translation** — uses Telegram's native translation service and prioritizes visible messages; supports single-message and automatic translation with global, group and channel settings, original text above the translation, and an interface-based or manually selected target language; text is submitted to Telegram's translation service
+- **Search filters** — a dedicated page combines cloud and local-text results with keyword include/exclude filters and per-account group/channel allowlists and blocklists; supports paging, scoped history scans and message navigation, shows scan coverage, and leaves chat-blocking rules unchanged
 - **Settings migration** — export/import JSON from settings to transfer rules, features and current-account policies, excluding login credentials, cached messages and media files
 - **Save and copy restricted content** — save media through Telegram’s native media flow and copy restricted text
 - **Send copies (optional, off by default)** — when enabled, send protected text or fully downloaded regular videos as new messages from the forward action; videos are re-uploaded without original forwarding attribution, and server-side native forwarding restrictions remain
