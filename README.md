@@ -24,8 +24,8 @@
 
 ## 安装与启动 / Setup
 
-当前版本适配官方 Telegram 13.0.0：Play 版 71581 与官网版 71589，需要支持 libxposed API 102 的 LSPosed。
-The current release targets official Telegram 13.0.0: Play build 71581 and website build 71589, with an LSPosed version supporting libxposed API 102.
+当前版本适配官方 Telegram 13.0.1：Play 版 71671 与官网版 71679，需要支持 libxposed API 102 的 LSPosed。
+The current release targets official Telegram 13.0.1: Play build 71671 and website build 71679, with an LSPosed version supporting libxposed API 102.
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。
 After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
