@@ -24,8 +24,11 @@
 
 ## 安装与启动 / Setup
 
-当前版本适配官方 Telegram 13.0.1：Play 版 71671 与官网版 71679，需要支持 libxposed API 102 的 LSPosed。
-The current release targets official Telegram 13.0.1: Play build 71671 and website build 71679, with an LSPosed version supporting libxposed API 102.
+当前版本适配官方 Telegram 13.0.2：Play 版 71751 与官网版 71759，需要支持 libxposed API 102 的 LSPosed。
+The current release targets official Telegram 13.0.2: Play build 71751 and website build 71759, with an LSPosed version supporting libxposed API 102.
+
+同时提供 Plus Messenger 12.10.5.0（22571）的精确适配；使用 Plus 时请将其加入模块作用域。首条消息、手动标记、翻译等重复功能由 Plus 原生提供，原有模块设置保留。
+Exact compatibility is also provided for Plus Messenger 12.10.5.0 (22571); add Plus to the module scope when using it. Overlapping features such as first-message navigation, manual marks, and translation use Plus native implementations while saved module settings are preserved.
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。
 After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
@@ -33,8 +36,8 @@ After installing the module, enable GramSieve in LSPosed, select the official Te
 模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。
 The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
 
-“日志”页面提供性能记录，预览、复制和导出均自动脱敏，并说明保留与隐藏的信息；分享前请检查导出文件。
-The Logs page provides performance records with automatic redaction for previews, copies, and exports, and explains what is retained or removed; review exported files before sharing.
+“日志”页面提供性能记录，支持导出或通过系统分享发送日志文件；预览、复制、导出和分享均自动脱敏，分享前仍可检查文件。
+The Logs page provides performance records and lets you export files or open the system share sheet. Previews, copies, exports, and shared files are automatically redacted; you can still review files before sharing.
 
 ## 功能
 
