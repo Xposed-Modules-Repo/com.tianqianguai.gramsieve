@@ -24,8 +24,8 @@
 
 ## 安装与启动 / Setup
 
-当前版本适配官方 Telegram 13.0.2：Play 版 71751 与官网版 71759，需要支持 libxposed API 102 的 LSPosed。
-The current release targets official Telegram 13.0.2: Play build 71751 and website build 71759, with an LSPosed version supporting libxposed API 102.
+当前版本适配官方 Telegram 13.0.3：Play 版 71831 与官网版 71839，需要支持 libxposed API 102 的 LSPosed。
+The current release targets official Telegram 13.0.3: Play build 71831 and website build 71839, with an LSPosed version supporting libxposed API 102.
 
 同时提供 Plus Messenger 12.10.5.0（22571）的精确适配；使用 Plus 时请将其加入模块作用域。首条消息、手动标记、翻译等重复功能由 Plus 原生提供，原有模块设置保留。
 Exact compatibility is also provided for Plus Messenger 12.10.5.0 (22571); add Plus to the module scope when using it. Overlapping features such as first-message navigation, manual marks, and translation use Plus native implementations while saved module settings are preserved.
