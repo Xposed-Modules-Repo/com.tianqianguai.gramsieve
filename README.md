@@ -24,8 +24,8 @@
 
 ## 安装与启动<br>Setup
 
-当前版本适配官方 Telegram 13.0.3：Play 版 71831 与官网版 71839，需要支持 libxposed API 102 的 LSPosed。<br>
-The current release targets official Telegram 13.0.3: Play build 71831 and website build 71839, with an LSPosed version supporting libxposed API 102.
+当前版本适配官方 Telegram 13.1.0：Play 版 72291 与官网版 72299，需要支持 libxposed API 102 的 LSPosed。<br>
+The current module targets official Telegram 13.1.0: Play build 72291 and website build 72299, with an LSPosed version supporting libxposed API 102.
 
 同时提供 Plus Messenger 12.10.5.0（22571）的精确适配；使用 Plus 时请将其加入模块作用域。<br>
 Exact compatibility is also provided for Plus Messenger 12.10.5.0 (22571); add Plus to the module scope when using it.
@@ -44,6 +44,26 @@ The Logs page provides performance records and lets you export files or open the
 
 预览、复制、导出和分享均自动脱敏，分享前仍可检查文件。<br>
 Previews, copies, exports, and shared files are automatically redacted; you can still review files before sharing.
+
+## 使用教程<br>Usage guide
+
+在 Telegram 设置 → GramSieve → 使用教程，或当前聊天右上角 ⋮ → 聊天过滤规则 → 使用教程中查看中英文教程。<br>
+Open Telegram Settings → GramSieve → Usage guide, or a chat’s ⋮ → Chat filtering rules → Usage guide.
+
+目录包含规则、搜索去杂、防撤回、编辑历史、翻译、媒体保存、空间与流量、消息标记、临时清理、配置迁移等专题；<br>
+The bilingual topics cover rules, focused search, anti-recall, edit history, translation, saving media, storage and data use, marks, temporary cleanup and configuration transfer.
+
+界面语言可在“通用与诊断”切换。<br>
+Choose the interface language under General & diagnostics.
+
+先按自己的需要开启独立功能。<br>
+Enable the separate features you need.
+
+消息过滤在本机执行；搜索、翻译、主动加载和媒体下载会使用网络。<br>
+Message filtering is local; search, translation, proactive loading and media downloads use the network.
+
+防撤回与编辑历史只能保留实际收到并成功缓存的内容，开启设置不会补回所有已消失的记录。<br>
+Anti-recall and edit history retain content actually received and cached; enabling them does not recover every record already gone.
 
 ## 功能<br>Features
 
@@ -104,6 +124,9 @@ Previews, copies, exports, and shared files are automatically redacted; you can 
 - **多版本编辑历史** — 编辑历史按版本保存，并会从 Telegram 本地历史同步写入中补齐离线期间发生的编辑<br>
   **Multi-version edit history** — stores edit history by version and recovers edits that arrive through Telegram local history-sync writes while the device was offline
 
+- **媒体下载与空间预算（63 起）** — 主动下载默认开启，副本预算默认不限；可关闭尚未缓存媒体的主动下载，或设置普通媒体副本预算，达到预算后暂停新增副本和模块发起的媒体下载，已有文件保留<br>
+  **Media downloads and storage budget (63+)** — automatic downloads are on and the copy budget is unlimited by default; optionally stop downloading media not yet cached or set a budget for ordinary media copies, pausing new copies and module-initiated downloads at the budget while keeping existing files
+
 - **回复后已读（可选，默认关闭）** — 浏览普通聊天时暂缓上报已读，消息实际发送成功后补报该会话此前的已读；后续新消息继续暂缓，失败、编辑和仅创建定时发送不触发<br>
   **Read after reply (optional, off by default)** — hold ordinary chat read receipts until a message is successfully sent to that conversation; later arrivals remain held, and failures, edits or merely scheduling a send do not release receipts
 
@@ -122,8 +145,11 @@ Previews, copies, exports, and shared files are automatically redacted; you can 
 - **旧版登录验证码流程（可选，默认关闭）** — 首次未登录也可通过欢迎页或登录页的 GramSieve 图标开启；重启官方 Telegram 后，以 11.5.5 / API layer 195 初始化未登录账号连接，尝试旧版验证码流程；不影响已登录账号，不保证跳过邮箱或短信付费页面，关闭后重启恢复<br>
   **Legacy login verification flow (optional, off by default)** — use the GramSieve icon on the welcome or login page even before your first sign-in, then restart official Telegram to initialize signed-out accounts with 11.5.5 / API layer 195; signed-in accounts remain unchanged, skipping email or SMS payment pages is not guaranteed, and disabling then restarting restores native initialization
 
-编辑历史只能展示实际记录并缓存的内容；连续编辑图片时，中间图片版本可能未独立保存，不能保证完整恢复。<br>
-Edit history can only show content that was recorded and cached; intermediate images in consecutive edits may not be stored independently, so complete recovery is not guaranteed.
+编辑历史可以分别保存实际捕获的文字和图片版本；图片还需成功缓存对应文件。<br>
+Edit history can retain distinct captured text and image versions; images also need their corresponding cached files.
+
+未收到的编辑版本、未保存的媒体或记录开启前已丢失的内容无法保证恢复。<br>
+Recovery is not guaranteed for edits never received, media never saved or content lost before recording was enabled.
 
 新版各渠道的具体功能仍需按场景验证，适配声明不表示所有功能均已实测。<br>
 Features require scenario-specific verification on each client build; adaptation does not mean every feature has been tested.
@@ -198,10 +224,57 @@ In the current UI, each input box is already target-specific, so prefixes are us
 - **下载页面多选模式** → `全选` 按钮（一键选中所有已加载的下载项）<br>
   **Download page action mode** → `Select All` button (select all loaded download items at once)
 
-规则直接从 Telegram 内的寄生设置页保存到 LSPosed 远程配置，并同步持久化到模块进程；无需再打开模块应用确认。<br>
-Rules are saved from the host panel directly to LSPosed remote preferences and mirrored to the module process; opening a separate module app is no longer required.
+设置在当前 Telegram 客户端内保存，重启后保留；无需另外打开模块应用确认。<br>
+Settings are saved within the current Telegram client and survive restarts; no separate module app confirmation is needed.
+
+换设备或换客户端时，使用“配置迁移”导出和导入；多个账号的专属策略需分别迁移。<br>
+Use Configuration transfer to export and import when changing devices or clients, and migrate each account’s dedicated policies separately.
+
+## 媒体空间与流量<br>Media storage and data use
+
+在全局“媒体与下载”中可控制“主动下载尚未缓存的媒体”和普通媒体副本预算（GiB，0 为不限）。<br>
+Global Media & downloads provides a switch for downloading media not already cached and an ordinary media-copy budget in GiB (0 means unlimited).
+
+关闭主动下载后仍会复制 Telegram 已下载的媒体；<br>
+Turning downloads off still allows copying media Telegram has downloaded.
+
+达到预算后暂停新增普通副本和模块发起的媒体下载，降低预算不会删除旧文件。<br>
+At the budget, new ordinary copies and module-initiated downloads pause; lowering it does not delete old files.
+
+此预算不限制 Telegram 自身下载、数据库或另存的阅后即焚图片。<br>
+The budget excludes Telegram’s own downloads, databases and separately retained self-destruct photos.
+
+未及时缓存的媒体若被撤回，可能无法恢复。<br>
+Media not cached before recall may be unavailable.
+
+到“通用与诊断 → 日志”点击“记录当前资源用量”，稍等后刷新或分享文件。<br>
+Under General & diagnostics → Logs, tap Record current resource usage, wait briefly, then refresh or share the file.
+
+ResourceUsage 记录历史请求/返回、媒体下载请求与副本写入字节、文件和数据库占用，以及 Telegram UID 的收发字节。<br>
+ResourceUsage records history requests/results, media download requests and copied bytes, file/database sizes and Telegram UID traffic.
+
+UID 流量包含 Telegram 自身活动，不能全部归给模块；请求声明大小也不等于真实网络字节。<br>
+UID totals include Telegram’s own activity and cannot all be attributed to the module; declared request sizes are not actual network bytes.
+
+排查增长时，请保留同一客户端两个时点的记录和当时正在使用的功能。<br>
+To investigate growth, keep two samples from the same client and note which features were active.
 
 ## 持久化日志<br>Persistent Logs
+
+日常使用会自动静默记录广告处理、卡帧与网络加载摘要，无需开启详细诊断；正常请求汇总、异常采样限频，不记录消息正文或凭据。<br>
+Ordinary use automatically records silent summaries of ad handling, frame delays and network loading without detailed mode; normal requests are aggregated, anomaly samples are rate limited, and message contents and credentials are excluded.
+
+一般反馈问题可直接使用“通用与诊断 → 日志”：选择最近一小时、今天、自定义时间范围或全部，再点“分享”。<br>
+For issue reports, use General & diagnostics → Logs, choose the last hour, today, a custom range or All, then tap Share.
+
+文件保存到 Downloads/GramSieve 并打开系统分享面板；<br>
+The file is saved under Downloads/GramSieve and the system share sheet opens.
+
+“全部”分享完整持久日志，“复制”只复制当前预览，可能只是末尾片段。<br>
+Sharing All includes the complete persistent log; Copy copies only the preview, which may contain just its tail.
+
+分享前请检查脱敏后的文件。<br>
+Review the redacted file before sharing.
 
 调试防撤回、主动加载或媒体缓存时，优先读取持久化日志。<br>
 When debugging anti-recall, proactive loading, or media caching, read persistent logs first.
