@@ -5,9 +5,9 @@
 <h1 align="center">GramSieve</h1>
 
 <p align="center">
-  面向 Telegram 官方 Play 与官网 Android 客户端（<code>org.telegram.messenger</code> / <code>org.telegram.messenger.web</code>）的增强 LSPosed/Xposed 模块
+  面向 Telegram 官方 Play、官网 Android 客户端及指定 Plus Messenger、Nagram 版本的增强 LSPosed/Xposed 模块
   <br>
-  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients
+  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients and selected Plus Messenger and Nagram builds
 </p>
 
 <p align="center">
@@ -24,17 +24,17 @@
 
 ## 安装与启动<br>Setup
 
-当前版本适配官方 Telegram 13.1.0：Play 版 72291 与官网版 72299，需要支持 libxposed API 102 的 LSPosed。<br>
-The current module targets official Telegram 13.1.0: Play build 72291 and website build 72299, with an LSPosed version supporting libxposed API 102.
+当前模块版本号跟随本次适配的 Nagram 13.0.2，同时保留官方 Telegram 13.1.0（Play 版 72291、官网版 72299）适配；需要支持 libxposed API 102 的 LSPosed。<br>
+The module version follows the newly adapted Nagram 13.0.2 while retaining support for official Telegram 13.1.0 (Play build 72291 and website build 72299); an LSPosed version supporting libxposed API 102 is required.
 
-同时提供 Plus Messenger 12.10.5.0（22571）的精确适配；使用 Plus 时请将其加入模块作用域。<br>
-Exact compatibility is also provided for Plus Messenger 12.10.5.0 (22571); add Plus to the module scope when using it.
+同时提供 Plus Messenger 13.0.3.0（22601）与 Nagram 13.0.2（1255）的精确适配；使用时请将相应客户端加入模块作用域。<br>
+Exact compatibility is also provided for Plus Messenger 13.0.3.0 (22601) and Nagram 13.0.2 (1255); add the client you use to the module scope.
 
-首条消息、手动标记、翻译等重复功能由 Plus 原生提供，原有模块设置保留。<br>
-Overlapping features such as first-message navigation, manual marks, and translation use Plus native implementations while saved module settings are preserved.
+Plus 的首条消息、手动标记、翻译，以及 Nagram 的首条消息、翻译等已确认等价的重复功能使用各自原生实现；Nagram 的手动标记与上次浏览位置仍由模块提供，原有模块设置保留。<br>
+Confirmed equivalent features use the client's native implementation, including first-message navigation, manual marks and translation in Plus, and first-message navigation and translation in Nagram; module marks and last-viewed navigation remain available in Nagram, and saved module settings are preserved.
 
-安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的官方 Telegram 客户端，然后重新打开 Telegram。<br>
-After installing the module, enable GramSieve in LSPosed, select the official Telegram client you use, and reopen Telegram.
+安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的受支持客户端，然后重新打开该客户端。<br>
+After installing the module, enable GramSieve in LSPosed, select the supported client you use, and reopen that client.
 
 模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。<br>
 The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
@@ -53,8 +53,11 @@ Open Telegram Settings → GramSieve → Usage guide, or a chat’s ⋮ → Chat
 目录包含规则、搜索去杂、防撤回、编辑历史、翻译、媒体保存、空间与流量、消息标记、临时清理、配置迁移等专题；<br>
 The bilingual topics cover rules, focused search, anti-recall, edit history, translation, saving media, storage and data use, marks, temporary cleanup and configuration transfer.
 
-界面语言可在“通用与诊断”切换。<br>
-Choose the interface language under General & diagnostics.
+界面语言可在“通用与诊断”选择跟随 Telegram、简体中文、English 或 Русский。<br>
+Under General & diagnostics, choose Follow Telegram, 简体中文, English or Русский for the module interface.
+
+在“界面与菜单 → 菜单项目 → 消息长按菜单”中可开关“标记此消息”；默认显示，关闭后仍保留已有标记和跳转功能。<br>
+Under Interface & menus → Menu entries → Message long-press menu, toggle Mark this message; it is shown by default, and hiding it preserves existing marks and navigation.
 
 先按自己的需要开启独立功能。<br>
 Enable the separate features you need.
@@ -84,6 +87,9 @@ Anti-recall and edit history retain content actually received and cached; enabli
 
 - **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）<br>
   **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
+
+- **屏蔽消息自动已读** — 新消息到达时，在能确认不会连带读掉正常消息的情况下自动推进已读；有其他正常未读或无法确认范围时保留未读，排除规则和调试标记不触发自动已读<br>
+  **Auto-read filtered messages** — advance the read position on incoming filtered messages only when normal unread messages will remain untouched; preserve unread state when other normal unread messages exist or the range cannot be verified, and never auto-read keep-rule or debug-mark matches
 
 - **完全宿主化设置** — 不提供独立应用界面；全局配置和聊天配置都在 Telegram 内完成，界面跟随宿主主题，修改后自动保存并立即生效<br>
   **Fully host-native settings** — provides no standalone app UI; global and per-chat settings live inside Telegram, follow the host theme, and save and apply changes automatically
@@ -139,8 +145,8 @@ Anti-recall and edit history retain content actually received and cached; enabli
 - **持久化诊断日志** — 运行日志写入 app-specific 外部目录，避免依赖容易溢出的 logcat 缓冲区<br>
   **Persistent diagnostics** — runtime logs are written to app-specific external storage instead of relying on overflow-prone logcat buffers
 
-- **双语界面** — 英文和简体中文，支持跟随系统<br>
-  **Bilingual UI** — English and Simplified Chinese, with system-follow option
+- **多语言界面** — 简体中文、English 和 Русский，支持跟随 Telegram<br>
+  **Multilingual UI** — Simplified Chinese, English and Russian, with an option to follow Telegram
 
 - **旧版登录验证码流程（可选，默认关闭）** — 首次未登录也可通过欢迎页或登录页的 GramSieve 图标开启；重启官方 Telegram 后，以 11.5.5 / API layer 195 初始化未登录账号连接，尝试旧版验证码流程；不影响已登录账号，不保证跳过邮箱或短信付费页面，关闭后重启恢复<br>
   **Legacy login verification flow (optional, off by default)** — use the GramSieve icon on the welcome or login page even before your first sign-in, then restart official Telegram to initialize signed-out accounts with 11.5.5 / API layer 195; signed-in accounts remain unchanged, skipping email or SMS payment pages is not guaranteed, and disabling then restarting restores native initialization
