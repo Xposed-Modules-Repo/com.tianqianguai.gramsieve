@@ -24,8 +24,8 @@
 
 ## 安装与启动<br>Setup
 
-当前模块版本号跟随本次适配的 Nagram 13.0.2，同时保留官方 Telegram 13.1.0（Play 版 72291、官网版 72299）适配；需要支持 libxposed API 102 的 LSPosed。<br>
-The module version follows the newly adapted Nagram 13.0.2 while retaining support for official Telegram 13.1.0 (Play build 72291 and website build 72299); an LSPosed version supporting libxposed API 102 is required.
+当前模块版本为 13.1.1，适配官方 Telegram 13.1.1（Play 版 72371、官网版 72379），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
+The module version is 13.1.1, supporting official Telegram 13.1.1 (Play build 72371 and website build 72379) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
 
 同时提供 Plus Messenger 13.0.3.0（22601）与 Nagram 13.0.2（1255）的精确适配；使用时请将相应客户端加入模块作用域。<br>
 Exact compatibility is also provided for Plus Messenger 13.0.3.0 (22601) and Nagram 13.0.2 (1255); add the client you use to the module scope.
@@ -99,6 +99,12 @@ Anti-recall and edit history retain content actually received and cached; enabli
 
 - **消息翻译** — 使用 Telegram 原生翻译服务，优先处理屏幕内消息；支持单条翻译、自动翻译及全局/群组/频道设置，原文在上、译文在下，目标语言可跟随界面或手动指定；翻译会向 Telegram 服务提交待翻译文本<br>
   **Message translation** — uses Telegram's native translation service and prioritizes visible messages; supports single-message and automatic translation with global, group and channel settings, original text above the translation, and an interface-based or manually selected target language; text is submitted to Telegram's translation service
+
+- **频道关键词提醒** — 在频道聊天菜单中按账号、频道分别配置，每行一个关键词，任意命中正文或图片说明即可；仅提醒开启后收到的新帖，支持持续振动、静默通知、一键停止、定时结束与连发合并，不播放声音<br>
+  **Channel keyword alerts** — configure each account and channel from the channel chat menu, with one keyword per line matching post text or captions; only new posts received after enabling can trigger repeating vibration or silent notifications, with Stop, automatic timeout and burst coalescing, without sound
+
+  振动提醒需要允许客户端通知与振动，以及本提醒类别的振动；设置页提供两个系统设置入口和测试按钮，系统勿扰及省电策略仍有效。<br>
+  Vibration alerts require notification and vibration permission for the client and vibration permission for this alert category; the settings panel links to both system controls and provides a test button, while Do Not Disturb and battery policies still apply.
 
 - **搜索去杂** — 独立搜索页提供关键词包含/排除和按账号保存的群组/频道黑白名单，合并云端与本地原文结果，支持继续加载、指定聊天历史扫描及消息跳转；界面显示扫描范围，搜索条件不改变聊天屏蔽规则<br>
   **Search filters** — a dedicated page combines cloud and local-text results with keyword include/exclude filters and per-account group/channel allowlists and blocklists; supports paging, scoped history scans and message navigation, shows scan coverage, and leaves chat-blocking rules unchanged
