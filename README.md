@@ -5,9 +5,9 @@
 <h1 align="center">GramSieve</h1>
 
 <p align="center">
-  面向 Telegram 官方 Play、官网 Android 客户端及指定 Plus Messenger、Nagram 版本的增强 LSPosed/Xposed 模块
+  面向 Telegram 官方 Play、官网 Android 客户端及指定 entinyGram、Plus Messenger、Nagram 版本的增强 LSPosed/Xposed 模块
   <br>
-  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients and selected Plus Messenger and Nagram builds
+  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients and selected entinyGram, Plus Messenger and Nagram builds
 </p>
 
 <p align="center">
@@ -24,14 +24,20 @@
 
 ## 安装与启动<br>Setup
 
-当前模块版本为 13.1.1，适配官方 Telegram 13.1.1（Play 版 72371、官网版 72379），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
-The module version is 13.1.1, supporting official Telegram 13.1.1 (Play build 72371 and website build 72379) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
+当前模块版本为 13.2.0，适配官方 Telegram 13.2.0（Play 版 72801、官网版 72809），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
+The module version is 13.2.0, supporting official Telegram 13.2.0 (Play build 72801 and website build 72809) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
 
-同时提供 Plus Messenger 13.0.3.0（22601）与 Nagram 13.0.2（1255）的精确适配；使用时请将相应客户端加入模块作用域。<br>
-Exact compatibility is also provided for Plus Messenger 13.0.3.0 (22601) and Nagram 13.0.2 (1255); add the client you use to the module scope.
+同时适配 entinyGram 插件版 13.1.1-23cc749（2026110200）、Plus Messenger 13.1.1.0（22621）与 Nagram 13.1.1（1257），Nagram 1257 的三次同版本更新包亦已适配，并保留 entinyGram 2026102900/2026102800/2026102600、Plus 22601、Nagram 1255 等已有版本适配；使用时请将相应客户端加入模块作用域。<br>
+Compatibility also covers the entinyGram plugin build 13.1.1-23cc749 (2026110200), Plus Messenger 13.1.1.0 (22621) and Nagram 13.1.1 (1257), including all three replacement Nagram 1257 builds with the same version number and retaining existing support such as entinyGram 2026102900/2026102800/2026102600, Plus 22601 and Nagram 1255; add the client you use to the module scope.
 
-Plus 的首条消息、手动标记、翻译，以及 Nagram 的首条消息、翻译等已确认等价的重复功能使用各自原生实现；Nagram 的手动标记与上次浏览位置仍由模块提供，原有模块设置保留。<br>
-Confirmed equivalent features use the client's native implementation, including first-message navigation, manual marks and translation in Plus, and first-message navigation and translation in Nagram; module marks and last-viewed navigation remain available in Nagram, and saved module settings are preserved.
+entinyGram 已有的等价增强功能、翻译及新消息的防撤回与编辑记录由其原生功能负责；主动加载、旧 GramSieve 历史记录和其他补充功能继续保留，原有模块配置不迁移、不清空。<br>
+entinyGram handles equivalent native enhancements, translation, and recall protection and edit recording for new messages. Proactive loading, existing GramSieve history and other complementary features remain available, without migrating or clearing saved module settings.
+
+新版 entinyGram 的受限聊天复制与保存需在其原生设置「服务条款 → 允许从受保护的聊天转发」中开启；Story 保存及阅后即焚媒体使用各自的原生开关。旧照片历史继续使用原生历史页，并修正点击旧版本时大图错误加载最新版的问题。<br>
+On the updated entinyGram build, copying and saving protected chat content requires its native “Terms of Service → Allow forwarding from protected chats” setting. Story saving and self-destructing media use their respective native settings. Photo history retains the native archive page, with a correction preventing an older revision from opening the latest photo instead.
+
+Plus 的首条消息、手动标记、翻译，以及 Nagram 的翻译等已确认等价的重复功能使用各自原生实现；Nagram 的手动标记与上次浏览位置仍由模块提供，1257 构建的精确首条消息入口也由模块提供，并保留原生“回到顶部”和原有模块设置。<br>
+Confirmed equivalent features use the client's native implementation, including first-message navigation, manual marks and translation in Plus, and translation in Nagram; module marks and last-viewed navigation remain available in Nagram. Nagram build 1257 also keeps the module's precise first-message entry alongside its native beginning action, with saved module settings preserved.
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的受支持客户端，然后重新打开该客户端。<br>
 After installing the module, enable GramSieve in LSPosed, select the supported client you use, and reopen that client.

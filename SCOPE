@@ -1,4 +1,7 @@
 [
   "org.telegram.messenger",
-  "org.telegram.messenger.web"
+  "org.telegram.messenger.web",
+  "ua.entaytion.entinygram",
+  "xyz.nextalone.nagram",
+  "org.telegram.plus"
 ]
