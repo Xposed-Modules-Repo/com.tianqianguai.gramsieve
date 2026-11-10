@@ -24,8 +24,11 @@
 
 ## 安装与启动<br>Setup
 
-当前模块版本为 13.2.0，适配官方 Telegram 13.2.0（Play 版 72801、官网版 72809），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
-The module version is 13.2.0, supporting official Telegram 13.2.0 (Play build 72801 and website build 72809) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
+当前模块版本为 13.2.1，适配官方 Telegram 13.2.1（Play 版 72911、官网版 72919），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
+The module version is 13.2.1, supporting official Telegram 13.2.1 (Play build 72911 and website build 72919) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
+
+官方 13.2.1 已知限制：Premium 贴纸标签隐藏仍有映射缺口，尚未修复；未单独验证的可选功能不能视为全部通过。<br>
+Known limitation in official 13.2.1: hiding the Premium sticker tab still has an unresolved mapping gap; optional features not individually verified are not certified as passing.
 
 同时适配 entinyGram 插件版 13.1.1-23cc749（2026110200）、Plus Messenger 13.1.1.0（22621）与 Nagram 13.1.1（1257），Nagram 1257 的三次同版本更新包亦已适配，并保留 entinyGram 2026102900/2026102800/2026102600、Plus 22601、Nagram 1255 等已有版本适配；使用时请将相应客户端加入模块作用域。<br>
 Compatibility also covers the entinyGram plugin build 13.1.1-23cc749 (2026110200), Plus Messenger 13.1.1.0 (22621) and Nagram 13.1.1 (1257), including all three replacement Nagram 1257 builds with the same version number and retaining existing support such as entinyGram 2026102900/2026102800/2026102600, Plus 22601 and Nagram 1255; add the client you use to the module scope.
