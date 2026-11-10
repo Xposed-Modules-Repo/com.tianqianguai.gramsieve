@@ -54,6 +54,59 @@ The Logs page provides performance records and lets you export files or open the
 预览、复制、导出和分享均自动脱敏，分享前仍可检查文件。<br>
 Previews, copies, exports, and shared files are automatically redacted; you can still review files before sharing.
 
+## 客户端版本支持表<br>Supported client versions
+
+下表列出 **GramSieve 83 / 13.2.1** 已登记的客户端适配版本，包含保留的旧版支持；选择安装包时请同时核对包名、版本号和构建号。<br>
+The tables list the registered client versions in **GramSieve 83 / 13.2.1**, including retained older support. Match the package, version name and build number when choosing a client APK.
+
+### Telegram 官方版<br>Official Telegram
+
+Play 包名：`org.telegram.messenger`；官网包名：`org.telegram.messenger.web`。<br>
+Play package: `org.telegram.messenger`; website package: `org.telegram.messenger.web`.
+
+| Telegram 版本 / Version | Play 构建号 / Build | 官网构建号 / Website build |
+| --- | --- | --- |
+| 13.2.1 | 72911 | 72919 |
+| 13.2.0 | 72801 | 72809 |
+| 13.1.1 | 72371 | 72379 |
+| 13.1.0 | 72291 | 72299 |
+| 13.0.3 | 71831 | 71839 |
+| 13.0.2 | 71751 | 71759 |
+| 13.0.1 | 71671 | 71679 |
+| 13.0.0 | 71581 | 71589 |
+| 12.10.6 | 71122 | 71129 |
+| 12.10.5 | 71052 | 71059 |
+| 12.10.4 | 70992 | 70999 |
+| 12.10.3 | 70892 | 70899 |
+| 12.10.2 | 70862 | — |
+
+“—”表示该渠道没有登记此版本适配。<br>
+“—” means no adaptation is registered for that version in that channel.
+
+### 第三方客户端<br>Third-party clients
+
+| 客户端 / Client | 版本 / Version | 构建号 / Build |
+| --- | --- | --- |
+| entinyGram | 13.1.1-23cc749 | 2026110200 |
+| entinyGram | 13.1.1-d794704 | 2026102900 |
+| entinyGram | 13.1.1-8257c5c | 2026102800 |
+| entinyGram | 13.1.1-bca6055 | 2026102600 |
+| Plus Messenger | 13.1.1.0 | 22621 |
+| Plus Messenger | 13.0.3.0 | 22601 |
+| Plus Messenger | 12.10.5.0 | 22571 |
+| Plus Messenger | 12.10.3.0 | 22531 |
+| Nagram | 13.1.1 | 1257 |
+| Nagram | 13.0.2 | 1255 |
+
+包名：entinyGram `ua.entaytion.entinygram`；Plus Messenger `org.telegram.plus`；Nagram `xyz.nextalone.nagram`。<br>
+Packages: entinyGram `ua.entaytion.entinygram`; Plus Messenger `org.telegram.plus`; Nagram `xyz.nextalone.nagram`.
+
+Nagram 1257 已登记三个同版本替换包；版本号和构建号相同的其他替换包仍需单独核对。<br>
+Three replacement Nagram 1257 APKs are registered; other replacement APKs with the same version and build numbers still require separate matching.
+
+本表说明版本适配范围，各功能的验证状态和已知限制仍按下文说明。<br>
+These tables describe version coverage; feature verification and known limitations remain as documented below.
+
 ## 使用教程<br>Usage guide
 
 在 Telegram 设置 → GramSieve → 使用教程，或当前聊天右上角 ⋮ → 聊天过滤规则 → 使用教程中查看中英文教程。<br>
