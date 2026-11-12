@@ -22,10 +22,13 @@
   If GramSieve helps you, please consider leaving a Star.
 </p>
 
+**现已支持 NPatch 加载！已在改包名 Telegram 13.2.2 上实测模块加载、登录后重开、文字防撤回与连续编辑历史。**<br>
+**NPatch loading is now supported! Device tests on a renamed Telegram 13.2.2 client cover module loading, reopening after login, text anti-recall and consecutive edit history.**
+
 ## 安装与启动<br>Setup
 
-当前模块版本为 13.2.2，适配官方 Telegram 13.2.2（Play 版 73031、官网版 73039），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
-The module version is 13.2.2, supporting official Telegram 13.2.2 (Play build 73031 and website build 73039) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
+当前模块版本为 13.2.2，适配官方 Telegram 13.2.2（Play 版 73031、官网版 73039），保留已有版本适配；可使用支持 libxposed API 102 的 LSPosed 或兼容的 NPatch 加载环境。<br>
+The module version is 13.2.2, supporting official Telegram 13.2.2 (Play build 73031 and website build 73039) while retaining existing version support; use LSPosed supporting libxposed API 102 or a compatible NPatch loading environment.
 
 官方 13.2.2 已补齐 Premium 贴纸标签隐藏的映射依赖，但仍缺少符合条件的可见标签实测；未单独验证的可选功能不能视为全部通过。<br>
 Official 13.2.2 includes the missing mapping dependencies for hiding the Premium sticker tab, but a qualifying visible tab has not been tested on a device; optional features not individually verified are not certified as passing.
@@ -44,6 +47,9 @@ Confirmed equivalent features use the client's native implementation, including 
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的受支持客户端，然后重新打开该客户端。<br>
 After installing the module, enable GramSieve in LSPosed, select the supported client you use, and reopen that client.
+
+使用 NPatch 时，在目标客户端的模块配置中选择 GramSieve，再重新打开该客户端；本次 NPatch 验证范围为上述 Telegram 13.2.2 组合，不代表所有修改包及可选功能均已验证。<br>
+With NPatch, select GramSieve in the target client’s module configuration, then reopen that client. NPatch verification covers the Telegram 13.2.2 setup described above, not every modified package or optional feature.
 
 模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。<br>
 The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
