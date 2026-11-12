@@ -24,11 +24,11 @@
 
 ## 安装与启动<br>Setup
 
-当前模块版本为 13.2.1，适配官方 Telegram 13.2.1（Play 版 72911、官网版 72919），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
-The module version is 13.2.1, supporting official Telegram 13.2.1 (Play build 72911 and website build 72919) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
+当前模块版本为 13.2.2，适配官方 Telegram 13.2.2（Play 版 73031、官网版 73039），保留已有版本适配；需要支持 libxposed API 102 的 LSPosed。<br>
+The module version is 13.2.2, supporting official Telegram 13.2.2 (Play build 73031 and website build 73039) while retaining existing version support; an LSPosed version supporting libxposed API 102 is required.
 
-官方 13.2.1 已知限制：Premium 贴纸标签隐藏仍有映射缺口，尚未修复；未单独验证的可选功能不能视为全部通过。<br>
-Known limitation in official 13.2.1: hiding the Premium sticker tab still has an unresolved mapping gap; optional features not individually verified are not certified as passing.
+官方 13.2.2 已补齐 Premium 贴纸标签隐藏的映射依赖，但仍缺少符合条件的可见标签实测；未单独验证的可选功能不能视为全部通过。<br>
+Official 13.2.2 includes the missing mapping dependencies for hiding the Premium sticker tab, but a qualifying visible tab has not been tested on a device; optional features not individually verified are not certified as passing.
 
 同时适配 entinyGram 插件版 13.1.1-23cc749（2026110200）、Plus Messenger 13.1.1.0（22621）与 Nagram 13.1.1（1257），Nagram 1257 的三次同版本更新包亦已适配，并保留 entinyGram 2026102900/2026102800/2026102600、Plus 22601、Nagram 1255 等已有版本适配；使用时请将相应客户端加入模块作用域。<br>
 Compatibility also covers the entinyGram plugin build 13.1.1-23cc749 (2026110200), Plus Messenger 13.1.1.0 (22621) and Nagram 13.1.1 (1257), including all three replacement Nagram 1257 builds with the same version number and retaining existing support such as entinyGram 2026102900/2026102800/2026102600, Plus 22601 and Nagram 1255; add the client you use to the module scope.
@@ -94,8 +94,8 @@ Anti-recall and edit history retain content actually received and cached; enabli
 - **一键重置规则** — 可一次清空全局与所有聊天的过滤规则，同时保留防撤回、编辑历史、消息标记、日志和功能设置<br>
   **One-tap rule reset** — clear global and per-chat filter rules at once while preserving anti-recall, edit history, message marks, logs, and feature settings
 
-- **三种过滤动作** — 本地隐藏、本地折叠、调试标记（测试用）<br>
-  **Three filter actions** — hide locally, collapse locally, or debug-mark (for testing)
+- **三种过滤动作** — 本地隐藏、连续折叠合并计数、调试标记（测试用）<br>
+  **Three filter actions** — hide locally, merge consecutive collapsed messages with a count, or debug-mark (for testing)
 
 - **屏蔽消息自动已读** — 新消息到达时，在能确认不会连带读掉正常消息的情况下自动推进已读；有其他正常未读或无法确认范围时保留未读，排除规则和调试标记不触发自动已读<br>
   **Auto-read filtered messages** — advance the read position on incoming filtered messages only when normal unread messages will remain untouched; preserve unread state when other normal unread messages exist or the range cannot be verified, and never auto-read keep-rule or debug-mark matches
@@ -177,8 +177,8 @@ Features require scenario-specific verification on each client build; adaptation
 
 ## 客户端版本支持表<br>Supported client versions
 
-下表列出 **GramSieve 83 / 13.2.1** 已登记的客户端适配版本，包含保留的旧版支持；选择安装包时请同时核对包名、版本号和构建号。<br>
-The tables list the registered client versions in **GramSieve 83 / 13.2.1**, including retained older support. Match the package, version name and build number when choosing a client APK.
+下表列出 **GramSieve 85 / 13.2.2** 已登记的客户端适配版本，包含保留的旧版支持；选择安装包时请同时核对包名、版本号和构建号。<br>
+The tables list the registered client versions in **GramSieve 85 / 13.2.2**, including retained older support. Match the package, version name and build number when choosing a client APK.
 
 ### Telegram 官方版<br>Official Telegram
 
@@ -187,6 +187,7 @@ Play package: `org.telegram.messenger`; website package: `org.telegram.messenger
 
 | Telegram 版本 / Version | Play 构建号 / Build | 官网构建号 / Website build |
 | --- | --- | --- |
+| 13.2.2 | 73031 | 73039 |
 | 13.2.1 | 72911 | 72919 |
 | 13.2.0 | 72801 | 72809 |
 | 13.1.1 | 72371 | 72379 |
