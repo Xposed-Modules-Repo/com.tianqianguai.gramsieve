@@ -5,9 +5,9 @@
 <h1 align="center">GramSieve</h1>
 
 <p align="center">
-  面向 Telegram 官方 Play、官网 Android 客户端及指定 entinyGram、Plus Messenger、Nagram 版本的增强 LSPosed/Xposed 模块
+  面向 Telegram 官方 Play 版与官网 Android 客户端的增强 LSPosed/Xposed 模块
   <br>
-  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients and selected entinyGram, Plus Messenger and Nagram builds
+  An enhancement LSPosed/Xposed module for the official Telegram Play and website Android clients
 </p>
 
 <p align="center">
@@ -27,29 +27,23 @@
 
 ## 安装与启动<br>Setup
 
-当前模块版本为 13.2.2，适配官方 Telegram 13.2.2（Play 版 73031、官网版 73039），保留已有版本适配；可使用支持 libxposed API 102 的 LSPosed 或兼容的 NPatch 加载环境。<br>
-The module version is 13.2.2, supporting official Telegram 13.2.2 (Play build 73031 and website build 73039) while retaining existing version support; use LSPosed supporting libxposed API 102 or a compatible NPatch loading environment.
+GramSieve 88 适配官方 Telegram 13.3.0（Play 版 73411、官网版 73419），并保留官方 13.2.2 的适配。请使用支持 libxposed API 102 的 LSPosed 或兼容加载环境。<br>
+GramSieve 88 supports official Telegram 13.3.0 (Play build 73411 and website build 73419) and retains compatibility with official 13.2.2. Use LSPosed supporting libxposed API 102 or a compatible loading environment.
 
 官方 13.2.2 已补齐 Premium 贴纸标签隐藏的映射依赖，但仍缺少符合条件的可见标签实测；未单独验证的可选功能不能视为全部通过。<br>
 Official 13.2.2 includes the missing mapping dependencies for hiding the Premium sticker tab, but a qualifying visible tab has not been tested on a device; optional features not individually verified are not certified as passing.
 
-同时适配 entinyGram 插件版 13.1.1-23cc749（2026110200）、Plus Messenger 13.1.1.0（22621）与 Nagram 13.1.1（1257），Nagram 1257 的三次同版本更新包亦已适配，并保留 entinyGram 2026102900/2026102800/2026102600、Plus 22601、Nagram 1255 等已有版本适配；使用时请将相应客户端加入模块作用域。<br>
-Compatibility also covers the entinyGram plugin build 13.1.1-23cc749 (2026110200), Plus Messenger 13.1.1.0 (22621) and Nagram 13.1.1 (1257), including all three replacement Nagram 1257 builds with the same version number and retaining existing support such as entinyGram 2026102900/2026102800/2026102600, Plus 22601 and Nagram 1255; add the client you use to the module scope.
+从 GramSieve 88 起，停止为 entinyGram、Plus Messenger、Nagram 等第三方 Telegram 客户端更新适配。官方 Telegram Play 和官网 Android 客户端继续适配。<br>
+GramSieve 88 ends compatibility updates for third-party Telegram clients such as entinyGram, Plus Messenger and Nagram. Compatibility updates continue for the official Telegram Play and website Android clients.<br>
 
-entinyGram 已有的等价增强功能、翻译及新消息的防撤回与编辑记录由其原生功能负责；主动加载、旧 GramSieve 历史记录和其他补充功能继续保留，原有模块配置不迁移、不清空。<br>
-entinyGram handles equivalent native enhancements, translation, and recall protection and edit recording for new messages. Proactive loading, existing GramSieve history and other complementary features remain available, without migrating or clearing saved module settings.
-
-新版 entinyGram 的受限聊天复制与保存需在其原生设置「服务条款 → 允许从受保护的聊天转发」中开启；Story 保存及阅后即焚媒体使用各自的原生开关。旧照片历史继续使用原生历史页，并修正点击旧版本时大图错误加载最新版的问题。<br>
-On the updated entinyGram build, copying and saving protected chat content requires its native “Terms of Service → Allow forwarding from protected chats” setting. Story saving and self-destructing media use their respective native settings. Photo history retains the native archive page, with a correction preventing an older revision from opening the latest photo instead.
-
-Plus 的首条消息、手动标记、翻译，以及 Nagram 的翻译等已确认等价的重复功能使用各自原生实现；Nagram 的手动标记与上次浏览位置仍由模块提供，1257 构建的精确首条消息入口也由模块提供，并保留原生“回到顶部”和原有模块设置。<br>
-Confirmed equivalent features use the client's native implementation, including first-message navigation, manual marks and translation in Plus, and translation in Nagram; module marks and last-viewed navigation remain available in Nagram. Nagram build 1257 also keeps the module's precise first-message entry alongside its native beginning action, with saved module settings preserved.
+最后支持第三方客户端的模块版本为 **GramSieve 13.2.2（构建号 85）**。GramSieve 88 会在第三方客户端中显示停止支持提示和对应的历史版本。<br>
+The last module supporting third-party clients is **GramSieve 13.2.2 (build 85)**. GramSieve 88 displays a discontinued-support notice and the corresponding historical versions in third-party clients.
 
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的受支持客户端，然后重新打开该客户端。<br>
 After installing the module, enable GramSieve in LSPosed, select the supported client you use, and reopen that client.
 
-使用 NPatch 时，在目标客户端的模块配置中选择 GramSieve，再重新打开该客户端；本次 NPatch 验证范围为上述 Telegram 13.2.2 组合，不代表所有修改包及可选功能均已验证。<br>
-With NPatch, select GramSieve in the target client’s module configuration, then reopen that client. NPatch verification covers the Telegram 13.2.2 setup described above, not every modified package or optional feature.
+使用 NPatch 时，在目标客户端的模块配置中选择 GramSieve，再重新打开该客户端。88 已在现有的改包名 Telegram 13.2.2 宿主验证加载；本次改包名 13.3.0 测试宿主未通过启动验收。<br>
+With NPatch, select GramSieve in the target client's module configuration, then reopen that client. Build 88 was verified to load in the existing renamed Telegram 13.2.2 host. The renamed 13.3.0 test host failed the startup check.
 
 模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。<br>
 The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
@@ -183,8 +177,8 @@ Features require scenario-specific verification on each client build; adaptation
 
 ## 客户端版本支持表<br>Supported client versions
 
-下表列出 **GramSieve 85 / 13.2.2** 已登记的客户端适配版本，包含保留的旧版支持；选择安装包时请同时核对包名、版本号和构建号。<br>
-The tables list the registered client versions in **GramSieve 85 / 13.2.2**, including retained older support. Match the package, version name and build number when choosing a client APK.
+下表列出 **GramSieve 88 / 13.3.0** 登记的官方 Telegram 客户端版本。Play、官网两个渠道各保留最新及上一版。选择安装包时请同时核对包名、版本号和构建号。<br>
+The table lists registered official Telegram builds for **GramSieve 88 / 13.3.0**. Both the Play and website channels retain the latest and previous versions. Match the package, version name and build number when choosing a client APK.
 
 ### Telegram 官方版<br>Official Telegram
 
@@ -193,47 +187,14 @@ Play package: `org.telegram.messenger`; website package: `org.telegram.messenger
 
 | Telegram 版本 / Version | Play 构建号 / Build | 官网构建号 / Website build |
 | --- | --- | --- |
+| 13.3.0 | 73411 | 73419 |
 | 13.2.2 | 73031 | 73039 |
-| 13.2.1 | 72911 | 72919 |
-| 13.2.0 | 72801 | 72809 |
-| 13.1.1 | 72371 | 72379 |
-| 13.1.0 | 72291 | 72299 |
-| 13.0.3 | 71831 | 71839 |
-| 13.0.2 | 71751 | 71759 |
-| 13.0.1 | 71671 | 71679 |
-| 13.0.0 | 71581 | 71589 |
-| 12.10.6 | 71122 | 71129 |
-| 12.10.5 | 71052 | 71059 |
-| 12.10.4 | 70992 | 70999 |
-| 12.10.3 | 70892 | 70899 |
-| 12.10.2 | 70862 | — |
 
-“—”表示该渠道没有登记此版本适配。<br>
-“—” means no adaptation is registered for that version in that channel.
+后续每次适配新版本时，移除窗口之外的旧版映射；历史源码与旧发行版仍保留在 Git 历史中。<br>
+When a new version is adapted, maps outside this two-version window are removed. Historical source and prior releases remain in Git history.
 
-### 第三方客户端<br>Third-party clients
-
-| 客户端 / Client | 版本 / Version | 构建号 / Build |
-| --- | --- | --- |
-| entinyGram | 13.1.1-23cc749 | 2026110200 |
-| entinyGram | 13.1.1-d794704 | 2026102900 |
-| entinyGram | 13.1.1-8257c5c | 2026102800 |
-| entinyGram | 13.1.1-bca6055 | 2026102600 |
-| Plus Messenger | 13.1.1.0 | 22621 |
-| Plus Messenger | 13.0.3.0 | 22601 |
-| Plus Messenger | 12.10.5.0 | 22571 |
-| Plus Messenger | 12.10.3.0 | 22531 |
-| Nagram | 13.1.1 | 1257 |
-| Nagram | 13.0.2 | 1255 |
-
-包名：entinyGram `ua.entaytion.entinygram`；Plus Messenger `org.telegram.plus`；Nagram `xyz.nextalone.nagram`。<br>
-Packages: entinyGram `ua.entaytion.entinygram`; Plus Messenger `org.telegram.plus`; Nagram `xyz.nextalone.nagram`.
-
-Nagram 1257 已登记三个同版本替换包；版本号和构建号相同的其他替换包仍需单独核对。<br>
-Three replacement Nagram 1257 APKs are registered; other replacement APKs with the same version and build numbers still require separate matching.
-
-本表说明版本适配范围，各功能的验证状态和已知限制仍按下文说明。<br>
-These tables describe version coverage; feature verification and known limitations remain as documented below.
+本表说明官方客户端版本适配范围，各功能的验证状态和已知限制仍按下文说明。<br>
+This table describes official client version coverage; feature verification and known limitations remain as documented below.
 
 ## 规则写法<br>How Rules Work
 
