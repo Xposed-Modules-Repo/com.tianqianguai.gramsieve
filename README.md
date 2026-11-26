@@ -27,8 +27,8 @@
 
 ## 安装与启动<br>Setup
 
-GramSieve 88 适配官方 Telegram 13.3.0（Play 版 73411、官网版 73419），并保留官方 13.2.2 的适配。请使用支持 libxposed API 102 的 LSPosed 或兼容加载环境。<br>
-GramSieve 88 supports official Telegram 13.3.0 (Play build 73411 and website build 73419) and retains compatibility with official 13.2.2. Use LSPosed supporting libxposed API 102 or a compatible loading environment.
+GramSieve 89 适配官方 Telegram 13.3.1（Play 版 73461、官网版 73469），并保留官方 13.3.0 的适配。请使用支持 libxposed API 102 的 LSPosed 或兼容加载环境。<br>
+GramSieve 89 supports official Telegram 13.3.1 (Play build 73461 and website build 73469) and retains compatibility with official 13.3.0. Use LSPosed supporting libxposed API 102 or a compatible loading environment.
 
 官方 13.2.2 已补齐 Premium 贴纸标签隐藏的映射依赖，但仍缺少符合条件的可见标签实测；未单独验证的可选功能不能视为全部通过。<br>
 Official 13.2.2 includes the missing mapping dependencies for hiding the Premium sticker tab, but a qualifying visible tab has not been tested on a device; optional features not individually verified are not certified as passing.
@@ -42,8 +42,8 @@ The last module supporting third-party clients is **GramSieve 13.2.2 (build 85)*
 安装模块后，在 LSPosed 中启用 GramSieve，并勾选使用的受支持客户端，然后重新打开该客户端。<br>
 After installing the module, enable GramSieve in LSPosed, select the supported client you use, and reopen that client.
 
-使用 NPatch 时，在目标客户端的模块配置中选择 GramSieve，再重新打开该客户端。88 已在现有的改包名 Telegram 13.2.2 宿主验证加载；本次改包名 13.3.0 测试宿主未通过启动验收。<br>
-With NPatch, select GramSieve in the target client's module configuration, then reopen that client. Build 88 was verified to load in the existing renamed Telegram 13.2.2 host. The renamed 13.3.0 test host failed the startup check.
+使用 NPatch 时，在目标客户端的模块配置中选择 GramSieve，再重新打开该客户端。88 曾在改包名 Telegram 13.2.2 宿主验证加载，改包名 13.3.0 测试宿主当时未通过启动验收。13.3.1 尚无 NPatch 实机验收记录。<br>
+With NPatch, select GramSieve in the target client's module configuration, then reopen that client. Build 88 was verified to load in a renamed Telegram 13.2.2 host. The renamed 13.3.0 test host failed its startup check. NPatch with 13.3.1 still awaits device testing.
 
 模块随 Telegram 运行，无需允许 GramSieve 自启动，也无需为本模块勾选“系统框架”作用域。<br>
 The module runs within Telegram; GramSieve autostart and the System Framework scope are not required.
@@ -177,8 +177,8 @@ Features require scenario-specific verification on each client build; adaptation
 
 ## 客户端版本支持表<br>Supported client versions
 
-下表列出 **GramSieve 88 / 13.3.0** 登记的官方 Telegram 客户端版本。Play、官网两个渠道各保留最新及上一版。选择安装包时请同时核对包名、版本号和构建号。<br>
-The table lists registered official Telegram builds for **GramSieve 88 / 13.3.0**. Both the Play and website channels retain the latest and previous versions. Match the package, version name and build number when choosing a client APK.
+下表列出 **GramSieve 89 / 13.3.1** 登记的官方 Telegram 客户端版本。Play、官网两个渠道各保留最新及上一版。选择安装包时请同时核对包名、版本号和构建号。<br>
+The table lists registered official Telegram builds for **GramSieve 89 / 13.3.1**. Both the Play and website channels retain the latest and previous versions. Match the package, version name and build number when choosing a client APK.
 
 ### Telegram 官方版<br>Official Telegram
 
@@ -187,8 +187,8 @@ Play package: `org.telegram.messenger`; website package: `org.telegram.messenger
 
 | Telegram 版本 / Version | Play 构建号 / Build | 官网构建号 / Website build |
 | --- | --- | --- |
+| 13.3.1 | 73461 | 73469 |
 | 13.3.0 | 73411 | 73419 |
-| 13.2.2 | 73031 | 73039 |
 
 后续每次适配新版本时，移除窗口之外的旧版映射；历史源码与旧发行版仍保留在 Git 历史中。<br>
 When a new version is adapted, maps outside this two-version window are removed. Historical source and prior releases remain in Git history.
